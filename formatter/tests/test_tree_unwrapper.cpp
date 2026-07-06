@@ -986,6 +986,76 @@ TEST_F(TreeUnwrapperTest, MprfSimulationAssertionStaysSingleStatementLine) {
   EXPECT_EQ(snap(lines), expected);
 }
 
+TEST_F(TreeUnwrapperTest, LabeledAssertionElseBeginParsesActionBlock) {
+  auto result = parseWithDiagnostics(
+      "module m ();\n"
+      "`ifdef SIM\n"
+      "A_CHECK : assert property (@(posedge clk) ok) else begin\n"
+      "$error(\"bad\");\n"
+      "end\n"
+      "`endif\n"
+      "endmodule");
+
+  const std::vector<LineSnap> expected = {
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::ModuleKeyword, "module"),
+            N(TK::Identifier, "m"),
+            N(TK::OpenParenthesis, "("),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`ifdef"),
+            N(TK::Identifier, "SIM"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::Identifier, "A_CHECK"),
+            N(TK::Colon, ":"),
+            N(TK::AssertKeyword, "assert"),
+            N(TK::PropertyKeyword, "property"),
+            N(TK::OpenParenthesis, "("),
+            N(TK::At, "@"),
+            N(TK::OpenParenthesis, "("),
+            N(TK::PosEdgeKeyword, "posedge"),
+            N(TK::Identifier, "clk"),
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Identifier, "ok"),
+            N(TK::CloseParenthesis, ")"),
+            N(TK::ElseKeyword, "else"),
+            N(TK::BeginKeyword, "begin"),
+        }),
+      L(kIndent * 2, PP::kAlwaysExpand,
+        {
+            N(TK::SystemIdentifier, "$error"),
+            N(TK::OpenParenthesis, "("),
+            N(TK::StringLiteral, "\"bad\""),
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::EndKeyword, "end"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`endif"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::EndModuleKeyword, "endmodule"),
+        }),
+  };
+
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(snap(result.lines), expected);
+}
+
 // ---- begin/end --------------------------------------------------------------
 
 TEST_F(TreeUnwrapperTest, BeginEndAreOwnLines) {

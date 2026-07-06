@@ -287,6 +287,37 @@ class SVParser {
     return at(TK::Identifier, offset) && at(TK::OpenParenthesis, offset + 1);
   }
 
+  [[nodiscard]] auto looksLikePropertyAssertion(size_t offset = 0) const
+      -> bool {
+    return at(TK::AssertKeyword, offset) && at(TK::PropertyKeyword, offset + 1);
+  }
+
+  [[nodiscard]] auto looksLikeSupportedLabeledStatement() const -> bool {
+    if (!at(TK::Identifier) || !at(TK::Colon, 1)) {
+      return false;
+    }
+
+    if (looksLikePropertyAssertion(2)) {
+      return true;
+    }
+
+    switch (peek(2).kind) {
+      case TK::BeginKeyword:
+      case TK::IfKeyword:
+      case TK::CaseKeyword:
+      case TK::CaseXKeyword:
+      case TK::CaseZKeyword:
+      case TK::ForKeyword:
+      case TK::ForeachKeyword:
+      case TK::WhileKeyword:
+      case TK::RepeatKeyword:
+      case TK::ForeverKeyword:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   [[nodiscard]] auto snapshotState() const -> ParserState {
     return {
         .pos = pos_,
@@ -470,6 +501,11 @@ class SVParser {
       return;
     }
 
+    if (looksLikeSupportedLabeledStatement()) {
+      parseLabeledStatement();
+      return;
+    }
+
     // Module/interface instantiations are identifier-led, so they cannot be
     // dispatched by TokenKind in the switch below.
     if (looksLikeInstantiation()) {
@@ -526,6 +562,14 @@ class SVParser {
         parseIf();
         break;
 
+      case TK::AssertKeyword:
+        if (looksLikePropertyAssertion()) {
+          parseAssertionStatement();
+        } else {
+          parseUnsupportedConstruct();
+        }
+        break;
+
       case TK::CaseKeyword:
       case TK::CaseXKeyword:
       case TK::CaseZKeyword:
@@ -576,6 +620,43 @@ class SVParser {
           consumeUntilSemi();
         }
         break;
+    }
+  }
+
+  auto parseLabeledStatement() -> void {
+    consumeInto(line_);  // label identifier
+    consumeInto(line_);  // colon
+    parseStatement();
+  }
+
+  auto parseAssertionStatement() -> void {
+    consumeInto(line_);  // assert
+    consumeInto(line_);  // property
+    consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+
+    if (at(TK::Semicolon)) {
+      consumeInto(line_);
+      addLine();
+      return;
+    }
+
+    if (at(TK::EndOfFile) || (stop_at_conditional_boundary_ &&
+                              isConditionalBoundaryDirective(peek()))) {
+      addLine();
+      return;
+    }
+
+    if (!at(TK::ElseKeyword) && !at(TK::EndOfFile)) {
+      parseStatement();
+    }
+
+    if (at(TK::ElseKeyword)) {
+      consumeInto(line_);
+      if (at(TK::EndOfFile)) {
+        addLine();
+        return;
+      }
+      parseStatement();
     }
   }
 
