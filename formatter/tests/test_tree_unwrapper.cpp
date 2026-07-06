@@ -250,8 +250,7 @@ TEST_F(TreeUnwrapperTest, BodyDeclarationsWithKeywordsUseTabularAlignment) {
 }
 
 TEST_F(TreeUnwrapperTest, ParameterizedInstantiationIsParsedBeforeFallback) {
-  auto lines = parse(
-      "module m (); child #(8) u_child (clk, rst_n); endmodule");
+  auto lines = parse("module m (); child #(8) u_child (clk, rst_n); endmodule");
 
   const std::vector<LineSnap> expected = {
       L(0, PP::kFitOnLineElseExpand,
@@ -487,6 +486,151 @@ TEST_F(TreeUnwrapperTest, MprfRamAttributeDeclarationsStayFlat) {
   EXPECT_EQ(snap(lines), expected);
 }
 
+TEST_F(TreeUnwrapperTest, ConditionalModuleBranchesShareEndmodule) {
+  auto result = parseWithDiagnostics(
+      "`ifdef USE_A\n"
+      "module m_a ();\n"
+      "`else\n"
+      "module m_b ();\n"
+      "`endif\n"
+      "logic x;\n"
+      "endmodule");
+
+  const std::vector<LineSnap> expected = {
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`ifdef"),
+            N(TK::Identifier, "USE_A"),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::ModuleKeyword, "module"),
+            N(TK::Identifier, "m_a"),
+            N(TK::OpenParenthesis, "("),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`else"),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::ModuleKeyword, "module"),
+            N(TK::Identifier, "m_b"),
+            N(TK::OpenParenthesis, "("),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`endif"),
+        }),
+      L(kIndent, PP::kTabularAlignment,
+        {
+            N(TK::LogicKeyword, "logic"),
+            N(TK::Identifier, "x"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::EndModuleKeyword, "endmodule"),
+        }),
+  };
+
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(snap(result.lines), expected);
+}
+
+TEST_F(TreeUnwrapperTest,
+       ConditionalModuleBranchesCanHavePreludeBeforeSharedEndmodule) {
+  auto result = parseWithDiagnostics(
+      "`ifdef USE_A\n"
+      "localparam int SELECTED = 0;\n"
+      "module m_a ();\n"
+      "`else\n"
+      "localparam int SELECTED = 1;\n"
+      "module m_b ();\n"
+      "`endif\n"
+      "logic x;\n"
+      "endmodule");
+
+  const std::vector<LineSnap> expected = {
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`ifdef"),
+            N(TK::Identifier, "USE_A"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::LocalParamKeyword, "localparam"),
+            N(TK::IntKeyword, "int"),
+            N(TK::Identifier, "SELECTED"),
+            N(TK::Equals, "="),
+            N(TK::IntegerLiteral, "0"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::ModuleKeyword, "module"),
+            N(TK::Identifier, "m_a"),
+            N(TK::OpenParenthesis, "("),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`else"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::LocalParamKeyword, "localparam"),
+            N(TK::IntKeyword, "int"),
+            N(TK::Identifier, "SELECTED"),
+            N(TK::Equals, "="),
+            N(TK::IntegerLiteral, "1"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::ModuleKeyword, "module"),
+            N(TK::Identifier, "m_b"),
+            N(TK::OpenParenthesis, "("),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`endif"),
+        }),
+      L(kIndent, PP::kTabularAlignment,
+        {
+            N(TK::LogicKeyword, "logic"),
+            N(TK::Identifier, "x"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::EndModuleKeyword, "endmodule"),
+        }),
+  };
+
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(snap(result.lines), expected);
+}
+
 // ---- always_ff --------------------------------------------------------------
 
 TEST_F(TreeUnwrapperTest, AlwaysFFIsOwnLine) {
@@ -534,6 +678,107 @@ TEST_F(TreeUnwrapperTest, AlwaysFFIsOwnLine) {
   };
 
   EXPECT_EQ(snap(lines), expected);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalAlwaysFFBranchesShareBeginEndBody) {
+  auto result = parseWithDiagnostics(
+      "module m ();\n"
+      "`ifndef USE_ALT_CLK\n"
+      "always_ff @(posedge clk) begin\n"
+      "`else\n"
+      "always_ff @(posedge alt_clk) begin\n"
+      "`endif\n"
+      "if (rst) begin\n"
+      "q <= d;\n"
+      "end\n"
+      "end\n"
+      "endmodule");
+
+  const std::vector<LineSnap> expected = {
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::ModuleKeyword, "module"),
+            N(TK::Identifier, "m"),
+            N(TK::OpenParenthesis, "("),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`ifndef"),
+            N(TK::Identifier, "USE_ALT_CLK"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::AlwaysFFKeyword, "always_ff"),
+            N(TK::At, "@"),
+            N(TK::OpenParenthesis, "("),
+            N(TK::PosEdgeKeyword, "posedge"),
+            N(TK::Identifier, "clk"),
+            N(TK::CloseParenthesis, ")"),
+        }),
+      L(kIndent * 2, PP::kAlwaysExpand,
+        {
+            N(TK::BeginKeyword, "begin"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`else"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::AlwaysFFKeyword, "always_ff"),
+            N(TK::At, "@"),
+            N(TK::OpenParenthesis, "("),
+            N(TK::PosEdgeKeyword, "posedge"),
+            N(TK::Identifier, "alt_clk"),
+            N(TK::CloseParenthesis, ")"),
+        }),
+      L(kIndent * 2, PP::kAlwaysExpand,
+        {
+            N(TK::BeginKeyword, "begin"),
+        }),
+      L(kIndent, PP::kAlwaysExpand,
+        {
+            N(TK::Directive, "`endif"),
+        }),
+      L(kIndent * 3, PP::kAlwaysExpand,
+        {
+            N(TK::IfKeyword, "if"),
+            N(TK::OpenParenthesis, "("),
+            N(TK::Identifier, "rst"),
+            N(TK::CloseParenthesis, ")"),
+        }),
+      L(kIndent * 4, PP::kAlwaysExpand,
+        {
+            N(TK::BeginKeyword, "begin"),
+        }),
+      L(kIndent * 5, PP::kAlwaysExpand,
+        {
+            N(TK::Identifier, "q"),
+            N(TK::LessThanEquals, "<="),
+            N(TK::Identifier, "d"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(kIndent * 4, PP::kAlwaysExpand,
+        {
+            N(TK::EndKeyword, "end"),
+        }),
+      L(kIndent * 2, PP::kAlwaysExpand,
+        {
+            N(TK::EndKeyword, "end"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::EndModuleKeyword, "endmodule"),
+        }),
+  };
+
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(snap(result.lines), expected);
 }
 
 TEST_F(TreeUnwrapperTest, MprfResetAlwaysFFWithAggregateLiteral) {
@@ -837,8 +1082,8 @@ TEST_F(TreeUnwrapperTest, IfIsOwnLine) {
 }
 
 TEST_F(TreeUnwrapperTest, UnsupportedCovergroupWarnsWithoutSpecialRecovery) {
-  auto result = parseWithDiagnostics(
-      "module m; covergroup cg; endgroup endmodule");
+  auto result =
+      parseWithDiagnostics("module m; covergroup cg; endgroup endmodule");
 
   ASSERT_EQ(result.warnings.size(), 2U);
   EXPECT_EQ(result.warnings.at(0).code, "unsupported-construct");

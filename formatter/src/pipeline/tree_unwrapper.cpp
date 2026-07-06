@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <gsl/span>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -42,6 +43,31 @@ using Line = UnwrappedLine<Token>;
          text == "`undef" || text == "`undefineall";
 }
 
+[[nodiscard]] auto isConditionalStartDirective(Token tok) -> bool {
+  if (tok.kind != TK::Directive) {
+    return false;
+  }
+  const std::string_view text = tok.rawText();
+  return text == "`ifdef" || text == "`ifndef";
+}
+
+[[nodiscard]] auto isConditionalAlternativeDirective(Token tok) -> bool {
+  if (tok.kind != TK::Directive) {
+    return false;
+  }
+  const std::string_view text = tok.rawText();
+  return text == "`else" || text == "`elsif";
+}
+
+[[nodiscard]] auto isConditionalEndDirective(Token tok) -> bool {
+  return tok.kind == TK::Directive && tok.rawText() == "`endif";
+}
+
+[[nodiscard]] auto isConditionalBoundaryDirective(Token tok) -> bool {
+  return isConditionalAlternativeDirective(tok) ||
+         isConditionalEndDirective(tok);
+}
+
 class SVParser {
  public:
   SVParser(gsl::span<const Token> tokens, const FormatStyle& style)
@@ -56,6 +82,26 @@ class SVParser {
   }
 
  private:
+  struct BlockFrame {
+    TK close_kind;
+    size_t extra_dedent_after_close = 0;
+
+    auto operator==(const BlockFrame&) const -> bool = default;
+  };
+
+  struct ParserState {
+    size_t pos = 0;
+    Line line;
+    size_t indent_level = 0;
+    std::vector<BlockFrame> block_stack;
+  };
+
+  struct BranchResult {
+    ParserState state;
+    std::vector<Line> lines;
+    std::vector<FormatWarning> warnings;
+  };
+
   gsl::span<const Token> tokens_;
   std::reference_wrapper<const FormatStyle> style_;
   size_t pos_ = 0;
@@ -63,6 +109,8 @@ class SVParser {
   std::vector<Line> lines_;
   std::vector<FormatWarning> warnings_;
   size_t indent_level_ = 0;
+  std::vector<BlockFrame> block_stack_;
+  bool stop_at_conditional_boundary_ = false;
 
   // ---- token access ----
 
@@ -112,6 +160,20 @@ class SVParser {
 
   auto consumeUntilSemi() -> void {
     while (pos_ < tokens_.size() && !at(TK::Semicolon) && !at(TK::EndOfFile)) {
+      if (stop_at_conditional_boundary_ &&
+          isConditionalBoundaryDirective(peek())) {
+        break;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        if (isConditionalStartDirective(peek()) &&
+            (stop_at_conditional_boundary_ || shouldParseConditionalRegion())) {
+          parseConditionalRegion();
+        } else {
+          parseDirectiveLine();
+        }
+        continue;
+      }
       consumeInto(line_);
     }
     if (at(TK::Semicolon)) {
@@ -141,6 +203,15 @@ class SVParser {
     const Token start = peek();
     warnUnsupported(start, unsupportedConstructName(start));
     consumeUntilSemi();
+  }
+
+  auto warnIncompatibleConditional(Token tok) -> void {
+    warnings_.push_back({
+        .location = tok.location(),
+        .code = "incompatible-conditional-branches",
+        .message = "conditional compilation branches leave incompatible parser "
+                   "states; continuing with the first branch structure",
+    });
   }
 
   // The next token starts on a new source line if its leading trivia has a
@@ -188,6 +259,17 @@ class SVParser {
     return false;
   }
 
+  [[nodiscard]] auto afterDirectiveLine(size_t index) const -> size_t {
+    ++index;
+    while (index < tokens_.size() && tokens_[index].kind != TK::EndOfFile) {
+      if (hasLeadingNewline(tokens_[index])) {
+        break;
+      }
+      ++index;
+    }
+    return index;
+  }
+
   [[nodiscard]] auto looksLikeInstantiation() const -> bool {
     if (!at(TK::Identifier)) {
       return false;
@@ -205,6 +287,160 @@ class SVParser {
     return at(TK::Identifier, offset) && at(TK::OpenParenthesis, offset + 1);
   }
 
+  [[nodiscard]] auto snapshotState() const -> ParserState {
+    return {
+        .pos = pos_,
+        .line = line_,
+        .indent_level = indent_level_,
+        .block_stack = block_stack_,
+    };
+  }
+
+  auto restoreState(const ParserState& state) -> void {
+    pos_ = state.pos;
+    line_ = state.line;
+    indent_level_ = state.indent_level;
+    block_stack_ = state.block_stack;
+  }
+
+  [[nodiscard]] auto structuralStateCompatible(
+      const ParserState& lhs, const ParserState& rhs) const -> bool {
+    return lhs.indent_level == rhs.indent_level &&
+           lhs.block_stack == rhs.block_stack;
+  }
+
+  [[nodiscard]] auto joinStates(const std::vector<ParserState>& states) const
+      -> std::optional<ParserState> {
+    if (states.empty()) {
+      return std::nullopt;
+    }
+
+    ParserState joined = states.front();
+    joined.pos = pos_;
+    joined.line = Line{};
+    for (const auto& state : states) {
+      if (!structuralStateCompatible(joined, state)) {
+        return std::nullopt;
+      }
+    }
+    return joined;
+  }
+
+  [[nodiscard]] auto parseBranch(const ParserState& state) const -> BranchResult {
+    SVParser branch(tokens_, style_.get());
+    branch.restoreState(state);
+    branch.lines_.clear();
+    branch.warnings_.clear();
+    branch.stop_at_conditional_boundary_ = true;
+    branch.parseLevel(TK::EndOfFile);
+    return {
+        .state = branch.snapshotState(),
+        .lines = std::move(branch.lines_),
+        .warnings = std::move(branch.warnings_),
+    };
+  }
+
+  [[nodiscard]] auto shouldParseConditionalRegion() const -> bool {
+    if (!isConditionalStartDirective(peek())) {
+      return false;
+    }
+
+    ParserState branch_entry = snapshotState();
+    branch_entry.pos = afterDirectiveLine(pos_);
+    branch_entry.line = Line{};
+
+    std::vector<ParserState> branch_states;
+    bool saw_alternative = false;
+    bool saw_structural_change = false;
+
+    while (branch_entry.pos < tokens_.size()) {
+      ParserState branch_start = branch_entry;
+      branch_start.line = Line{};
+
+      BranchResult branch = parseBranch(branch_start);
+      if (branch.state.pos >= tokens_.size() ||
+          tokens_[branch.state.pos].kind == TK::EndOfFile) {
+        return false;
+      }
+
+      if (!isConditionalBoundaryDirective(tokens_[branch.state.pos])) {
+        return false;
+      }
+
+      saw_structural_change =
+          saw_structural_change ||
+          !structuralStateCompatible(branch_entry, branch.state);
+      branch_states.push_back(branch.state);
+
+      if (isConditionalAlternativeDirective(tokens_[branch.state.pos])) {
+        saw_alternative = true;
+        branch_entry.pos = afterDirectiveLine(branch.state.pos);
+        branch_entry.line = Line{};
+        continue;
+      }
+
+      if (isConditionalEndDirective(tokens_[branch.state.pos])) {
+        if (!saw_alternative) {
+          ParserState empty_branch = branch_entry;
+          empty_branch.pos = branch.state.pos;
+          empty_branch.line = Line{};
+          branch_states.push_back(empty_branch);
+        }
+        return saw_structural_change && joinStates(branch_states).has_value();
+      }
+
+      return false;
+    }
+
+    return false;
+  }
+
+  auto appendBranchResult(BranchResult& branch) -> void {
+    lines_.insert(lines_.end(), std::make_move_iterator(branch.lines.begin()),
+                  std::make_move_iterator(branch.lines.end()));
+    warnings_.insert(warnings_.end(),
+                     std::make_move_iterator(branch.warnings.begin()),
+                     std::make_move_iterator(branch.warnings.end()));
+  }
+
+  [[nodiscard]] auto matchingOpenFrame(TK kind) const -> bool {
+    return !block_stack_.empty() && block_stack_.back().close_kind == kind;
+  }
+
+  auto parseOpenFrameClose() -> void {
+    if (block_stack_.empty()) {
+      parseUnsupportedConstruct();
+      return;
+    }
+
+    const BlockFrame frame = block_stack_.back();
+    block_stack_.pop_back();
+    if (indent_level_ > 0) {
+      --indent_level_;
+    }
+    consumeInto(line_);
+    consumeLabel();
+    addLine();
+    indent_level_ = (indent_level_ >= frame.extra_dedent_after_close)
+                        ? indent_level_ - frame.extra_dedent_after_close
+                        : 0;
+  }
+
+  auto pushOpenFrame(TK closeKind) -> void {
+    block_stack_.push_back(BlockFrame{.close_kind = closeKind});
+  }
+
+  auto parseIndentedStatement() -> void {
+    const size_t stack_size_before = block_stack_.size();
+    ++indent_level_;
+    parseStatement();
+    if (block_stack_.size() == stack_size_before) {
+      --indent_level_;
+    } else if (!block_stack_.empty()) {
+      ++block_stack_.back().extra_dedent_after_close;
+    }
+  }
+
   // ---- grammar ----
 
   // NOLINTBEGIN(misc-no-recursion)
@@ -215,11 +451,25 @@ class SVParser {
       if (kind == stopKind || kind == TK::EndOfFile) {
         break;
       }
+      if (stop_at_conditional_boundary_ &&
+          isConditionalBoundaryDirective(peek())) {
+        break;
+      }
       parseStatement();
     }
   }
 
   auto parseStatement() -> void {
+    if (stop_at_conditional_boundary_ &&
+        isConditionalBoundaryDirective(peek())) {
+      return;
+    }
+
+    if (matchingOpenFrame(peek().kind)) {
+      parseOpenFrameClose();
+      return;
+    }
+
     // Module/interface instantiations are identifier-led, so they cannot be
     // dispatched by TokenKind in the switch below.
     if (looksLikeInstantiation()) {
@@ -293,7 +543,12 @@ class SVParser {
       // All backtick directives (`ifdef, `define, `include, ...) come through
       // the raw Lexer as TokenKind::Directive.  Each occupies its own line.
       case TK::Directive:
-        parseDirectiveLine();
+        if (isConditionalStartDirective(peek()) &&
+            (stop_at_conditional_boundary_ || shouldParseConditionalRegion())) {
+          parseConditionalRegion();
+        } else {
+          parseDirectiveLine();
+        }
         break;
 
       case TK::AssignKeyword:
@@ -357,6 +612,63 @@ class SVParser {
       consumeInto(line_);
     }
     addLine();
+  }
+
+  auto parseConditionalRegion() -> void {
+    const Token start = peek();
+    ParserState branch_entry = snapshotState();
+
+    parseDirectiveLine();
+    branch_entry = snapshotState();
+    branch_entry.line = Line{};
+
+    std::vector<ParserState> branch_states;
+    bool saw_alternative = false;
+
+    while (!at(TK::EndOfFile)) {
+      ParserState branch_start = branch_entry;
+      branch_start.pos = pos_;
+      branch_start.line = Line{};
+
+      BranchResult branch = parseBranch(branch_start);
+      branch_states.push_back(branch.state);
+      pos_ = branch.state.pos;
+      appendBranchResult(branch);
+
+      restoreState(branch_entry);
+      pos_ = branch_states.back().pos;
+      line_ = Line{};
+
+      if (isConditionalAlternativeDirective(peek())) {
+        saw_alternative = true;
+        parseDirectiveLine();
+        branch_entry.pos = pos_;
+        branch_entry.line = Line{};
+        continue;
+      }
+
+      if (isConditionalEndDirective(peek())) {
+        if (!saw_alternative) {
+          ParserState empty_branch = branch_entry;
+          empty_branch.pos = pos_;
+          empty_branch.line = Line{};
+          branch_states.push_back(empty_branch);
+        }
+
+        parseDirectiveLine();
+        auto joined = joinStates(branch_states);
+        if (!joined.has_value()) {
+          warnIncompatibleConditional(start);
+          joined = branch_states.front();
+        }
+        joined->pos = pos_;
+        joined->line = Line{};
+        restoreState(*joined);
+        return;
+      }
+
+      return;
+    }
   }
 
   // Port list `(port, port, ...)` — each comma-separated port becomes a child
@@ -458,13 +770,12 @@ class SVParser {
     }
     addLine();
 
+    pushOpenFrame(closeKw);
     ++indent_level_;
     parseLevel(closeKw);
-    --indent_level_;
-
-    consumeInto(line_);  // endmodule / endinterface / ...
-    consumeLabel();
-    addLine();
+    if (at(closeKw)) {
+      parseOpenFrameClose();
+    }
   }
 
   // class / function / task ... endclass / endfunction / endtask
@@ -482,13 +793,12 @@ class SVParser {
     }
     addLine();
 
+    pushOpenFrame(closeKw);
     ++indent_level_;
     parseLevel(closeKw);
-    --indent_level_;
-
-    consumeInto(line_);  // end keyword
-    consumeLabel();
-    addLine();
+    if (at(closeKw)) {
+      parseOpenFrameClose();
+    }
   }
 
   // generate ... endgenerate
@@ -499,13 +809,12 @@ class SVParser {
     }
     addLine();
 
+    pushOpenFrame(closeKw);
     ++indent_level_;
     parseLevel(closeKw);
-    --indent_level_;
-
-    consumeInto(line_);
-    consumeLabel();
-    addLine();
+    if (at(closeKw)) {
+      parseOpenFrameClose();
+    }
   }
 
   // begin [:label] ... end [:label]
@@ -514,13 +823,12 @@ class SVParser {
     consumeLabel();
     addLine();
 
+    pushOpenFrame(TK::EndKeyword);
     ++indent_level_;
     parseLevel(TK::EndKeyword);
-    --indent_level_;
-
-    consumeInto(line_);  // end
-    consumeLabel();
-    addLine();
+    if (at(TK::EndKeyword)) {
+      parseOpenFrameClose();
+    }
   }
 
   // fork ... join / join_any / join_none
@@ -555,9 +863,7 @@ class SVParser {
     }
     addLine();
 
-    ++indent_level_;
-    parseStatement();
-    --indent_level_;
+    parseIndentedStatement();
   }
 
   // if (...) stmt [else [if (...)] stmt]
@@ -566,9 +872,7 @@ class SVParser {
     consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
     addLine();
 
-    ++indent_level_;
-    parseStatement();
-    --indent_level_;
+    parseIndentedStatement();
 
     if (at(TK::ElseKeyword)) {
       consumeInto(line_);  // else
@@ -579,9 +883,7 @@ class SVParser {
         return;
       }
       addLine();
-      ++indent_level_;
-      parseStatement();
-      --indent_level_;
+      parseIndentedStatement();
     }
   }
 
@@ -591,18 +893,28 @@ class SVParser {
     consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
     addLine();
 
+    pushOpenFrame(TK::EndCaseKeyword);
     ++indent_level_;
     while (!at(TK::EndCaseKeyword) && !at(TK::EndOfFile)) {
+      if (stop_at_conditional_boundary_ &&
+          isConditionalBoundaryDirective(peek())) {
+        return;
+      }
       if (at(TK::Directive)) {
-        parseDirectiveLine();
+        if (isConditionalStartDirective(peek()) &&
+            (stop_at_conditional_boundary_ || shouldParseConditionalRegion())) {
+          parseConditionalRegion();
+        } else {
+          parseDirectiveLine();
+        }
       } else {
         parseCaseItem();
       }
     }
-    --indent_level_;
 
-    consumeInto(line_);  // endcase
-    addLine();
+    if (at(TK::EndCaseKeyword)) {
+      parseOpenFrameClose();
+    }
   }
 
   auto parseCaseItem() -> void {
@@ -622,9 +934,7 @@ class SVParser {
     }
     addLine();
 
-    ++indent_level_;
-    parseStatement();
-    --indent_level_;
+    parseIndentedStatement();
   }
 
   // for / foreach / while / repeat / forever
@@ -635,9 +945,7 @@ class SVParser {
     }
     addLine();
 
-    ++indent_level_;
-    parseStatement();
-    --indent_level_;
+    parseIndentedStatement();
   }
 
   // NOLINTEND(misc-no-recursion)
