@@ -115,6 +115,13 @@ class TreeUnwrapperTest : public ::testing::Test {
     return format::TreeUnwrapper(tokens_, style).unwrap();
   }
 
+  auto parseWithDiagnostics(std::string_view src) -> format::UnwrapResult {
+    tokens_ = ctx_.lex_string(src);
+    const format::FormatStyle style = {.column_limit = kColumnLimit,
+                                       .indentation_spaces = kIndent};
+    return format::TreeUnwrapper(tokens_, style).unwrapWithDiagnostics();
+  }
+
  private:
   LexContext ctx_;
   std::vector<slang::parsing::Token> tokens_;
@@ -231,6 +238,55 @@ TEST_F(TreeUnwrapperTest, BodyDeclarationsWithKeywordsUseTabularAlignment) {
             N(TK::OutputKeyword, "output"),
             N(TK::LogicKeyword, "logic"),
             N(TK::Identifier, "y"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(0, PP::kAlwaysExpand,
+        {
+            N(TK::EndModuleKeyword, "endmodule"),
+        }),
+  };
+
+  EXPECT_EQ(snap(lines), expected);
+}
+
+TEST_F(TreeUnwrapperTest, ParameterizedInstantiationIsParsedBeforeFallback) {
+  auto lines = parse(
+      "module m (); child #(8) u_child (clk, rst_n); endmodule");
+
+  const std::vector<LineSnap> expected = {
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::ModuleKeyword, "module"),
+            N(TK::Identifier, "m"),
+            N(TK::OpenParenthesis, "("),
+        }),
+      L(0, PP::kFitOnLineElseExpand,
+        {
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Semicolon, ";"),
+        }),
+      L(kIndent, PP::kFitOnLineElseExpand,
+        {
+            N(TK::Identifier, "child"),
+            N(TK::Hash, "#"),
+            N(TK::OpenParenthesis, "("),
+            N(TK::IntegerLiteral, "8"),
+            N(TK::CloseParenthesis, ")"),
+            N(TK::Identifier, "u_child"),
+            N(TK::OpenParenthesis, "("),
+        }),
+      L(kIndent, PP::kTabularAlignment,
+        {
+            N(TK::Identifier, "clk"),
+            N(TK::Comma, ","),
+        }),
+      L(kIndent, PP::kTabularAlignment,
+        {
+            N(TK::Identifier, "rst_n"),
+        }),
+      L(kIndent, PP::kFitOnLineElseExpand,
+        {
+            N(TK::CloseParenthesis, ")"),
             N(TK::Semicolon, ";"),
         }),
       L(0, PP::kAlwaysExpand,
@@ -778,6 +834,18 @@ TEST_F(TreeUnwrapperTest, IfIsOwnLine) {
   };
 
   EXPECT_EQ(snap(lines), expected);
+}
+
+TEST_F(TreeUnwrapperTest, UnsupportedCovergroupWarnsWithoutSpecialRecovery) {
+  auto result = parseWithDiagnostics(
+      "module m; covergroup cg; endgroup endmodule");
+
+  ASSERT_EQ(result.warnings.size(), 2U);
+  EXPECT_EQ(result.warnings.at(0).code, "unsupported-construct");
+  EXPECT_EQ(result.warnings.at(1).code, "unsupported-construct");
+  EXPECT_NE(result.warnings.at(0).message.find("covergroup"),
+            std::string::npos);
+  EXPECT_NE(result.warnings.at(1).message.find("endgroup"), std::string::npos);
 }
 
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization,cert-err58-cpp,cppcoreguidelines-owning-memory,modernize-use-trailing-return-type)

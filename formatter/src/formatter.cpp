@@ -17,14 +17,15 @@
 namespace format {
 auto format(gsl::span<const slang::parsing::Token> tokens, FormatStyle style)
     -> FormatResult {
-  auto unwrappedLines = TreeUnwrapper(tokens, style).unwrap();
-  auto annotatedLines = TokenAnnotator(style).annotate(unwrappedLines);
+  auto unwrapResult = TreeUnwrapper(tokens, style).unwrapWithDiagnostics();
+  auto annotatedLines = TokenAnnotator(style).annotate(unwrapResult.lines);
   PolicyAssigner(style).assign(annotatedLines);
   LineJoiner(style).join(annotatedLines);
   align(annotatedLines, style);
   applyLineWraps(annotatedLines, style);
   std::ostringstream oss;
   Printer(style).print(annotatedLines, oss);
-  return FormatResult{.formatted_text = oss.str()};
+  return FormatResult{.formatted_text = oss.str(),
+                      .warnings = std::move(unwrapResult.warnings)};
 }
 }  // namespace format

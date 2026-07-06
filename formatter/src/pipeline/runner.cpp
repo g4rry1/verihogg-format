@@ -3,8 +3,10 @@
 #include <filesystem>
 #include <fstream>
 #include <gsl/span>
+#include <string_view>
 
 #include "data/format_style.h"
+#include "data/format_warning.h"
 #include "data/lex_context.h"
 #include "formatter.h"
 
@@ -19,6 +21,15 @@ auto writeFile(const std::filesystem::path& path, std::string_view content)
     throw std::runtime_error("Cannot open: " + std::string{path});
   }
   f << content;
+}
+
+auto printWarning(std::ostream& os, std::string_view path,
+                  const FormatWarning& warning) -> void {
+  os << "Warning";
+  if (!path.empty()) {
+    os << " in " << path;
+  }
+  os << ": " << warning.message << " [" << warning.code << "]\n";
 }
 
 }  // namespace
@@ -36,6 +47,10 @@ auto runFormatter(gsl::span<const std::filesystem::path> files,
     }
 
     auto result = format::format(tokens, style);
+    for (const auto& warning : result.warnings) {
+      printWarning(*streams.err, path.string(), warning);
+      ++warnings;
+    }
 
     if (run.inplace) {
       writeFile(path, result.formatted_text);

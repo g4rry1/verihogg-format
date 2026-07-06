@@ -1,14 +1,17 @@
 #include "pipeline/tree_unwrapper.h"
 
+#include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Token.h>
 #include <slang/parsing/TokenKind.h>
 
 #include <functional>
 #include <gsl/span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "data/format_warning.h"
 #include "data/unwrapped_line.h"
 
 namespace format {
@@ -44,9 +47,12 @@ class SVParser {
   SVParser(gsl::span<const Token> tokens, const FormatStyle& style)
       : tokens_(tokens), style_(style) {}
 
-  auto parse() -> std::vector<Line> {
+  auto parse() -> UnwrapResult {
     parseLevel(TK::EndOfFile);
-    return std::move(lines_);
+    return {
+        .lines = std::move(lines_),
+        .warnings = std::move(warnings_),
+    };
   }
 
  private:
@@ -55,6 +61,7 @@ class SVParser {
   size_t pos_ = 0;
   Line line_;
   std::vector<Line> lines_;
+  std::vector<FormatWarning> warnings_;
   size_t indent_level_ = 0;
 
   // ---- token access ----
@@ -113,6 +120,29 @@ class SVParser {
     addLine();
   }
 
+  auto warnUnsupported(Token tok, std::string_view construct) -> void {
+    warnings_.push_back({
+        .location = tok.location(),
+        .code = "unsupported-construct",
+        .message = "unsupported SystemVerilog construct '" +
+                   std::string(construct) + "'; formatted in fallback mode",
+    });
+  }
+
+  [[nodiscard]] static auto unsupportedConstructName(Token tok)
+      -> std::string_view {
+    if (!tok.rawText().empty()) {
+      return tok.rawText();
+    }
+    return "unknown";
+  }
+
+  auto parseUnsupportedConstruct() -> void {
+    const Token start = peek();
+    warnUnsupported(start, unsupportedConstructName(start));
+    consumeUntilSemi();
+  }
+
   // The next token starts on a new source line if its leading trivia has a
   // newline.
   [[nodiscard]] static auto hasLeadingNewline(Token tok) -> bool {
@@ -135,6 +165,46 @@ class SVParser {
     }
   }
 
+  [[nodiscard]] auto skipBalancedLookahead(size_t& offset, TK open,
+                                           TK close) const -> bool {
+    if (!at(open, offset)) {
+      return false;
+    }
+
+    int depth = 0;
+    while (pos_ + offset < tokens_.size() && !at(TK::EndOfFile, offset)) {
+      if (at(open, offset)) {
+        ++depth;
+      } else if (at(close, offset)) {
+        --depth;
+        ++offset;
+        if (depth == 0) {
+          return true;
+        }
+        continue;
+      }
+      ++offset;
+    }
+    return false;
+  }
+
+  [[nodiscard]] auto looksLikeInstantiation() const -> bool {
+    if (!at(TK::Identifier)) {
+      return false;
+    }
+
+    size_t offset = 1;
+    if (at(TK::Hash, offset)) {
+      ++offset;
+      if (!skipBalancedLookahead(offset, TK::OpenParenthesis,
+                                 TK::CloseParenthesis)) {
+        return false;
+      }
+    }
+
+    return at(TK::Identifier, offset) && at(TK::OpenParenthesis, offset + 1);
+  }
+
   // ---- grammar ----
 
   // NOLINTBEGIN(misc-no-recursion)
@@ -150,6 +220,13 @@ class SVParser {
   }
 
   auto parseStatement() -> void {
+    // Module/interface instantiations are identifier-led, so they cannot be
+    // dispatched by TokenKind in the switch below.
+    if (looksLikeInstantiation()) {
+      parseInstantiation();
+      return;
+    }
+
     switch (peek().kind) {
       case TK::ModuleKeyword:
       case TK::MacromoduleKeyword:
@@ -219,11 +296,27 @@ class SVParser {
         parseDirectiveLine();
         break;
 
+      case TK::AssignKeyword:
+      case TK::BitKeyword:
+      case TK::BreakKeyword:
+      case TK::ByteKeyword:
+      case TK::GenVarKeyword:
+      case TK::IntKeyword:
+      case TK::IntegerKeyword:
+      case TK::LocalParamKeyword:
+      case TK::LogicKeyword:
+      case TK::ParameterKeyword:
+      case TK::ReturnKeyword:
+      case TK::StringKeyword:
+      case TK::TimeKeyword:
+      case TK::TypedefKeyword:
+      case TK::VoidKeyword:
+        consumeUntilSemi();
+        break;
+
       default:
-        if (at(TK::Identifier) &&
-            ((at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2)) ||
-             at(TK::Hash, 1))) {
-          parseInstantiation();
+        if (slang::parsing::LexerFacts::isKeyword(peek().kind)) {
+          parseUnsupportedConstruct();
         } else {
           consumeUntilSemi();
         }
@@ -554,6 +647,11 @@ class SVParser {
 
 [[nodiscard]] auto TreeUnwrapper::unwrap() const
     -> std::vector<UnwrappedLine<slang::parsing::Token>> {
+  return unwrapWithDiagnostics().lines;
+}
+
+[[nodiscard]] auto TreeUnwrapper::unwrapWithDiagnostics() const
+    -> UnwrapResult {
   SVParser parser(tokens, style.get());
   return parser.parse();
 }
