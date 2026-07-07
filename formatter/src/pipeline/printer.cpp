@@ -6,6 +6,7 @@
 #include <ostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace format {
@@ -33,6 +34,8 @@ class PrintState {
   }
 
   auto appendSpaces(size_t count) -> void { current_.append(count, ' '); }
+
+  auto appendRaw(std::string_view text) -> void { current_.append(text); }
 
   auto appendToken(std::string_view text) -> void {
     current_.append(text);
@@ -63,16 +66,17 @@ class PrintState {
     lines_.push_back(CompletedLine{});
   }
 
-  auto attachLineComment(std::string_view text, size_t indent) -> void {
+  auto attachLineComment(std::string_view text, size_t indent,
+                         std::string_view spaces_before) -> void {
     if (!current_.empty()) {
-      appendOneSpaceIfNeeded();
+      appendSpacesBeforeComment(spaces_before);
       appendComment(text);
       finishLine();
       return;
     }
 
     if (!lines_.empty() && lines_.back().has_code) {
-      appendOneSpaceIfNeeded(lines_.back().text);
+      appendSpacesBeforeComment(lines_.back().text, spaces_before);
       lines_.back().text.append(text);
       return;
     }
@@ -116,12 +120,6 @@ class PrintState {
     }
   }
 
-  auto appendInlineComment(std::string_view text) -> void {
-    appendOneSpaceIfNeeded();
-    appendComment(text);
-    appendSpaces(1);
-  }
-
   [[nodiscard]] auto currentLineEmpty() const -> bool {
     return current_.empty();
   }
@@ -148,12 +146,14 @@ class PrintState {
     }
   }
 
-  auto appendOneSpaceIfNeeded() -> void { appendOneSpaceIfNeeded(current_); }
+  auto appendSpacesBeforeComment(std::string_view spaces_before) -> void {
+    appendSpacesBeforeComment(current_, spaces_before);
+  }
 
-  static auto appendOneSpaceIfNeeded(std::string& text) -> void {
-    if (!text.empty() && text.back() != ' ' && text.back() != '\t') {
-      text.push_back(' ');
-    }
+  static auto appendSpacesBeforeComment(std::string& text,
+                                        std::string_view spaces_before)
+      -> void {
+    text.append(spaces_before);
   }
 
   std::string_view line_ending_;
@@ -163,7 +163,13 @@ class PrintState {
 };
 
 struct TriviaEffect {
-  std::vector<std::string_view> inline_comments;
+  struct InlineComment {
+    std::string spaces_before;
+    std::string_view text;
+  };
+
+  std::vector<InlineComment> inline_comments;
+  std::string spaces_after_inline_comments;
 };
 
 [[nodiscard]] auto resolveLineEnding(const FormatStyle& style)
@@ -210,15 +216,20 @@ struct Indent {
   TriviaEffect effect;
   bool seen_newline = false;
   size_t newline_count = 0;
+  std::string pending_whitespace;
 
   for (const Trivia& trivia : token.trivia()) {
     switch (trivia.kind) {
       case TriviaKind::Whitespace:
+        if (!seen_newline) {
+          pending_whitespace.append(triviaText(trivia));
+        }
         continue;
 
       case TriviaKind::EndOfLine:
         seen_newline = true;
         ++newline_count;
+        pending_whitespace.clear();
         continue;
 
       case TriviaKind::LineComment: {
@@ -230,7 +241,7 @@ struct Indent {
           if (indent.trailing_comment_spaces > 0) {
             state.appendCommentToLastLine(text, indent.trailing_comment_spaces);
           } else {
-            state.attachLineComment(text, indent.indent);
+            state.attachLineComment(text, indent.indent, pending_whitespace);
           }
         } else {
           preserveBlankLines(newline_count, state);
@@ -238,6 +249,7 @@ struct Indent {
         }
         seen_newline = true;
         newline_count = 0;
+        pending_whitespace.clear();
         continue;
       }
 
@@ -255,15 +267,21 @@ struct Indent {
     }
 
     if (!seen_newline) {
-      effect.inline_comments.push_back(text);
+      effect.inline_comments.push_back(TriviaEffect::InlineComment{
+          .spaces_before = std::move(pending_whitespace),
+          .text = text,
+      });
+      pending_whitespace.clear();
     } else {
       preserveBlankLines(newline_count, state);
       state.emitDetachedComment(text, indent.indent);
       seen_newline = true;
       newline_count = 0;
+      pending_whitespace.clear();
     }
   }
 
+  effect.spaces_after_inline_comments = std::move(pending_whitespace);
   return effect;
 }
 
@@ -298,8 +316,12 @@ auto printLine(const UnwrappedLine<FormatToken>& line, PrintState& state)
       state.appendSpaces(decision.spaces_before);
     }
 
-    for (const std::string_view comment : trivia.inline_comments) {
-      state.appendInlineComment(comment);
+    for (const auto& comment : trivia.inline_comments) {
+      state.appendRaw(comment.spaces_before);
+      state.appendComment(comment.text);
+    }
+    if (!trivia.inline_comments.empty()) {
+      state.appendRaw(trivia.spaces_after_inline_comments);
     }
 
     state.appendToken(ft.token.rawText());
