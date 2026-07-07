@@ -424,7 +424,7 @@ TEST_F(TreeUnwrapperTest, MprfRamAttributeDeclarationsStayFlat) {
             N(TK::CloseParenthesis, ")"),
             N(TK::Semicolon, ";"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`ifdef"),
             N(TK::Identifier, "SCR1_TRGT_FPGA_INTEL_MAX10"),
@@ -456,7 +456,7 @@ TEST_F(TreeUnwrapperTest, MprfRamAttributeDeclarationsStayFlat) {
             N(TK::CloseBracket, "]"),
             N(TK::Semicolon, ";"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`else"),
         }),
@@ -473,7 +473,7 @@ TEST_F(TreeUnwrapperTest, MprfRamAttributeDeclarationsStayFlat) {
             N(TK::Identifier, "mprf_int"),
             N(TK::Semicolon, ";"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`endif"),
         }),
@@ -706,7 +706,7 @@ TEST_F(TreeUnwrapperTest, ConditionalAlwaysFFBranchesShareBeginEndBody) {
             N(TK::CloseParenthesis, ")"),
             N(TK::Semicolon, ";"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`ifndef"),
             N(TK::Identifier, "USE_ALT_CLK"),
@@ -724,7 +724,7 @@ TEST_F(TreeUnwrapperTest, ConditionalAlwaysFFBranchesShareBeginEndBody) {
         {
             N(TK::BeginKeyword, "begin"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`else"),
         }),
@@ -741,7 +741,7 @@ TEST_F(TreeUnwrapperTest, ConditionalAlwaysFFBranchesShareBeginEndBody) {
         {
             N(TK::BeginKeyword, "begin"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`endif"),
         }),
@@ -807,7 +807,7 @@ TEST_F(TreeUnwrapperTest, MprfResetAlwaysFFWithAggregateLiteral) {
             N(TK::CloseParenthesis, ")"),
             N(TK::Semicolon, ";"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`ifdef"),
             N(TK::Identifier, "SCR1_MPRF_RST_EN"),
@@ -885,7 +885,7 @@ TEST_F(TreeUnwrapperTest, MprfResetAlwaysFFWithAggregateLiteral) {
         {
             N(TK::EndKeyword, "end"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`endif"),
         }),
@@ -922,7 +922,7 @@ TEST_F(TreeUnwrapperTest, MprfSimulationAssertionStaysSingleStatementLine) {
             N(TK::CloseParenthesis, ")"),
             N(TK::Semicolon, ";"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`ifdef"),
             N(TK::Identifier, "SCR1_TRGT_SIMULATION"),
@@ -973,7 +973,7 @@ TEST_F(TreeUnwrapperTest, MprfSimulationAssertionStaysSingleStatementLine) {
             N(TK::CloseParenthesis, ")"),
             N(TK::Semicolon, ";"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`endif"),
         }),
@@ -1008,7 +1008,7 @@ TEST_F(TreeUnwrapperTest, LabeledAssertionElseBeginParsesActionBlock) {
             N(TK::CloseParenthesis, ")"),
             N(TK::Semicolon, ";"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`ifdef"),
             N(TK::Identifier, "SIM"),
@@ -1042,7 +1042,7 @@ TEST_F(TreeUnwrapperTest, LabeledAssertionElseBeginParsesActionBlock) {
         {
             N(TK::EndKeyword, "end"),
         }),
-      L(kIndent, PP::kAlwaysExpand,
+      L(0, PP::kAlwaysExpand,
         {
             N(TK::Directive, "`endif"),
         }),

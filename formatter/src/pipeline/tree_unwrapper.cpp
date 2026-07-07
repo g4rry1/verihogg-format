@@ -14,6 +14,7 @@
 
 #include "data/format_warning.h"
 #include "data/unwrapped_line.h"
+#include "pipeline/compiler_directives.h"
 
 namespace format {
 
@@ -24,23 +25,8 @@ using TK = slang::parsing::TokenKind;
 using TriviaKind = slang::parsing::TriviaKind;
 using Line = UnwrappedLine<Token>;
 
-[[nodiscard]] auto isCompilerDirective(Token tok) -> bool {
-  if (tok.kind != TK::Directive) {
-    return false;
-  }
-
-  const std::string_view text = tok.rawText();
-  return text == "`begin_keywords" || text == "`celldefine" ||
-         text == "`default_decay_time" || text == "`default_nettype" ||
-         text == "`default_trireg_strength" || text == "`define" ||
-         text == "`else" || text == "`elsif" || text == "`end_keywords" ||
-         text == "`endcelldefine" || text == "`endif" ||
-         text == "`endprotect" || text == "`endprotected" || text == "`ifdef" ||
-         text == "`ifndef" || text == "`include" || text == "`line" ||
-         text == "`nounconnected_drive" || text == "`pragma" ||
-         text == "`protect" || text == "`protected" || text == "`resetall" ||
-         text == "`timescale" || text == "`unconnected_drive" ||
-         text == "`undef" || text == "`undefineall";
+[[nodiscard]] auto startsWithCompilerDirective(const Line& line) -> bool {
+  return !line.tokens.empty() && isCompilerDirective(line.tokens.front());
 }
 
 [[nodiscard]] auto isConditionalStartDirective(Token tok) -> bool {
@@ -135,7 +121,10 @@ class SVParser {
     if (line_.tokens.empty()) {
       return;
     }
-    line_.indentation_spaces = indent_level_ * style_.get().indentation_spaces;
+    line_.indentation_spaces =
+        startsWithCompilerDirective(line_)
+            ? 0
+            : indent_level_ * style_.get().indentation_spaces;
     lines_.push_back(std::move(line_));
     line_ = Line{};
   }
@@ -334,8 +323,9 @@ class SVParser {
     block_stack_ = state.block_stack;
   }
 
-  [[nodiscard]] auto structuralStateCompatible(
-      const ParserState& lhs, const ParserState& rhs) const -> bool {
+  [[nodiscard]] auto structuralStateCompatible(const ParserState& lhs,
+                                               const ParserState& rhs) const
+      -> bool {
     return lhs.indent_level == rhs.indent_level &&
            lhs.block_stack == rhs.block_stack;
   }

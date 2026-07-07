@@ -9,6 +9,7 @@
 #include "data/format_style.h"
 #include "data/format_token.h"
 #include "data/unwrapped_line.h"
+#include "pipeline/compiler_directives.h"
 
 namespace format {
 
@@ -38,8 +39,16 @@ using TriviaKind = slang::parsing::TriviaKind;
          line.partition_policy == PartitionPolicy::kTabularAlignment;
 }
 
+[[nodiscard]] auto startsWithCompilerDirective(
+    const UnwrappedLine<FormatToken>& line) -> bool {
+  return !line.tokens.empty() && isCompilerDirective(line.tokens.front().token);
+}
+
 [[nodiscard]] auto isJoinable(const UnwrappedLine<FormatToken>& line) -> bool {
   if (line.tokens.empty()) {
+    return false;
+  }
+  if (startsWithCompilerDirective(line)) {
     return false;
   }
   if (line.partition_policy == PartitionPolicy::kAlreadyFormatted) {

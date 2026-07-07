@@ -81,6 +81,22 @@ TEST_F(PrinterTest, PreservesWhitespaceBeforeTrailingLineComments) {
             "endmodule\n");
 }
 
+TEST_F(PrinterTest, PrintsCompilerDirectivesAtLeftEdge) {
+  EXPECT_EQ(formatText("module m ();\n"
+                       "`ifdef FOO\n"
+                       "assign y = `WIDTH'd0;\n"
+                       "`include \"defs.svh\"\n"
+                       "`endif\n"
+                       "endmodule"),
+            "module m (\n"
+            ");\n"
+            "`ifdef FOO\n"
+            "  assign y = `WIDTH'd0;\n"
+            "`include \"defs.svh\"\n"
+            "`endif\n"
+            "endmodule\n");
+}
+
 TEST_F(PrinterTest, NormalizesNumericLiteralTextBeforeFormatting) {
   EXPECT_EQ(formatText("module m (); assign y = 8'HFF; assign z = 'X; "
                        "assign r = 1E-3; endmodule"),
