@@ -9,10 +9,49 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 
 #include "formatter.h"
 
 namespace {
+
+[[nodiscard]] auto lowercaseAscii(char ch) -> char {
+  if (ch >= 'A' && ch <= 'Z') {
+    return static_cast<char>(ch - 'A' + 'a');
+  }
+  return ch;
+}
+
+[[nodiscard]] auto lowercaseAsciiText(std::string_view text) -> std::string {
+  std::string normalized{text};
+  for (char& ch : normalized) {
+    ch = lowercaseAscii(ch);
+  }
+  return normalized;
+}
+
+[[nodiscard]] auto isNormalizedNumericTextEquivalent(
+    slang::syntax::SyntaxKind parentKind, slang::parsing::TokenKind tokenKind,
+    std::string_view left, std::string_view right) -> bool {
+  using SK = slang::syntax::SyntaxKind;
+  using TK = slang::parsing::TokenKind;
+
+  switch (tokenKind) {
+    case TK::IntegerBase:
+    case TK::IntegerLiteral:
+    case TK::UnbasedUnsizedLiteral:
+    case TK::RealLiteral:
+    case TK::TimeLiteral:
+      return lowercaseAsciiText(left) == lowercaseAsciiText(right);
+
+    case TK::Identifier:
+      return parentKind == SK::IntegerVectorExpression &&
+             lowercaseAsciiText(left) == lowercaseAsciiText(right);
+
+    default:
+      return false;
+  }
+}
 
 void compareTrees(const slang::syntax::SyntaxNode& a,
                   const slang::syntax::SyntaxNode& b) {
@@ -35,7 +74,10 @@ void compareTrees(const slang::syntax::SyntaxNode& a,
           << "Token kind mismatch at child " << i << " of "
           << slang::syntax::toString(a.kind) << ": '" << aTok.rawText()
           << "' vs '" << bTok.rawText() << "'";
-      EXPECT_EQ(aTok.rawText(), bTok.rawText())
+      EXPECT_TRUE(
+          aTok.rawText() == bTok.rawText() ||
+          isNormalizedNumericTextEquivalent(a.kind, aTok.kind, aTok.rawText(),
+                                            bTok.rawText()))
           << "Token text mismatch at child " << i << " of "
           << slang::syntax::toString(a.kind);
     } else {

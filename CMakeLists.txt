@@ -13,7 +13,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-file(GLOB_RECURSE SRC formatter/src/**.cpp)
+file(GLOB_RECURSE SRC CONFIGURE_DEPENDS formatter/src/**.cpp)
 
 find_package(slang REQUIRED)
 find_package(Microsoft.GSL CONFIG REQUIRED)
@@ -59,7 +59,7 @@ if(GTest_FOUND)
 
   message(STATUS "Using SCR1 from: ${SCR1_PATH}")
 
-  file(GLOB_RECURSE LIB_SRC formatter/src/**.cpp)
+  file(GLOB_RECURSE LIB_SRC CONFIGURE_DEPENDS formatter/src/**.cpp)
   list(FILTER LIB_SRC EXCLUDE REGEX ".*/main\\.cpp$")
 
   add_library(verihogg-format-lib STATIC ${LIB_SRC})
@@ -67,7 +67,7 @@ if(GTest_FOUND)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/formatter/include>)
   target_link_libraries(verihogg-format-lib PUBLIC slang::slang)
 
-  file(GLOB_RECURSE TEST_SRC formatter/tests/*.cpp)
+  file(GLOB_RECURSE TEST_SRC CONFIGURE_DEPENDS formatter/tests/*.cpp)
 
   if(TEST_SRC)
     add_executable(verihogg-tests ${TEST_SRC})
