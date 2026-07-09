@@ -16,6 +16,7 @@ enum class PartitionPolicy : uint8_t {
   kFitOnLineElseExpand,
   kTabularAlignment,
   kAlreadyFormatted,
+  kAssignmentAlignment,
 };
 
 template <typename Token>

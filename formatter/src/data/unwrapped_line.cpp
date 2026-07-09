@@ -23,6 +23,8 @@ using PP = PartitionPolicy;
       return "TabularAlignment";
     case PP::kAlreadyFormatted:
       return "AlreadyFormatted";
+    case PP::kAssignmentAlignment:
+      return "AssignmentAlignment";
   }
   return "Unknown";
 }
