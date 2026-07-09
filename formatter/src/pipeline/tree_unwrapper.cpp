@@ -39,20 +39,6 @@ using Line = UnwrappedLine<Token>;
          text == "`undef" || text == "`undefineall";
 }
 
-[[nodiscard]] auto requiresTabularAlignment(Token tok) -> bool {
-  return tok.kind == TK::InputKeyword || tok.kind == TK::OutputKeyword ||
-         tok.kind == TK::LogicKeyword;
-}
-
-[[nodiscard]] auto requiresTabularAlignment(const Line& line) -> bool {
-  for (const auto& token : line.tokens) {
-    if (requiresTabularAlignment(token)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 class SVParser {
  public:
   SVParser(gsl::span<const Token> tokens, const FormatStyle& style)
@@ -90,15 +76,11 @@ class SVParser {
 
   // ---- line management ----
 
-  auto addLine(PartitionPolicy policy = PartitionPolicy::kAlwaysExpand)
-      -> void {
+  auto addLine() -> void {
     if (line_.tokens.empty()) {
       return;
     }
     line_.indentation_spaces = indent_level_ * style_.get().indentation_spaces;
-    line_.partition_policy = requiresTabularAlignment(line_)
-                                 ? PartitionPolicy::kTabularAlignment
-                                 : policy;
     lines_.push_back(std::move(line_));
     line_ = Line{};
   }
@@ -269,7 +251,7 @@ class SVParser {
     if (at(TK::Semicolon)) {
       consumeInto(line_);
     }
-    addLine(PartitionPolicy::kFitOnLineElseExpand);
+    addLine();
   }
 
   // `ifdef / `define / `include / ... — consume to end of source line
@@ -292,7 +274,7 @@ class SVParser {
     }
     line.tokens.push_back(consume());
 
-    addLine(PartitionPolicy::kFitOnLineElseExpand);
+    addLine();
     int parenDepth = 0;
     int bracketDepth = 0;
     int braceDepth = 0;
@@ -308,7 +290,7 @@ class SVParser {
 
       if (atTopLevel() && isCompilerDirective(peek()) &&
           (line.tokens.empty() || hasLeadingNewline(peek()))) {
-        addLine(PartitionPolicy::kTabularAlignment);
+        addLine();
 
         consumeInto(line);
         while (pos_ < tokens_.size() && !at(TK::EndOfFile)) {
@@ -317,13 +299,13 @@ class SVParser {
           }
           consumeInto(line);
         }
-        addLine(PartitionPolicy::kAlwaysExpand);
+        addLine();
         continue;
       }
 
       if (at(TK::Comma) && atTopLevel()) {
         consumeInto(line);
-        addLine(PartitionPolicy::kTabularAlignment);
+        addLine();
         continue;
       }
 
@@ -358,7 +340,7 @@ class SVParser {
       }
       consumeInto(line);
     }
-    addLine(PartitionPolicy::kTabularAlignment);
+    addLine();
     if (at(TK::CloseParenthesis)) {
       line.tokens.push_back(consume());
     }
@@ -381,7 +363,7 @@ class SVParser {
     if (at(TK::Semicolon)) {
       consumeInto(line_);
     }
-    addLine(PartitionPolicy::kFitOnLineElseExpand);
+    addLine();
 
     ++indent_level_;
     parseLevel(closeKw);
@@ -405,7 +387,7 @@ class SVParser {
     if (at(TK::Semicolon)) {
       consumeInto(line_);
     }
-    addLine(PartitionPolicy::kFitOnLineElseExpand);
+    addLine();
 
     ++indent_level_;
     parseLevel(closeKw);
@@ -545,7 +527,7 @@ class SVParser {
         consumeInto(line_);
       }
     }
-    addLine(PartitionPolicy::kTabularAlignment);
+    addLine();
 
     ++indent_level_;
     parseStatement();
