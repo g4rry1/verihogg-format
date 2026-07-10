@@ -24,7 +24,7 @@ struct AlignmentCell {
 using AlignmentRow = std::vector<AlignmentCell>;
 
 struct AlignmentGroup {
-  PartitionPolicy policy;
+  PartitionPolicy policy = PartitionPolicy::kAlwaysExpand;
   std::vector<size_t> line_indices;
   size_t num_columns = 0;
   std::vector<AlignmentRow> table;
@@ -128,13 +128,15 @@ struct AlignmentGroup {
     -> AlignmentRow {
   AlignmentRow row;
   auto& tokens = line.tokens;
-  if (tokens.empty()) return row;
+  if (tokens.empty()) {
+    return row;
+  }
 
   size_t op_idx = tokens.size();
   int depth = 0;
 
   for (size_t i = 0; i < tokens.size(); ++i) {
-    const auto& ft = tokens[i];
+    const auto& ft = tokens.at(i);
 
     if (ft.balancing == GroupBalancing::kOpen) {
       ++depth;
@@ -144,7 +146,9 @@ struct AlignmentGroup {
       --depth;
       continue;
     }
-    if (depth > 0) continue;
+    if (depth > 0) {
+      continue;
+    }
 
     if (is_assignment_operator(ft)) {
       op_idx = i;
@@ -152,7 +156,9 @@ struct AlignmentGroup {
     }
   }
 
-  if (op_idx == tokens.size()) return row;
+  if (op_idx == tokens.size()) {
+    return row;
+  }
 
   AlignmentCell left_cell{.start_idx = 0,
                           .end_idx = op_idx,

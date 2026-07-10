@@ -9,11 +9,6 @@ namespace {
 using TK = slang::parsing::TokenKind;
 using Line = PolicyAssigner::Line;
 
-[[nodiscard]] auto isDirectiveLine(const Line& line) -> bool {
-  return !line.tokens.empty() &&
-         line.tokens.front().token.kind == TK::Directive;
-}
-
 [[nodiscard]] auto isBlockHeader(const Line& line) -> bool {
   if (line.tokens.empty()) {
     return false;
@@ -51,8 +46,12 @@ using Line = PolicyAssigner::Line;
 }
 
 [[nodiscard]] auto isDeclarationLine(const Line& line) -> bool {
-  if (line.tokens.empty()) return false;
-  if (line.tokens.back().token.kind != TK::Semicolon) return false;
+  if (line.tokens.empty()) {
+    return false;
+  }
+  if (line.tokens.back().token.kind != TK::Semicolon) {
+    return false;
+  }
   for (const auto& ft : line.tokens) {
     if (ft.nesting_level == 0 && ft.token.kind == TK::OpenParenthesis) {
       return false;
@@ -87,7 +86,9 @@ using Line = PolicyAssigner::Line;
   bool hasControlKeyword = false;
 
   for (const auto& ft : line.tokens) {
-    if (ft.nesting_level > 0) continue;
+    if (ft.nesting_level > 0) {
+      continue;
+    }
     if (ft.type == TokenType::kAssignmentOperator ||
         ft.token.kind == TK::LessThanEquals) {
       hasAssignment = true;
@@ -109,9 +110,7 @@ using Line = PolicyAssigner::Line;
 
 auto PolicyAssigner::assign(std::vector<Line>& lines) const -> void {
   for (auto& line : lines) {
-    if (isDirectiveLine(line)) {
-      line.partition_policy = PartitionPolicy::kAlwaysExpand;
-    } else if (isBlockHeader(line) || isPortListOpen(line)) {
+    if (isBlockHeader(line) || isPortListOpen(line)) {
       line.partition_policy = PartitionPolicy::kFitOnLineElseExpand;
     } else if (requiresAssignmentAlignment(line)) {
       line.partition_policy = PartitionPolicy::kAssignmentAlignment;
