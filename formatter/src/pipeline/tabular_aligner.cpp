@@ -124,8 +124,8 @@ struct AlignmentGroup {
   return row;
 }
 
-[[nodiscard]] static auto build_assignment_row(const UnwrappedLine<FormatToken>& line)
-    -> AlignmentRow {
+[[nodiscard]] static auto build_assignment_row(
+    const UnwrappedLine<FormatToken>& line) -> AlignmentRow {
   AlignmentRow row;
   auto& tokens = line.tokens;
   if (tokens.empty()) {
