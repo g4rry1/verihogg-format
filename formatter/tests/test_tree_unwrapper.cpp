@@ -37,10 +37,7 @@ struct TokSnap {
 struct LineSnap {
   std::vector<TokSnap> tokens;
   size_t indent = 0;
-  PP policy = PP::kAlwaysExpand;
-  auto operator==(const LineSnap& other) const -> bool {
-    return tokens == other.tokens && indent == other.indent;
-  }
+  auto operator==(const LineSnap& other) const -> bool = default;
 };
 
 // Converters from real lines to snapshots.
@@ -50,7 +47,7 @@ auto snap(const slang::parsing::Token& t) -> TokSnap {
 }
 
 auto snap(const Line& l) -> LineSnap {
-  LineSnap s{.indent = l.indentation_spaces, .policy = l.partition_policy};
+  LineSnap s{.indent = l.indentation_spaces};
   for (const auto& token : l.tokens) {
     s.tokens.push_back(snap(token));
   }
@@ -75,7 +72,7 @@ auto N(TK kind, std::string_view text) -> TokSnap {
 
 // L — build a line snapshot from indent level, partition policy, and tokens.
 auto L(size_t indent, PP policy, std::vector<TokSnap> tokens) -> LineSnap {
-  return {.tokens = std::move(tokens), .indent = indent, .policy = policy};
+  return {.tokens = std::move(tokens), .indent = indent};
 }
 
 auto policyName(PP policy) -> std::string_view {
@@ -99,8 +96,7 @@ auto operator<<(std::ostream& os, const TokSnap& tok) -> std::ostream& {
 }
 
 auto operator<<(std::ostream& os, const LineSnap& line) -> std::ostream& {
-  os << "{indent=" << line.indent << ", policy=" << policyName(line.policy)
-     << ", tokens=";
+  os << "{indent=" << line.indent << ", tokens=";
   ::testing::internal::UniversalPrint(line.tokens, &os);
   return os << "}";
 }
