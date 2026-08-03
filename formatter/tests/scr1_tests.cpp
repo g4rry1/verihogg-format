@@ -74,10 +74,9 @@ void compareTrees(const slang::syntax::SyntaxNode& a,
           << "Token kind mismatch at child " << i << " of "
           << slang::syntax::toString(a.kind) << ": '" << aTok.rawText()
           << "' vs '" << bTok.rawText() << "'";
-      EXPECT_TRUE(
-          aTok.rawText() == bTok.rawText() ||
-          isNormalizedNumericTextEquivalent(a.kind, aTok.kind, aTok.rawText(),
-                                            bTok.rawText()))
+      EXPECT_TRUE(aTok.rawText() == bTok.rawText() ||
+                  isNormalizedNumericTextEquivalent(
+                      a.kind, aTok.kind, aTok.rawText(), bTok.rawText()))
           << "Token text mismatch at child " << i << " of "
           << slang::syntax::toString(a.kind);
     } else {

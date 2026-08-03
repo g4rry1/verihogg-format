@@ -57,10 +57,9 @@ TEST_F(PrinterTest, PreservesLeadingAndTrailingLineComments) {
 }
 
 TEST_F(PrinterTest, PreservesWhitespaceAroundInlineBlockComments) {
-  EXPECT_EQ(formatText(
-                "module m (); assign y = a/*tight*/b; "
-                "assign z = a /*left*/b; assign w = a/*right*/ b; "
-                "assign v = a /*both*/ b; endmodule"),
+  EXPECT_EQ(formatText("module m (); assign y = a/*tight*/b; "
+                       "assign z = a /*left*/b; assign w = a/*right*/ b; "
+                       "assign v = a /*both*/ b; endmodule"),
             "module m (\n"
             "); assign y = a/*tight*/b; assign z = a /*left*/b; "
             "assign w = a/*right*/ b; assign v = a /*both*/ b;\n"
@@ -109,9 +108,8 @@ TEST_F(PrinterTest, NormalizesNumericLiteralTextBeforeFormatting) {
 }
 
 TEST_F(PrinterTest, DoesNotInsertBeginEndDuringNormalization) {
-  EXPECT_EQ(formatText(
-                "module m (); always_ff @(posedge clk) if (en) q <= d; "
-                "endmodule"),
+  EXPECT_EQ(formatText("module m (); always_ff @(posedge clk) if (en) q <= d; "
+                       "endmodule"),
             "module m (\n"
             ");\n"
             "  always_ff @(posedge clk)\n"

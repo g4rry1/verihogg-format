@@ -347,7 +347,8 @@ class SVParser {
     return joined;
   }
 
-  [[nodiscard]] auto parseBranch(const ParserState& state) const -> BranchResult {
+  [[nodiscard]] auto parseBranch(const ParserState& state) const
+      -> BranchResult {
     SVParser branch(tokens_, style_.get());
     branch.restoreState(state);
     branch.lines_.clear();
