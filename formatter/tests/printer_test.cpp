@@ -53,7 +53,7 @@ TEST_F(PrinterTest, FormatsMacroInvocationAcrossSourceLines) {
             "endmodule\n");
 }
 
-TEST_F(PrinterTest, FormatsUnknownMacroCallWithoutWarning) {
+TEST_F(PrinterTest, FormatsUnknownMacroCallWithFallbackDiagnostic) {
   const std::string source =
       "module m(); initial $display(`EXTERNAL(1)); endmodule\n";
   LexContext ctx;
@@ -65,7 +65,8 @@ TEST_F(PrinterTest, FormatsUnknownMacroCallWithoutWarning) {
             ");\n"
             "  initial $display (`EXTERNAL (1));\n"
             "endmodule\n");
-  EXPECT_TRUE(result.warnings.empty());
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
 }
 
 TEST_F(PrinterTest, FormatsStringifiedMacroInvocation) {

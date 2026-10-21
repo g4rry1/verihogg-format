@@ -25,3 +25,19 @@ against its classes and the Kotlin runtime, then run:
 java -cp '<veriloggraph classes>:<veriloggraph resources>:<Kotlin runtime>:formatter/grammar' ExportAnnexTable > annex.table
 python3 formatter/grammar/table_from_export.py annex.table formatter/src/pipeline/annex_a/table.inc
 ```
+
+The token inventory was imported from slang revision
+`dcc7ee97fb14f9be003de71e100d0c9601a993c9`. `SVParser` maps terminal
+names to the installed slang token kinds, so changed enum ordinals do not
+change the grammar. An unrecognized token kind produces a diagnosed fallback.
+Lexemes and trivia continue to come from slang tokens.
+
+`TreeUnwrapper::SVParser` owns temporary Earley charts while it consumes tokens
+and emits `UnwrappedLine` objects. There is no separate prefix recognizer or
+completed token range pass. Structural headers and their body items use
+separate chart scopes, so ordinary large modules do not require a whole-file
+chart. A two million item guard applies to pathological ambiguity, with an
+explicit diagnostic. Compiler directives are consumed inside the current
+parser flow without advancing Annex A; unexpanded macros and malformed items
+use diagnosed fallback and retain their source tokens. No persistent syntax
+tree is built.

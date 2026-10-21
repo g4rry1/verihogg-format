@@ -2,6 +2,7 @@
 #include <slang/parsing/Token.h>
 #include <slang/parsing/TokenKind.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <ostream>
 #include <string>
@@ -112,19 +113,38 @@ auto operator<<(std::ostream& os, const LineSnap& line) -> std::ostream& {
 
 class TreeUnwrapperTest : public ::testing::Test {
  protected:
+  auto expectTokenConservation(const std::vector<Line>& lines) const -> void {
+    size_t index = 0;
+    for (const auto& line : lines) {
+      for (const auto& token : line.tokens) {
+        ASSERT_LT(index, tokens_.size());
+        EXPECT_EQ(token.kind, tokens_[index].kind);
+        EXPECT_EQ(token.rawText(), tokens_[index].rawText());
+        EXPECT_EQ(token.location(), tokens_[index].location());
+        ++index;
+      }
+    }
+    EXPECT_EQ(index, tokens_.size());
+  }
+
   auto parse(std::string_view src) -> std::vector<Line> {
     tokens_ = ctx_.lex_string(src);
     const format::FormatStyle style = {.column_limit = kColumnLimit,
                                        .indentation_spaces = kIndent};
-    return format::TreeUnwrapper(tokens_, style, ctx_.source_text()).unwrap();
+    auto lines =
+        format::TreeUnwrapper(tokens_, style, ctx_.source_text()).unwrap();
+    expectTokenConservation(lines);
+    return lines;
   }
 
   auto parseWithDiagnostics(std::string_view src) -> format::UnwrapResult {
     tokens_ = ctx_.lex_string(src);
     const format::FormatStyle style = {.column_limit = kColumnLimit,
                                        .indentation_spaces = kIndent};
-    return format::TreeUnwrapper(tokens_, style, ctx_.source_text())
-        .unwrapWithDiagnostics();
+    auto result = format::TreeUnwrapper(tokens_, style, ctx_.source_text())
+                      .unwrapWithDiagnostics();
+    expectTokenConservation(result.lines);
+    return result;
   }
 
  private:
@@ -1169,7 +1189,10 @@ TEST_F(TreeUnwrapperTest, MacroCastDoesNotTriggerIdentifierRecovery) {
       "    data = `WIDTH'(other);\n"
       "  end\n"
       "endmodule\n");
-  EXPECT_TRUE(result.warnings.empty());
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  EXPECT_NE(result.warnings.front().message.find("macro expansion"),
+            std::string::npos);
   for (const auto& line : result.lines) {
     EXPECT_FALSE(line.is_opaque);
   }
@@ -1405,6 +1428,183 @@ TEST_F(TreeUnwrapperTest, ForkJoinAnyUsesSharedBlockBoundary) {
     }
   }
   EXPECT_TRUE(resumed);
+}
+
+TEST_F(TreeUnwrapperTest, AnnexARecognizesAutomaticModuleAndEndLabel) {
+  const auto result =
+      parseWithDiagnostics("module automatic m; logic a; endmodule : m");
+  ASSERT_GE(result.lines.size(), 3U);
+  EXPECT_EQ(result.lines.front().tokens.at(1).kind, TK::AutomaticKeyword);
+  EXPECT_EQ(result.lines.front().tokens.at(2).rawText(), "m");
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.back().rawText(),
+            "m");
+  EXPECT_TRUE(result.warnings.empty());
+}
+
+TEST_F(TreeUnwrapperTest, IncompleteAutomaticModuleUsesDiagnosticRecovery) {
+  const auto result = parseWithDiagnostics("module automatic m; logic a;");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  EXPECT_EQ(result.lines.front().tokens.at(1).kind, TK::AutomaticKeyword);
+  EXPECT_EQ(result.lines.front().tokens.at(2).rawText(), "m");
+}
+
+TEST_F(TreeUnwrapperTest, AnnexABodyRuleFallbackResumesAtNextItem) {
+  const auto result = parseWithDiagnostics(
+      "module m(input logic a); output logic b; logic c; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool resumed = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() >= 3 && line.tokens.front().rawText() == "logic" &&
+        line.tokens[1].rawText() == "c" &&
+        line.tokens.back().kind == TK::Semicolon) {
+      resumed = true;
+    }
+  }
+  EXPECT_TRUE(resumed);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, AnnexAConstructFamiliesKeepTokenOrder) {
+  const std::vector<std::string_view> sources = {
+      "interface bus(input logic clk); logic ready; endinterface : bus",
+      "package p; parameter int N = 2; endpackage : p",
+      "module m(input logic clk, output logic q); child u(.clk(clk)); "
+      "always_ff @(posedge clk) begin if (clk) q <= 1; else q <= 0; end "
+      "endmodule",
+      "module m; generate if (1) begin : g logic a; end endgenerate "
+      "endmodule",
+      "module m; initial begin for (int i = 0; i < 2; i++) a[i] = 0; "
+      "case (a) 0: a = 1; default: a = 2; endcase end endmodule",
+      "class c; function int f(); return 1; endfunction "
+      "task t(); int a; a = 1; endtask endclass",
+      "module m; `define VALUE 1\n logic a; `ifdef FLAG\n assign a = `VALUE; "
+      "`else\n assign a = 0; `endif\n endmodule",
+  };
+  for (const auto source : sources) {
+    SCOPED_TRACE(source);
+    const auto result = parseWithDiagnostics(source);
+    EXPECT_FALSE(result.lines.empty());
+    EXPECT_FALSE(std::any_of(result.warnings.begin(), result.warnings.end(),
+                             [](const auto& warning) {
+                               return warning.code ==
+                                      "token-conservation-fallback";
+                             }));
+  }
+}
+
+TEST_F(TreeUnwrapperTest, NestedNamedBlocksHaveGrammarCloseLines) {
+  const auto lines = parse(
+      "package p; class c; function int f(); return 1; endfunction "
+      "task t(); int a; a = 1; endtask endclass endpackage");
+  const std::vector<TK> expected_starts = {
+      TK::PackageKeyword,  TK::ClassKeyword,       TK::FunctionKeyword,
+      TK::ReturnKeyword,   TK::EndFunctionKeyword, TK::TaskKeyword,
+      TK::IntKeyword,      TK::Identifier,         TK::EndTaskKeyword,
+      TK::EndClassKeyword, TK::EndPackageKeyword,
+  };
+  std::vector<TK> actual_starts;
+  for (const auto& line : lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind != TK::EndOfFile) {
+      actual_starts.push_back(line.tokens.front().kind);
+    }
+  }
+  EXPECT_EQ(actual_starts, expected_starts);
+}
+
+TEST_F(TreeUnwrapperTest, CaseAndLoopEndAtGrammarBoundaries) {
+  const auto lines = parse(
+      "module m; initial begin for (int i = 0; i < 2; i++) a[i] = 0; "
+      "case (a) 0: a = 1; default: a = 2; endcase end endmodule");
+  std::vector<TK> starts;
+  for (const auto& line : lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind != TK::EndOfFile) {
+      starts.push_back(line.tokens.front().kind);
+    }
+  }
+  EXPECT_NE(std::find(starts.begin(), starts.end(), TK::ForKeyword),
+            starts.end());
+  EXPECT_NE(std::find(starts.begin(), starts.end(), TK::CaseKeyword),
+            starts.end());
+  EXPECT_NE(std::find(starts.begin(), starts.end(), TK::EndCaseKeyword),
+            starts.end());
+  EXPECT_EQ(starts.back(), TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, AnnexACaseSeparatorFollowsCompleteExpression) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial case (x) a ? b : c: y = 1; endcase endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_label = false;
+  bool found_body = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    if (line.tokens.front().rawText() == "a") {
+      found_label =
+          line.tokens.size() == 6 && line.tokens.back().kind == TK::Colon;
+    }
+    if (line.tokens.front().rawText() == "y") {
+      found_body = line.tokens.back().kind == TK::Semicolon;
+    }
+  }
+  EXPECT_TRUE(found_label);
+  EXPECT_TRUE(found_body);
+}
+
+TEST_F(TreeUnwrapperTest, LongModuleUsesGrammarItemsWithoutTokenCutoff) {
+  std::string source = "module m;\n";
+  for (size_t i = 0; i < 700; ++i) {
+    source += "logic a" + std::to_string(i) + ";\n";
+  }
+  source += "endmodule\n";
+  const auto result = parseWithDiagnostics(source);
+  EXPECT_GE(result.lines.size(), 702U);
+  EXPECT_TRUE(std::none_of(
+      result.warnings.begin(), result.warnings.end(), [](const auto& warning) {
+        return warning.code == "annex-a-fallback" ||
+               warning.code == "token-conservation-fallback";
+      }));
+}
+
+TEST_F(TreeUnwrapperTest, GenerateLabelsStayWithTheirBlockKeywords) {
+  const auto result = parseWithDiagnostics(
+      "module m; generate if (1) begin : g logic a; end : g "
+      "else begin : h logic b; end : h endgenerate endmodule");
+  for (const auto& label : {"g", "h"}) {
+    bool found = false;
+    for (const auto& line : result.lines) {
+      if (line.tokens.size() >= 3 && line.tokens[0].kind == TK::BeginKeyword &&
+          line.tokens[1].kind == TK::Colon &&
+          line.tokens[2].rawText() == label) {
+        found = true;
+      }
+    }
+    EXPECT_TRUE(found) << label;
+  }
+  EXPECT_TRUE(result.warnings.empty());
+}
+
+TEST_F(TreeUnwrapperTest, GrammarTimingControlKeepsSimpleAlwaysLine) {
+  const auto lines = parse("module m; always #5 clk = ~clk; endmodule");
+  ASSERT_GE(lines.size(), 3U);
+  EXPECT_EQ(lines[1].tokens.front().kind, TK::AlwaysKeyword);
+  EXPECT_EQ(lines[1].tokens.back().kind, TK::Semicolon);
+}
+
+TEST_F(TreeUnwrapperTest, RepeatEventControlSharesBeginHeader) {
+  const auto lines = parse(
+      "module m; initial begin repeat (2) @(posedge clk) begin end "
+      "$display(\"done\"); end endmodule");
+  bool found = false;
+  for (const auto& line : lines) {
+    if (line.tokens.size() >= 2 &&
+        line.tokens.front().kind == TK::RepeatKeyword) {
+      found = line.tokens.back().kind == TK::BeginKeyword;
+    }
+  }
+  EXPECT_TRUE(found);
 }
 
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization,cert-err58-cpp,cppcoreguidelines-owning-memory,modernize-use-trailing-return-type)
