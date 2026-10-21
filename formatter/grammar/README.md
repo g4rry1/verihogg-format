@@ -36,8 +36,10 @@ Lexemes and trivia continue to come from slang tokens.
 and emits `UnwrappedLine` objects. There is no separate prefix recognizer or
 completed token range pass. Structural headers and their body items use
 separate chart scopes, so ordinary large modules do not require a whole-file
-chart. A two million item guard applies to pathological ambiguity, with an
-explicit diagnostic. Compiler directives are consumed inside the current
-parser flow without advancing Annex A; unexpanded macros and malformed items
-use diagnosed fallback and retain their source tokens. No persistent syntax
-tree is built.
+chart. Annex A FIRST sets select construction families after complete attribute
+prefixes, and header charts determine where module, interface, and program
+headers end, including package imports before ports. A two million item guard
+applies to pathological ambiguity, with an explicit diagnostic. Compiler
+directives are consumed inside the current parser flow without advancing Annex
+A; unexpanded macros and malformed items use diagnosed fallback and retain
+their source tokens. No persistent syntax tree is built.

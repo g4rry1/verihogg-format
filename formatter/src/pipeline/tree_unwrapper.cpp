@@ -54,10 +54,60 @@ struct Production {
 }
 
 [[nodiscard]] auto annexRule(std::string_view name) -> int {
-  for (size_t i = 0; i < std::size(kRuleNames); ++i) {
-    if (kRuleNames[i] == name) return static_cast<int>(i);
-  }
-  return -1;
+  static const auto names = [] {
+    std::unordered_map<std::string_view, int> result;
+    for (size_t i = 0; i < std::size(kRuleNames); ++i) {
+      result.emplace(kRuleNames[i], static_cast<int>(i));
+    }
+    return result;
+  }();
+  const auto found = names.find(name);
+  return found == names.end() ? -1 : found->second;
+}
+
+[[nodiscard]] auto annexCanStart(std::string_view name, TK kind) -> bool {
+  struct FirstSets {
+    std::vector<std::unordered_set<int>> terminals;
+    std::vector<bool> nullable;
+  };
+  static const auto sets = [] {
+    FirstSets result{.terminals = std::vector<std::unordered_set<int>>(
+                         std::size(kRuleNames)),
+                     .nullable = std::vector<bool>(std::size(kRuleNames))};
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (const auto& production : kProductions) {
+        bool all_nullable = true;
+        for (size_t i = 0; i < production.count; ++i) {
+          const int symbol = kSymbols[production.offset + i];
+          if (symbol < 0) {
+            changed |=
+                result.terminals[production.left].insert(-symbol - 1).second;
+            all_nullable = false;
+            break;
+          }
+          for (const int terminal : result.terminals[symbol]) {
+            changed |=
+                result.terminals[production.left].insert(terminal).second;
+          }
+          if (!result.nullable[symbol]) {
+            all_nullable = false;
+            break;
+          }
+        }
+        if (all_nullable && !result.nullable[production.left]) {
+          result.nullable[production.left] = true;
+          changed = true;
+        }
+      }
+    }
+    return result;
+  }();
+  const int rule = annexRule(name);
+  const int terminal = annexTerminal(kind);
+  return rule >= 0 && terminal >= 0 &&
+         sets.terminals[static_cast<size_t>(rule)].contains(terminal);
 }
 
 struct AnnexItem {
@@ -91,6 +141,7 @@ struct AnnexChart {
   std::unordered_map<int, std::vector<size_t>> waiting;
   std::unordered_map<int, std::vector<size_t>> nullable;
   std::unordered_map<int, std::vector<size_t>> scanning;
+  std::unordered_map<int, std::vector<size_t>> completed_origins;
   std::unordered_set<int> completed_roots;
 
   explicit AnnexChart(size_t position) : position(position) {}
@@ -104,6 +155,7 @@ struct AnnexChart {
       waiting[symbol].push_back(offset);
     } else if (symbol == -32768) {
       const int rule = kProductions[item.production].left;
+      completed_origins[rule].push_back(item.origin);
       if (item.origin == position) nullable[rule].push_back(offset);
       if (item.origin == 0) completed_roots.insert(rule);
     } else {
@@ -204,6 +256,16 @@ struct AnnexState {
     const int rule = annexRule(name);
     if (rule < 0 || failed || charts.size() == 1) return false;
     return charts.back().completed_roots.contains(rule);
+  }
+
+  [[nodiscard]] auto completedFrom(std::string_view name,
+                                   size_t origin) const -> bool {
+    const int rule = annexRule(name);
+    if (rule < 0 || failed) return false;
+    const auto found = charts.back().completed_origins.find(rule);
+    return found != charts.back().completed_origins.end() &&
+           std::find(found->second.begin(), found->second.end(), origin) !=
+               found->second.end();
   }
 
   [[nodiscard]] auto expectsRootTerminal(TK kind) const -> bool {
@@ -1125,104 +1187,110 @@ class SVParser {
   }
 
   auto parseStatementLayout() -> void {
+    // Annex A allows attribute instances before several construction kinds.
+    // Consume each complete attribute before selecting the following kind;
+    // its completion comes from the active chart, not a token lookahead.
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1) &&
+           !grammar_scopes_.empty() && grammarAllows(TK::OpenParenthesis)) {
+      const size_t origin = grammar_scopes_.back().charts.size() - 1;
+      do {
+        consumeInto(line_);
+      } while (
+          !at(TK::EndOfFile) && !grammar_scopes_.back().failed &&
+          !grammar_scopes_.back().interrupted &&
+          !grammar_scopes_.back().completedFrom("attribute_instance", origin));
+      if (grammar_scopes_.back().failed || grammar_scopes_.back().interrupted ||
+          !grammar_scopes_.back().completedFrom("attribute_instance", origin)) {
+        recordGrammarFallback("incomplete Annex A attribute instance");
+        grammar_scopes_.back().interrupted = true;
+        consumeUntilSemi();
+        return;
+      }
+    }
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      recordGrammarFallback("attribute instance outside this Annex A context");
+      if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
+      consumeUntilSemi();
+      return;
+    }
+    const TK first = peek().kind;
+    const auto starts = [&](std::string_view rule) {
+      return annexCanStart(rule, first);
+    };
+
+    // Unsupported delimited forms still use the enclosing-close recovery.
+    if (const auto block = blockSpec(first);
+        block && block->layout == BlockLayout::Opaque) {
+      parseOpaqueBlock(block->close_kind);
+      return;
+    }
+    if (at(TK::ConstraintKeyword)) {
+      parseUnsupportedConstruct();
+      return;
+    }
     if (looksLikeSupportedLabeledStatement()) {
       parseLabeledStatement();
       return;
     }
 
-    if (const auto block = blockSpec(peek().kind)) {
-      switch (block->layout) {
-        case BlockLayout::Structural:
-          parseStructuralBlock(block->close_kind);
-          break;
-        case BlockLayout::Named:
-          parseNamedBlock(block->close_kind);
-          break;
-        case BlockLayout::Simple:
-          parseSimpleBlock(block->close_kind);
-          break;
-        case BlockLayout::BeginEnd:
-          parseBeginEnd(block->close_kind);
-          break;
-        case BlockLayout::Fork:
-          parseFork(block->close_kind);
-          break;
-        case BlockLayout::Case:
-          parseCase(block->close_kind);
-          break;
-        case BlockLayout::Opaque:
-          parseOpaqueBlock(block->close_kind);
-          break;
-      }
-      return;
-    }
-
-    switch (peek().kind) {
-      case TK::AlwaysKeyword:
-      case TK::AlwaysCombKeyword:
-      case TK::AlwaysFFKeyword:
-      case TK::AlwaysLatchKeyword:
-      case TK::InitialKeyword:
-      case TK::FinalKeyword:
-        parseProceduralBlock();
-        break;
-
-      case TK::IfKeyword:
-        parseIf();
-        break;
-
-      case TK::AssertKeyword:
-        if (looksLikePropertyAssertion()) {
-          parseAssertionStatement();
-        } else {
-          parseUnsupportedConstruct();
-        }
-        break;
-
-      case TK::ForKeyword:
-      case TK::ForeachKeyword:
-      case TK::WhileKeyword:
-      case TK::RepeatKeyword:
-      case TK::ForeverKeyword:
-        parseLoop();
-        break;
-
-      case TK::AssignKeyword:
-      case TK::InputKeyword:
-      case TK::OutputKeyword:
-      case TK::InOutKeyword:
-      case TK::RefKeyword:
-      case TK::WireKeyword:
-      case TK::RegKeyword:
-      case TK::BitKeyword:
-      case TK::BreakKeyword:
-      case TK::ByteKeyword:
-      case TK::GenVarKeyword:
-      case TK::IntKeyword:
-      case TK::IntegerKeyword:
-      case TK::LocalParamKeyword:
-      case TK::LogicKeyword:
-      case TK::ParameterKeyword:
-      case TK::ReturnKeyword:
-      case TK::StringKeyword:
-      case TK::TimeKeyword:
-      case TK::TypedefKeyword:
-      case TK::VoidKeyword:
-        parseGrammarLeaf();
-        break;
-
-      default:
-        if (slang::parsing::LexerFacts::isKeyword(peek().kind) ||
-            peek().kind == TK::Unknown || peek().kind == TK::Question ||
-            peek().kind == TK::CloseParenthesis ||
-            peek().kind == TK::CloseBracket) {
-          parseUnsupportedConstruct();
-        } else if (peek().kind == TK::Identifier) {
-          parseIdentifierItem();
-        } else {
-          consumeUntilSemi();
-        }
-        break;
+    // Annex A FIRST sets select the construction family. These calls control
+    // only line layout; the active chart continues to decide membership and
+    // completion as each token is consumed.
+    if (starts("module_ansi_header") || starts("module_nonansi_header")) {
+      parseStructuralBlock(TK::EndModuleKeyword);
+    } else if (starts("interface_class_declaration") &&
+               at(TK::ClassKeyword, 1)) {
+      parseNamedBlock(TK::EndClassKeyword);
+    } else if (starts("interface_ansi_header") ||
+               starts("interface_nonansi_header")) {
+      parseStructuralBlock(TK::EndInterfaceKeyword);
+    } else if (starts("program_ansi_header") ||
+               starts("program_nonansi_header")) {
+      parseStructuralBlock(TK::EndProgramKeyword);
+    } else if (starts("package_declaration")) {
+      parseStructuralBlock(TK::EndPackageKeyword);
+    } else if (starts("class_declaration")) {
+      parseNamedBlock(TK::EndClassKeyword);
+    } else if (starts("function_declaration")) {
+      parseNamedBlock(TK::EndFunctionKeyword);
+    } else if (starts("task_declaration")) {
+      parseNamedBlock(TK::EndTaskKeyword);
+    } else if (starts("generate_region")) {
+      parseSimpleBlock(TK::EndGenerateKeyword);
+    } else if (starts("seq_block")) {
+      parseBeginEnd(TK::EndKeyword);
+    } else if (starts("par_block")) {
+      parseFork(TK::JoinKeyword);
+    } else if (starts("case_statement") || starts("case_generate_construct")) {
+      parseCase(TK::EndCaseKeyword);
+    } else if (starts("always_construct") || starts("initial_construct") ||
+               starts("final_construct")) {
+      parseProceduralBlock();
+    } else if (starts("conditional_statement") ||
+               starts("if_generate_construct")) {
+      parseIf();
+    } else if (starts("loop_statement") || starts("loop_generate_construct")) {
+      parseLoop();
+    } else if (starts("assert_property_statement") &&
+               looksLikePropertyAssertion()) {
+      parseAssertionStatement();
+    } else if (first == TK::Identifier) {
+      parseIdentifierItem();
+    } else if (grammarAllows(first) || first == TK::AssignKeyword ||
+               first == TK::InputKeyword || first == TK::OutputKeyword ||
+               first == TK::InOutKeyword || first == TK::RefKeyword ||
+               first == TK::WireKeyword || first == TK::RegKeyword ||
+               first == TK::LogicKeyword || first == TK::BitKeyword ||
+               first == TK::IntKeyword || first == TK::IntegerKeyword ||
+               first == TK::TypedefKeyword || first == TK::ParameterKeyword ||
+               first == TK::LocalParamKeyword) {
+      parseGrammarLeaf();
+    } else if (slang::parsing::LexerFacts::isKeyword(first) ||
+               first == TK::Unknown || first == TK::Question ||
+               first == TK::CloseParenthesis || first == TK::CloseBracket) {
+      parseUnsupportedConstruct();
+    } else {
+      consumeUntilSemi();
     }
   }
 
@@ -1523,23 +1591,44 @@ class SVParser {
         break;
     }
     if (!roots.empty()) beginGrammar(roots);
-    consumeInto(line_);  // module / interface / ...
-    if (at(TK::AutomaticKeyword) || at(TK::StaticKeyword)) {
-      consumeInto(line_);  // Annex A: optional lifetime before the identifier
-    }
-    // name
-    if (!at(closeKw) && !at(TK::Semicolon) && !at(TK::EndOfFile)) {
+    if (closeKw == TK::EndPackageKeyword) {
+      // package_declaration contains its body, so it has no separate header
+      // completion. Keep the chart active until endpackage.
       consumeInto(line_);
-    }
-    // optional #(param list) — consumed flat for now
-    if (at(TK::Hash)) {
-      consumeInto(line_);
-      consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
-    }
-    // port list: each port is a child line of the '(' node
-    parseParenthesizedListInto(line_);
-    if (at(TK::Semicolon)) {
-      consumeInto(line_);
+      if ((at(TK::AutomaticKeyword) || at(TK::StaticKeyword)) &&
+          grammarAllows(peek().kind)) {
+        consumeInto(line_);
+      }
+      if (!at(closeKw) && !at(TK::Semicolon) && !at(TK::EndOfFile)) {
+        consumeInto(line_);
+      }
+      if (at(TK::Semicolon)) consumeInto(line_);
+    } else {
+      // The header chart ends the header, including any package imports. A
+      // semicolon inside an import cannot be mistaken for the body boundary.
+      while (!at(closeKw) && !at(TK::EndOfFile) &&
+             !grammar_scopes_.back().complete()) {
+        if (isCompilerDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+          continue;
+        }
+        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        if (at(TK::Hash)) {
+          consumeInto(line_);
+          consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+        } else if (at(TK::OpenParenthesis)) {
+          // Port lists are layout choices over the same grammar consumption.
+          parseParenthesizedListInto(line_);
+        } else {
+          consumeInto(line_);
+        }
+      }
+      if (grammar_scopes_.back().interrupted || grammar_scopes_.back().failed) {
+        // A macro or malformed token interrupted the header chart. Preserve
+        // the rest of this header through its next source semicolon.
+        consumeUntilSemi();
+      }
     }
     addLine();
     if (closeKw == TK::EndPackageKeyword) {
@@ -1657,7 +1746,7 @@ class SVParser {
 
     parseIndentedStatement();
 
-    if (at(TK::ElseKeyword)) {
+    if (at(TK::ElseKeyword) && grammarAllows(TK::ElseKeyword)) {
       consumeInto(line_);  // else
       if (at(TK::IfKeyword)) {
         // else if: `if (...)` is added into the same line_ that already has

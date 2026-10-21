@@ -1441,6 +1441,34 @@ TEST_F(TreeUnwrapperTest, AnnexARecognizesAutomaticModuleAndEndLabel) {
   EXPECT_TRUE(result.warnings.empty());
 }
 
+TEST_F(TreeUnwrapperTest, AnnexAAttributePrefixSelectsModuleHeader) {
+  const auto result =
+      parseWithDiagnostics("(* keep = 1 *) module m; endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  ASSERT_GE(result.lines.size(), 3U);
+  EXPECT_EQ(result.lines.front().tokens.front().kind, TK::OpenParenthesis);
+  EXPECT_EQ(result.lines.front().tokens.at(7).kind, TK::ModuleKeyword);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, AnnexAHeaderIncludesPackageImportsBeforePorts) {
+  const auto result = parseWithDiagnostics(
+      "module m import p::*; (input logic a); logic b; endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_body = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().rawText() == "logic" &&
+        line.tokens.size() >= 3 && line.tokens[1].rawText() == "b" &&
+        line.tokens.back().kind == TK::Semicolon) {
+      found_body = true;
+    }
+  }
+  EXPECT_TRUE(found_body);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
 TEST_F(TreeUnwrapperTest, IncompleteAutomaticModuleUsesDiagnosticRecovery) {
   const auto result = parseWithDiagnostics("module automatic m; logic a;");
   ASSERT_FALSE(result.warnings.empty());
