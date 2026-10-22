@@ -92,7 +92,8 @@ TEST_F(PrinterTest, FormatsStringifiedMacroInvocation) {
             "    end\n"
             "  logic y;\n"
             "endmodule\n");
-  EXPECT_TRUE(result.warnings.empty());
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
 }
 
 TEST_F(PrinterTest, FormatsMacroFromIncludedFile) {
@@ -118,7 +119,8 @@ TEST_F(PrinterTest, FormatsMacroFromIncludedFile) {
             "    end\n"
             "  logic y;\n"
             "endmodule\n");
-  EXPECT_TRUE(result.warnings.empty());
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
 }
 
 TEST_F(PrinterTest, FormatsNestedMacroCalls) {

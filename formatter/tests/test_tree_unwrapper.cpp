@@ -1509,6 +1509,96 @@ TEST_F(TreeUnwrapperTest, ConditionalPackageItemsResumeAnnexAAfterEndif) {
             TK::EndPackageKeyword);
 }
 
+TEST_F(TreeUnwrapperTest, StandaloneMacroSkipsOnePackageItem) {
+  const auto result = parseWithDiagnostics(
+      "package p;\n"
+      "`MAKE_TYPE\n"
+      "int a;\n"
+      "endpackage : p\n");
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  EXPECT_NE(result.warnings.front().message.find("macro expansion"),
+            std::string::npos);
+  bool found_declaration = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() == 3 && line.tokens.front().kind == TK::IntKeyword &&
+        line.tokens[1].rawText() == "a" &&
+        line.tokens.back().kind == TK::Semicolon) {
+      found_declaration = true;
+    }
+  }
+  EXPECT_TRUE(found_declaration);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndPackageKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MacroInFunctionItemResumesAnnexABody) {
+  const auto result = parseWithDiagnostics(
+      "package p; class c; function int f();\n"
+      "int x; x = `VALUE; return x;\n"
+      "endfunction endclass endpackage\n");
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_return = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::ReturnKeyword &&
+        line.tokens.back().kind == TK::Semicolon) {
+      found_return = true;
+    }
+  }
+  EXPECT_TRUE(found_return);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndPackageKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MacroCaseItemResumesAtFollowingLabel) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial case (x)\n"
+      "`MAKE_CASE\n"
+      "default: x = 0;\n"
+      "endcase endmodule\n");
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_default = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() &&
+        line.tokens.front().kind == TK::DefaultKeyword &&
+        line.tokens.back().kind == TK::Colon) {
+      found_default = true;
+    }
+  }
+  EXPECT_TRUE(found_default);
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndCaseKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MacroWithoutSemicolonLeavesOuterCloseUnread) {
+  const auto result =
+      parseWithDiagnostics("module m; initial begin `UNKNOWN end endmodule");
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  ASSERT_GE(result.lines.size(), 5U);
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndKeyword);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, AttributedMacroLeavesNextPackageItemUnread) {
+  const auto result = parseWithDiagnostics(
+      "package p; (* keep = 1 *) `UNKNOWN\nint a; endpackage");
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_declaration = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() == 3 && line.tokens.front().kind == TK::IntKeyword &&
+        line.tokens[1].rawText() == "a") {
+      found_declaration = true;
+    }
+  }
+  EXPECT_TRUE(found_declaration);
+}
+
 TEST_F(TreeUnwrapperTest, UniquePrefixSelectsAnnexAIfAndCase) {
   const auto result = parseWithDiagnostics(
       "module m; initial begin "
@@ -1703,6 +1793,103 @@ TEST_F(TreeUnwrapperTest, LongModuleUsesGrammarItemsWithoutTokenCutoff) {
         return warning.code == "annex-a-fallback" ||
                warning.code == "token-conservation-fallback";
       }));
+}
+
+TEST_F(TreeUnwrapperTest, LongAttributedModuleUsesGrammarItems) {
+  std::string source = "(* keep = 1 *) module m;\n";
+  for (size_t i = 0; i < 5000; ++i) {
+    source += "int a" + std::to_string(i) + ";\n";
+  }
+  source += "endmodule\n";
+  const auto result = parseWithDiagnostics(source);
+  EXPECT_GE(result.lines.size(), 5002U);
+  EXPECT_TRUE(std::none_of(
+      result.warnings.begin(), result.warnings.end(), [](const auto& warning) {
+        return warning.code == "annex-a-fallback" ||
+               warning.code == "token-conservation-fallback";
+      }));
+}
+
+TEST_F(TreeUnwrapperTest, LongPackageUsesGrammarItemsWithoutTokenCutoff) {
+  std::string source = "package p;\n";
+  for (size_t i = 0; i < 5000; ++i) {
+    source += "int a" + std::to_string(i) + ";\n";
+  }
+  source += "endpackage\n";
+  const auto result = parseWithDiagnostics(source);
+  EXPECT_GE(result.lines.size(), 5002U);
+  EXPECT_TRUE(std::none_of(
+      result.warnings.begin(), result.warnings.end(), [](const auto& warning) {
+        return warning.code == "annex-a-fallback" ||
+               warning.code == "token-conservation-fallback";
+      }));
+}
+
+TEST_F(TreeUnwrapperTest, LongNamedBodiesUsePerItemGrammar) {
+  std::string source = "virtual class c;\n";
+  for (size_t i = 0; i < 5000; ++i) {
+    source += "int a" + std::to_string(i) + ";\n";
+  }
+  source += "endclass\nmodule m; function int f();\n";
+  for (size_t i = 0; i < 5000; ++i) {
+    source += "a = " + std::to_string(i) + ";\n";
+  }
+  source += "endfunction endmodule\n";
+  const auto result = parseWithDiagnostics(source);
+  EXPECT_GE(result.lines.size(), 10006U);
+  EXPECT_TRUE(std::none_of(
+      result.warnings.begin(), result.warnings.end(), [](const auto& warning) {
+        return warning.code == "annex-a-fallback" ||
+               warning.code == "token-conservation-fallback";
+      }));
+}
+
+TEST_F(TreeUnwrapperTest, PackageTimeunitsRemainAnnexAItems) {
+  const auto result =
+      parseWithDiagnostics("package p; timeunit 1ns / 1ps; int a; endpackage");
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndPackageKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, PackageItemAttributeUsesAnnexAPrefix) {
+  const auto result =
+      parseWithDiagnostics("package p; (* keep = 1 *) int a; endpackage");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_attributed_item = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() &&
+        line.tokens.front().kind == TK::OpenParenthesis &&
+        line.tokens.back().kind == TK::Semicolon) {
+      found_attributed_item = true;
+    }
+  }
+  EXPECT_TRUE(found_attributed_item);
+}
+
+TEST_F(TreeUnwrapperTest, AttributedPackageClassAndInterfaceClassUseBodyRules) {
+  const auto result = parseWithDiagnostics(
+      "package p; (* keep = 1 *) class c; int x; endclass endpackage "
+      "interface class ic; pure virtual function int f(); endclass");
+  EXPECT_TRUE(result.warnings.empty());
+  size_t endclasses = 0;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() &&
+        line.tokens.front().kind == TK::EndClassKeyword) {
+      ++endclasses;
+    }
+  }
+  EXPECT_EQ(endclasses, 2U);
+}
+
+TEST_F(TreeUnwrapperTest, FunctionDeclarationsStopAtFirstStatement) {
+  const auto result = parseWithDiagnostics(
+      "module m; function int f(); int a; return a; int b; "
+      "endfunction endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndFunctionKeyword);
 }
 
 TEST_F(TreeUnwrapperTest, GenerateLabelsStayWithTheirBlockKeywords) {

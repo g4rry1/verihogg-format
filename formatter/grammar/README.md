@@ -35,14 +35,21 @@ Lexemes and trivia continue to come from slang tokens.
 `TreeUnwrapper::SVParser` owns temporary Earley charts while it consumes tokens
 and emits `UnwrappedLine` objects. There is no separate prefix recognizer or
 completed token range pass. Structural headers and their body items use
-separate chart scopes, so ordinary large modules do not require a whole-file
-chart. Annex A FIRST sets select construction families after complete attribute
-prefixes, and header charts determine where module, interface, and program
-headers end, including package imports before ports. A two million item guard
-applies to pathological ambiguity, with an explicit diagnostic. Compiler
-directives are consumed inside the current parser flow without advancing Annex
-A; unexpanded macros and malformed items use diagnosed fallback and retain
-their source tokens. No persistent syntax tree is built.
+separate chart scopes, so ordinary large modules, packages, classes, and
+functions do not require a whole-file chart. The viable declaration prefix
+validates a package, class, function, or task header through its first
+semicolon; the corresponding Annex A item rules validate body items
+individually. Function and task bodies stop accepting declarations after an
+item that can only be a statement under Annex A. Attribute prefixes are parsed
+with Annex A's `attribute_instance` rule before starting the decorated item's
+chart, including attributes around `package_item`. Annex A FIRST sets select
+construction families after complete attribute prefixes. Header charts find
+module, interface, and program boundaries, including package imports before
+ports. A two million item guard applies to pathological ambiguity, with an
+explicit diagnostic. Compiler directives are consumed inside the current
+parser flow without advancing Annex A; unexpanded macros and malformed items
+use diagnosed fallback and retain their source tokens. No persistent syntax
+tree is built.
 
 Conditional compiler branches now copy the active grammar scopes as well as the
 layout state. Compatible branches resume one grammar continuation after
@@ -50,3 +57,13 @@ layout state. Compatible branches resume one grammar continuation after
 header segments advance Annex A rules while their tokens are emitted. The
 formatter still uses explicit block delimiters and source-preserving fallback
 when the available token stream cannot be parsed by those rules.
+
+When a macro or malformed item interrupts a nested Annex A scope, `SVParser`
+restores the enclosing chart to the start of that item and advances its expected
+item nonterminal once. The original tokens are retained in their existing
+lines, and a fallback diagnostic identifies the interruption. This lets a
+package, class, function, or case continue from the next item without replaying
+its earlier tokens. An unknown backtick token at the start of an item is
+handled through its semicolon or source line, stopping before the enclosing
+block close. Compiler directives suspend the active chart without consuming a
+grammar item.

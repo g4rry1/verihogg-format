@@ -167,6 +167,12 @@ struct AnnexChart {
 // This is temporary state owned by SVParser. The chart advances only when
 // SVParser consumes a token; no token span is recognized ahead of formatting.
 struct AnnexState {
+  struct Checkpoint {
+    size_t chart_count;
+    size_t total_items;
+    bool healthy;
+  };
+
   std::vector<AnnexChart> charts;
   std::vector<uint16_t> roots;
   size_t total_items = 0;
@@ -242,6 +248,46 @@ struct AnnexState {
     const int terminal = annexTerminal(kind);
     return terminal >= 0 && !failed &&
            charts.back().scanning.contains(terminal);
+  }
+
+  [[nodiscard]] auto checkpoint() const -> Checkpoint {
+    return {charts.size(), total_items, !failed && !interrupted};
+  }
+
+  // An opaque item occupies one grammar nonterminal. Resume the enclosing
+  // grammar after that item without treating its unknown tokens as terminals.
+  [[nodiscard]] auto skipOpaqueItem(
+      Checkpoint saved, const std::vector<uint16_t>& item_roots) -> bool {
+    if (!saved.healthy || saved.chart_count == 0 ||
+        saved.chart_count > charts.size()) {
+      return false;
+    }
+    charts.erase(
+        charts.begin() + static_cast<std::ptrdiff_t>(saved.chart_count),
+        charts.end());
+    total_items = saved.total_items;
+    failed = false;
+    interrupted = false;
+    failure_reason = {};
+    AnnexChart next(charts.size());
+    const auto& origin = charts.back();
+    for (const auto rule : item_roots) {
+      if (const auto found = origin.waiting.find(rule);
+          found != origin.waiting.end()) {
+        for (const auto index : found->second) {
+          const AnnexItem parent = origin.items[index];
+          next.add({parent.production, static_cast<uint16_t>(parent.dot + 1),
+                    parent.origin});
+        }
+      }
+    }
+    if (next.items.empty()) {
+      interrupted = true;
+      return false;
+    }
+    charts.push_back(std::move(next));
+    close();
+    return !failed;
   }
 
   [[nodiscard]] auto sameContinuation(const AnnexState& other) const -> bool {
@@ -383,6 +429,7 @@ class SVParser {
     TK close_kind;
     size_t extra_dedent_after_close = 0;
     std::string_view grammar_body;
+    bool statement_phase = false;
 
     auto operator==(const BlockFrame&) const -> bool = default;
   };
@@ -393,6 +440,7 @@ class SVParser {
     size_t indent_level = 0;
     std::vector<BlockFrame> block_stack;
     std::vector<AnnexState> grammar_scopes;
+    std::vector<std::optional<AnnexState::Checkpoint>> grammar_checkpoints;
     std::vector<std::vector<std::string_view>> grammar_contexts;
   };
 
@@ -422,6 +470,7 @@ class SVParser {
   size_t indent_level_ = 0;
   std::vector<BlockFrame> block_stack_;
   std::vector<AnnexState> grammar_scopes_;
+  std::vector<std::optional<AnnexState::Checkpoint>> grammar_checkpoints_;
   std::vector<std::vector<std::string_view>> grammar_contexts_;
   size_t last_grammar_warning_pos_ = std::numeric_limits<size_t>::max();
   bool grammar_suspended_ = false;
@@ -599,6 +648,7 @@ class SVParser {
           isConditionalBoundaryDirective(peek())) {
         break;
       }
+      if (matchingOpenFrame(peek().kind)) break;
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -1033,6 +1083,7 @@ class SVParser {
         .indent_level = indent_level_,
         .block_stack = block_stack_,
         .grammar_scopes = grammar_scopes_,
+        .grammar_checkpoints = grammar_checkpoints_,
         .grammar_contexts = grammar_contexts_,
     };
   }
@@ -1043,6 +1094,7 @@ class SVParser {
     indent_level_ = state.indent_level;
     block_stack_ = state.block_stack;
     grammar_scopes_ = state.grammar_scopes;
+    grammar_checkpoints_ = state.grammar_checkpoints;
     grammar_contexts_ = state.grammar_contexts;
   }
 
@@ -1051,7 +1103,8 @@ class SVParser {
     if (lhs.indent_level != rhs.indent_level ||
         lhs.block_stack != rhs.block_stack ||
         lhs.grammar_contexts != rhs.grammar_contexts ||
-        lhs.grammar_scopes.size() != rhs.grammar_scopes.size()) {
+        lhs.grammar_scopes.size() != rhs.grammar_scopes.size() ||
+        lhs.grammar_checkpoints.size() != rhs.grammar_checkpoints.size()) {
       return false;
     }
     for (size_t i = 0; i < lhs.grammar_scopes.size(); ++i) {
@@ -1210,9 +1263,17 @@ class SVParser {
       case TK::EndGenerateKeyword:
         return {"generate_item"};
       case TK::EndFunctionKeyword:
+        return block_stack_.back().statement_phase
+                   ? std::vector<std::string_view>{"function_statement_or_null"}
+                   : std::vector<std::string_view>{
+                         "tf_item_declaration", "block_item_declaration",
+                         "function_statement_or_null"};
       case TK::EndTaskKeyword:
-        return {"tf_item_declaration", "function_statement_or_null",
-                "statement_or_null"};
+        return block_stack_.back().statement_phase
+                   ? std::vector<std::string_view>{"statement_or_null"}
+                   : std::vector<std::string_view>{"tf_item_declaration",
+                                                   "block_item_declaration",
+                                                   "statement_or_null"};
       case TK::EndCaseKeyword:
         return {"case_item", "case_generate_item"};
       case TK::EndKeyword:
@@ -1223,7 +1284,12 @@ class SVParser {
     }
   }
 
-  auto beginGrammar(std::vector<std::string_view> roots) -> void {
+  auto beginGrammar(std::vector<std::string_view> roots,
+                    bool resumable_item = false) -> void {
+    grammar_checkpoints_.push_back(
+        resumable_item && !grammar_scopes_.empty()
+            ? std::optional{grammar_scopes_.back().checkpoint()}
+            : std::nullopt);
     grammar_scopes_.emplace_back(roots);
   }
 
@@ -1235,12 +1301,20 @@ class SVParser {
     return grammar_scopes_.back().accepts(kind);
   }
 
-  auto endGrammar() -> AnnexState {
+  auto endGrammar(bool require_complete = true) -> AnnexState {
     AnnexState state = std::move(grammar_scopes_.back());
     grammar_scopes_.pop_back();
+    const auto checkpoint = grammar_checkpoints_.back();
+    grammar_checkpoints_.pop_back();
+    if (checkpoint && !grammar_scopes_.empty() &&
+        (state.failed || state.interrupted)) {
+      static_cast<void>(
+          grammar_scopes_.back().skipOpaqueItem(*checkpoint, state.roots));
+    }
     if (state.failed && !state.interrupted) {
       recordGrammarFallback(state.failure_reason);
-    } else if (!state.failed && !state.interrupted && !state.complete() &&
+    } else if (require_complete && !state.failed && !state.interrupted &&
+               !state.complete() &&
                !(stop_at_conditional_boundary_ &&
                  isConditionalBoundaryDirective(peek()))) {
       recordGrammarFallback("incomplete Annex A construction");
@@ -1289,6 +1363,12 @@ class SVParser {
     }
 
     if (at(TK::Directive)) {
+      if (!isCompilerDirective(peek())) {
+        // An unexpanded macro can stand for one entire item. Keep its source
+        // line, then resume the enclosing Annex A rule after that item.
+        parseMacroStatement();
+        return;
+      }
       const bool structural_region =
           block_stack_.empty() ||
           (grammar_contexts_.empty() &&
@@ -1305,25 +1385,16 @@ class SVParser {
       return;
     }
 
-    // A block header owns its Annex A state while it is consumed, and its
-    // body is parsed item by item. All other items keep a chart active through
-    // the same consume() calls that emit their UnwrappedLine tokens.
-    const auto block = blockSpec(peek().kind);
-    const bool own_grammar =
-        !block || (block->layout != BlockLayout::Structural &&
-                   block->layout != BlockLayout::Named &&
-                   block->layout != BlockLayout::Opaque);
-    if (own_grammar) beginGrammar(grammarRoots());
-    parseStatementLayout();
-    if (own_grammar) static_cast<void>(endGrammar());
-  }
-
-  auto parseStatementLayout() -> void {
-    // Annex A allows attribute instances before several construction kinds.
-    // Consume each complete attribute before selecting the following kind;
-    // its completion comes from the active chart, not a token lookahead.
-    while (at(TK::OpenParenthesis) && at(TK::Star, 1) &&
-           !grammar_scopes_.empty() && grammarAllows(TK::OpenParenthesis)) {
+    // Consume complete Annex A attribute_instance prefixes before selecting
+    // the construction they decorate. package_declaration stores these outside
+    // package_item; other contexts validate them through their current root.
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const bool package_item =
+          !block_stack_.empty() &&
+          block_stack_.back().grammar_body == "package_item";
+      beginGrammar(package_item
+                       ? std::vector<std::string_view>{"attribute_instance"}
+                       : grammarRoots());
       const size_t origin = grammar_scopes_.back().charts.size() - 1;
       do {
         consumeInto(line_);
@@ -1331,20 +1402,49 @@ class SVParser {
           !at(TK::EndOfFile) && !grammar_scopes_.back().failed &&
           !grammar_scopes_.back().interrupted &&
           !grammar_scopes_.back().completedFrom("attribute_instance", origin));
-      if (grammar_scopes_.back().failed || grammar_scopes_.back().interrupted ||
-          !grammar_scopes_.back().completedFrom("attribute_instance", origin)) {
+      const AnnexState prefix = endGrammar(false);
+      if (prefix.failed || prefix.interrupted ||
+          !prefix.completedFrom("attribute_instance", origin)) {
         recordGrammarFallback("incomplete Annex A attribute instance");
-        grammar_scopes_.back().interrupted = true;
         consumeUntilSemi();
         return;
       }
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
     }
-    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      recordGrammarFallback("attribute instance outside this Annex A context");
-      if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
-      consumeUntilSemi();
+    if (at(TK::Directive) && !isCompilerDirective(peek())) {
+      parseMacroStatement();
       return;
     }
+
+    // A block header owns its Annex A state while it is consumed, and its
+    // body is parsed item by item. All other items keep a chart active through
+    // the same consume() calls that emit their UnwrappedLine tokens.
+    const auto block = blockSpec(peek().kind);
+    const bool virtual_class = at(TK::VirtualKeyword) &&
+                               annexCanStart("class_declaration", peek().kind);
+    const bool own_grammar =
+        !virtual_class &&
+        (!block || (block->layout != BlockLayout::Structural &&
+                    block->layout != BlockLayout::Named &&
+                    block->layout != BlockLayout::Opaque));
+    if (own_grammar) beginGrammar(grammarRoots(), true);
+    parseStatementLayout();
+    if (own_grammar) {
+      const AnnexState item = endGrammar();
+      if (!block_stack_.empty() &&
+          (block_stack_.back().close_kind == TK::EndFunctionKeyword ||
+           block_stack_.back().close_kind == TK::EndTaskKeyword) &&
+          !item.completed("tf_item_declaration") &&
+          !item.completed("block_item_declaration")) {
+        block_stack_.back().statement_phase = true;
+      }
+    }
+  }
+
+  auto parseStatementLayout() -> void {
     // Annex A puts unique / unique0 / priority before both if and case.
     // Finish that grammar prefix before selecting the layout function.
     if (!grammar_scopes_.empty() &&
@@ -1588,6 +1688,45 @@ class SVParser {
     grammar_suspended_ = was_suspended;
   }
 
+  // Macro expansion is absent from the token stream. Preserve one invocation
+  // through its semicolon or source line, leaving the enclosing close unread.
+  auto parseMacroItem() -> void {
+    const bool was_suspended = std::exchange(grammar_suspended_, true);
+    int depth = 0;
+    bool first = true;
+    while (!at(TK::EndOfFile)) {
+      if (!first &&
+          ((depth == 0 && hasLeadingNewline(peek())) ||
+           matchingOpenFrame(peek().kind) || isCompilerDirective(peek()) ||
+           (stop_at_conditional_boundary_ &&
+            isConditionalBoundaryDirective(peek())))) {
+        break;
+      }
+      const TK kind = peek().kind;
+      if (kind == TK::OpenParenthesis || kind == TK::OpenBracket ||
+          kind == TK::OpenBrace) {
+        ++depth;
+      } else if ((kind == TK::CloseParenthesis || kind == TK::CloseBracket ||
+                  kind == TK::CloseBrace) &&
+                 depth > 0) {
+        --depth;
+      }
+      consumeInto(line_);
+      first = false;
+      if (kind == TK::Semicolon && depth == 0) break;
+    }
+    addLine();
+    grammar_suspended_ = was_suspended;
+  }
+
+  auto parseMacroStatement() -> void {
+    beginGrammar(grammarRoots(), true);
+    grammar_scopes_.back().interrupted = true;
+    recordGrammarFallback("macro expansion unavailable to Annex A");
+    parseMacroItem();
+    static_cast<void>(endGrammar());
+  }
+
   auto parseConditionalRegion() -> void {
     const Token start = peek();
     ParserState branch_entry = snapshotState();
@@ -1817,8 +1956,11 @@ class SVParser {
     }
     addLine();
     if (closeKw == TK::EndPackageKeyword) {
+      // package_declaration has no separate header rule. Its viable prefix
+      // validates the header through the first semicolon; each package_item
+      // gets its own chart so a large package has bounded grammar state.
+      static_cast<void>(endGrammar(false));
       parseDelimitedBody(closeKw, body_rule);
-      static_cast<void>(endGrammar());
       return;
     }
     const AnnexState header = endGrammar();
@@ -1838,9 +1980,12 @@ class SVParser {
   // class / function / task ... endclass / endfunction / endtask
   auto parseNamedBlock(TK closeKw) -> void {
     std::vector<std::string_view> roots;
+    std::string_view body_rule;
     switch (closeKw) {
       case TK::EndClassKeyword:
         roots = {"class_declaration", "interface_class_declaration"};
+        body_rule =
+            at(TK::InterfaceKeyword) ? "interface_class_item" : "class_item";
         break;
       case TK::EndFunctionKeyword:
         roots = {"function_declaration"};
@@ -1853,9 +1998,11 @@ class SVParser {
     }
     if (!roots.empty()) beginGrammar(roots);
     consumeGrammarHeader(closeKw);
-
-    parseDelimitedBody(closeKw);
-    if (!roots.empty()) static_cast<void>(endGrammar());
+    // The declaration grammar validates the viable header prefix. Its body
+    // items are parsed with their Annex A rules one at a time, avoiding a
+    // whole-class or whole-function chart for large declarations.
+    if (!roots.empty()) static_cast<void>(endGrammar(false));
+    parseDelimitedBody(closeKw, body_rule);
   }
 
   // generate ... endgenerate
@@ -1953,7 +2100,11 @@ class SVParser {
         return;
       }
       if (at(TK::Directive)) {
-        parseDirectiveLine();
+        if (isCompilerDirective(peek())) {
+          parseDirectiveLine();
+        } else {
+          parseStatement();
+        }
       } else {
         parseCaseItem();
       }
@@ -1966,7 +2117,8 @@ class SVParser {
 
   auto parseCaseItem() -> void {
     beginGrammar({"case_item", "case_pattern_item", "case_inside_item",
-                  "case_generate_item"});
+                  "case_generate_item"},
+                 true);
     if (at(TK::DefaultKeyword)) {
       consumeInto(line_);
       if (at(TK::Colon)) {
