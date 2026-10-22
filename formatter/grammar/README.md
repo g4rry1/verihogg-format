@@ -43,3 +43,10 @@ applies to pathological ambiguity, with an explicit diagnostic. Compiler
 directives are consumed inside the current parser flow without advancing Annex
 A; unexpanded macros and malformed items use diagnosed fallback and retain
 their source tokens. No persistent syntax tree is built.
+
+Conditional compiler branches now copy the active grammar scopes as well as the
+layout state. Compatible branches resume one grammar continuation after
+`endif`. Named headers, condition expressions, case expressions, and `for`
+header segments advance Annex A rules while their tokens are emitted. The
+formatter still uses explicit block delimiters and source-preserving fallback
+when the available token stream cannot be parsed by those rules.

@@ -244,6 +244,24 @@ struct AnnexState {
            charts.back().scanning.contains(terminal);
   }
 
+  [[nodiscard]] auto sameContinuation(const AnnexState& other) const -> bool {
+    if (roots != other.roots || failed != other.failed ||
+        interrupted != other.interrupted) {
+      return false;
+    }
+    if (failed || interrupted) return true;
+    const auto& lhs = charts.back();
+    const auto& rhs = other.charts.back();
+    if (lhs.completed_roots != rhs.completed_roots ||
+        lhs.scanning.size() != rhs.scanning.size()) {
+      return false;
+    }
+    for (const auto& [terminal, items] : lhs.scanning) {
+      if (!rhs.scanning.contains(terminal)) return false;
+    }
+    return true;
+  }
+
   [[nodiscard]] auto complete() const -> bool {
     if (failed || charts.size() == 1) return false;
     for (const auto root : roots) {
@@ -374,6 +392,8 @@ class SVParser {
     Line line;
     size_t indent_level = 0;
     std::vector<BlockFrame> block_stack;
+    std::vector<AnnexState> grammar_scopes;
+    std::vector<std::vector<std::string_view>> grammar_contexts;
   };
 
   struct BranchResult {
@@ -473,6 +493,104 @@ class SVParser {
       }
       consumeInto(line);
     }
+  }
+
+  // The grammar scope identifies the closing delimiter of an expression.
+  // Delimiter counting is only used after that scope cannot parse the input.
+  auto consumeAnnexDelimited(TK open, TK close, std::string_view rule,
+                             Line& line) -> void {
+    if (!at(open)) return;
+    consumeInto(line);
+    beginGrammar({rule});
+    int depth = 1;
+    while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
+                                   isConditionalBoundaryDirective(peek()))) {
+      const auto& grammar = grammar_scopes_.back();
+      if (at(close) && grammar.complete()) {
+        static_cast<void>(endGrammar());
+        consumeInto(line);
+        return;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (grammar.failed || grammar.interrupted ||
+          !grammar.accepts(peek().kind)) {
+        break;
+      }
+      if (at(open)) ++depth;
+      if (at(close)) --depth;
+      consumeInto(line);
+    }
+    recordGrammarFallback("expression outside Annex A rule");
+    static_cast<void>(endGrammar());
+    // The expression is outside the available grammar stream. Keep its
+    // original tokens and stop before the enclosing block if ')' is missing.
+    while (!at(TK::EndOfFile) && depth > 0 &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek())) &&
+           (block_stack_.empty() ||
+            !matchesBlockClose(block_stack_.back().close_kind, peek().kind))) {
+      if (at(open)) ++depth;
+      if (at(close)) --depth;
+      consumeInto(line);
+    }
+  }
+
+  // Parse a grammar subrule up to its enclosing for-header separator.
+  // The second stop protects recovery when a separator is missing.
+  auto consumeAnnexUntil(TK stop, TK alternate_stop,
+                         std::initializer_list<std::string_view> grammar_rules,
+                         Line& line) -> void {
+    beginGrammar(std::vector<std::string_view>(grammar_rules));
+    while (!at(TK::EndOfFile) && !at(stop) && !at(alternate_stop) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      const auto& grammar = grammar_scopes_.back();
+      if (grammar.failed || grammar.interrupted ||
+          !grammar.accepts(peek().kind)) {
+        break;
+      }
+      consumeInto(line);
+    }
+    if (!at(stop) || !grammar_scopes_.back().complete()) {
+      recordGrammarFallback("for-header segment outside Annex A rule");
+      static_cast<void>(endGrammar());
+      while (!at(TK::EndOfFile) && !at(stop) && !at(alternate_stop) &&
+             !(stop_at_conditional_boundary_ &&
+               isConditionalBoundaryDirective(peek()))) {
+        consumeInto(line);
+      }
+      return;
+    }
+    static_cast<void>(endGrammar());
+  }
+
+  auto consumeForHeader(Line& line) -> void {
+    if (!at(TK::OpenParenthesis)) return;
+    consumeInto(line);
+    if (!at(TK::Semicolon)) {
+      consumeAnnexUntil(TK::Semicolon, TK::CloseParenthesis,
+                        {"for_initialization", "genvar_initialization"}, line);
+    }
+    if (at(TK::Semicolon)) consumeInto(line);
+    if (!at(TK::Semicolon) && !at(TK::CloseParenthesis)) {
+      consumeAnnexUntil(TK::Semicolon, TK::CloseParenthesis,
+                        {"expression", "genvar_expression"}, line);
+    }
+    if (at(TK::Semicolon)) consumeInto(line);
+    if (!at(TK::CloseParenthesis)) {
+      consumeAnnexUntil(TK::CloseParenthesis, TK::EndOfFile,
+                        {"for_step", "genvar_iteration"}, line);
+    }
+    if (at(TK::CloseParenthesis)) consumeInto(line);
   }
 
   auto consumeUntilSemi() -> void {
@@ -914,6 +1032,8 @@ class SVParser {
         .line = line_,
         .indent_level = indent_level_,
         .block_stack = block_stack_,
+        .grammar_scopes = grammar_scopes_,
+        .grammar_contexts = grammar_contexts_,
     };
   }
 
@@ -922,12 +1042,24 @@ class SVParser {
     line_ = state.line;
     indent_level_ = state.indent_level;
     block_stack_ = state.block_stack;
+    grammar_scopes_ = state.grammar_scopes;
+    grammar_contexts_ = state.grammar_contexts;
   }
 
   [[nodiscard]] auto structuralStateCompatible(
       const ParserState& lhs, const ParserState& rhs) const -> bool {
-    return lhs.indent_level == rhs.indent_level &&
-           lhs.block_stack == rhs.block_stack;
+    if (lhs.indent_level != rhs.indent_level ||
+        lhs.block_stack != rhs.block_stack ||
+        lhs.grammar_contexts != rhs.grammar_contexts ||
+        lhs.grammar_scopes.size() != rhs.grammar_scopes.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < lhs.grammar_scopes.size(); ++i) {
+      if (!lhs.grammar_scopes[i].sameContinuation(rhs.grammar_scopes[i])) {
+        return false;
+      }
+    }
+    return true;
   }
 
   [[nodiscard]] auto joinStates(const std::vector<ParserState>& states) const
@@ -1213,6 +1345,20 @@ class SVParser {
       consumeUntilSemi();
       return;
     }
+    // Annex A puts unique / unique0 / priority before both if and case.
+    // Finish that grammar prefix before selecting the layout function.
+    if (!grammar_scopes_.empty() &&
+        annexCanStart("unique_priority", peek().kind) &&
+        grammarAllows(peek().kind)) {
+      const size_t origin = grammar_scopes_.back().charts.size() - 1;
+      consumeInto(line_);
+      if (!grammar_scopes_.back().completedFrom("unique_priority", origin)) {
+        recordGrammarFallback("incomplete Annex A unique_priority");
+        grammar_scopes_.back().interrupted = true;
+        consumeUntilSemi();
+        return;
+      }
+    }
     const TK first = peek().kind;
     const auto starts = [&](std::string_view rule) {
       return annexCanStart(rule, first);
@@ -1357,9 +1503,24 @@ class SVParser {
       consumeInto(line_);
       if (at(TK::OpenParenthesis)) {
         parseParenthesizedListInto(line_);
-        if (at(TK::Semicolon)) consumeInto(line_);
-        addLine();
-        return;
+        while (at(TK::Comma) && grammarAllows(TK::Comma)) {
+          consumeInto(line_);
+          addLine();
+          if (!at(TK::Identifier) || !grammarAllows(TK::Identifier)) break;
+          consumeInto(line_);
+          if (!at(TK::OpenParenthesis) || !grammarAllows(TK::OpenParenthesis)) {
+            break;
+          }
+          parseParenthesizedListInto(line_);
+        }
+        if (at(TK::Semicolon) && grammarAllows(TK::Semicolon)) {
+          consumeInto(line_);
+        }
+        if (!grammar_scopes_.empty() && (grammar_scopes_.back().complete() ||
+                                         grammar_scopes_.back().interrupted)) {
+          addLine();
+          return;
+        }
       }
     }
     parseGrammarLeaf(true, saved);
@@ -1428,7 +1589,6 @@ class SVParser {
   }
 
   auto parseConditionalRegion() -> void {
-    interruptGrammar("conditional compilation changes Annex A token stream");
     const Token start = peek();
     ParserState branch_entry = snapshotState();
 
@@ -1567,6 +1727,39 @@ class SVParser {
   }
 
   // module foo #(...) (...); ... endmodule
+  auto consumeGrammarHeader(TK closeKw) -> void {
+    while (!at(TK::EndOfFile) && !at(closeKw) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (grammar_scopes_.back().failed || grammar_scopes_.back().interrupted ||
+          !grammar_scopes_.back().accepts(peek().kind)) {
+        recordGrammarFallback("header outside Annex A rule");
+        grammar_scopes_.back().interrupted = true;
+        while (!at(TK::EndOfFile) && !at(closeKw) && !at(TK::Semicolon) &&
+               !(stop_at_conditional_boundary_ &&
+                 isConditionalBoundaryDirective(peek()))) {
+          consumeInto(line_);
+        }
+        if (at(TK::Semicolon)) consumeInto(line_);
+        addLine();
+        return;
+      }
+      const TK kind = peek().kind;
+      consumeInto(line_);
+      if (kind == TK::Semicolon) {
+        addLine();
+        return;
+      }
+    }
+    recordGrammarFallback("incomplete Annex A header");
+    addLine();
+  }
+
   auto parseStructuralBlock(TK closeKw) -> void {
     std::vector<std::string_view> roots;
     std::string_view body_rule;
@@ -1592,17 +1785,9 @@ class SVParser {
     }
     if (!roots.empty()) beginGrammar(roots);
     if (closeKw == TK::EndPackageKeyword) {
-      // package_declaration contains its body, so it has no separate header
-      // completion. Keep the chart active until endpackage.
-      consumeInto(line_);
-      if ((at(TK::AutomaticKeyword) || at(TK::StaticKeyword)) &&
-          grammarAllows(peek().kind)) {
-        consumeInto(line_);
-      }
-      if (!at(closeKw) && !at(TK::Semicolon) && !at(TK::EndOfFile)) {
-        consumeInto(line_);
-      }
-      if (at(TK::Semicolon)) consumeInto(line_);
+      // package_declaration includes its body; the first grammar-accepted
+      // semicolon separates its header from package_item repetitions.
+      consumeGrammarHeader(closeKw);
     } else {
       // The header chart ends the header, including any package imports. A
       // semicolon inside an import cannot be mistaken for the body boundary.
@@ -1667,18 +1852,7 @@ class SVParser {
         break;
     }
     if (!roots.empty()) beginGrammar(roots);
-    consumeInto(line_);  // keyword
-    while (!at(TK::Semicolon) && !at(TK::EndOfFile) && !at(closeKw)) {
-      if (at(TK::OpenParenthesis)) {
-        consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
-      } else {
-        consumeInto(line_);
-      }
-    }
-    if (at(TK::Semicolon)) {
-      consumeInto(line_);
-    }
-    addLine();
+    consumeGrammarHeader(closeKw);
 
     parseDelimitedBody(closeKw);
     if (!roots.empty()) static_cast<void>(endGrammar());
@@ -1741,7 +1915,8 @@ class SVParser {
   // if (...) stmt [else [if (...)] stmt]
   auto parseIf() -> void {
     consumeInto(line_);  // if
-    consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                          "cond_predicate", line_);
     addLine();
 
     parseIndentedStatement();
@@ -1762,7 +1937,12 @@ class SVParser {
   // case/casex/casez (...) ... endcase
   auto parseCase(TK closeKw) -> void {
     consumeInto(line_);  // case / casex / casez
-    consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                          "case_expression", line_);
+    if ((at(TK::InsideKeyword) || at(TK::MatchesKeyword)) &&
+        grammarAllows(peek().kind)) {
+      consumeInto(line_);
+    }
     addLine();
 
     pushOpenFrame(closeKw);
@@ -1812,9 +1992,33 @@ class SVParser {
 
   // for / foreach / while / repeat / forever
   auto parseLoop() -> void {
+    if (at(TK::DoKeyword)) {
+      consumeInto(line_);
+      addLine();
+      parseIndentedStatement();
+      if (at(TK::WhileKeyword) && grammarAllows(TK::WhileKeyword)) {
+        consumeInto(line_);
+        consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                              "expression", line_);
+        if (at(TK::Semicolon) && grammarAllows(TK::Semicolon)) {
+          consumeInto(line_);
+        }
+        addLine();
+      }
+      return;
+    }
+    const TK loop_kind = peek().kind;
     consumeInto(line_);  // keyword
     if (at(TK::OpenParenthesis)) {
-      consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+      if (loop_kind == TK::ForKeyword) {
+        consumeForHeader(line_);
+      } else if (loop_kind == TK::WhileKeyword ||
+                 loop_kind == TK::RepeatKeyword) {
+        consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                              "expression", line_);
+      } else {
+        consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+      }
     }
     if (at(TK::At)) {
       consumeInto(line_);

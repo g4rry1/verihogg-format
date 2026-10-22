@@ -328,6 +328,22 @@ TEST_F(TreeUnwrapperTest, ParameterizedInstantiationIsParsedBeforeFallback) {
   EXPECT_EQ(snap(lines), expected);
 }
 
+TEST_F(TreeUnwrapperTest, MultipleInstancesCompleteOneAnnexAItem) {
+  const auto result =
+      parseWithDiagnostics("module m; child u0(a), u1(b); endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_first = false;
+  bool found_second = false;
+  for (const auto& line : result.lines) {
+    for (const auto& token : line.tokens) {
+      found_first |= token.rawText() == "u0";
+      found_second |= token.rawText() == "u1";
+    }
+  }
+  EXPECT_TRUE(found_first);
+  EXPECT_TRUE(found_second);
+}
+
 TEST_F(TreeUnwrapperTest, MprfConditionalPortsKeepDirectivesAsLines) {
   auto lines = parse(
       "`include \"scr1_arch_description.svh\"\n"
@@ -1467,6 +1483,99 @@ TEST_F(TreeUnwrapperTest, AnnexAHeaderIncludesPackageImportsBeforePorts) {
   EXPECT_TRUE(found_body);
   EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
             TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalPackageItemsResumeAnnexAAfterEndif) {
+  const auto result = parseWithDiagnostics(
+      "package p;\n"
+      "`ifdef PICK_A\n"
+      "int a;\n"
+      "`else\n"
+      "int b;\n"
+      "`endif\n"
+      "int c;\n"
+      "endpackage\n");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_after_endif = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() == 3 && line.tokens[0].kind == TK::IntKeyword &&
+        line.tokens[1].rawText() == "c" &&
+        line.tokens[2].kind == TK::Semicolon) {
+      found_after_endif = true;
+    }
+  }
+  EXPECT_TRUE(found_after_endif);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndPackageKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, UniquePrefixSelectsAnnexAIfAndCase) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin "
+      "unique if (a) b = 1; else b = 2; "
+      "unique case (a) 0: b = 3; default: b = 4; endcase "
+      "end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_if = false;
+  bool found_case = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() >= 2 &&
+        line.tokens.front().kind == TK::UniqueKeyword) {
+      found_if |= line.tokens[1].kind == TK::IfKeyword;
+      found_case |= line.tokens[1].kind == TK::CaseKeyword;
+    }
+  }
+  EXPECT_TRUE(found_if);
+  EXPECT_TRUE(found_case);
+}
+
+TEST_F(TreeUnwrapperTest, DoWhileCompletesAsOneAnnexALoop) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin do a = a + 1; while (a < 3); end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_tail = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::WhileKeyword &&
+        line.tokens.back().kind == TK::Semicolon) {
+      found_tail = true;
+    }
+  }
+  EXPECT_TRUE(found_tail);
+}
+
+TEST_F(TreeUnwrapperTest, ProceduralAndGenerateForHeadersFollowAnnexA) {
+  const auto result = parseWithDiagnostics(
+      "module m; "
+      "initial for (int i = 0; i < 2; i++) a[i] = 0; "
+      "generate for (genvar g = 0; g < 2; g++) begin : each "
+      "logic x; end endgenerate endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  size_t for_headers = 0;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::ForKeyword &&
+        line.tokens.back().kind == TK::CloseParenthesis) {
+      ++for_headers;
+    }
+  }
+  EXPECT_EQ(for_headers, 2U);
+}
+
+TEST_F(TreeUnwrapperTest, CaseInsideAndMatchesUseAnnexAItems) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin "
+      "case (a) inside [1:3]: b = 1; default: b = 0; endcase "
+      "case (a) matches 1: b = 2; default: b = 0; endcase "
+      "end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  size_t modified_case_headers = 0;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::CaseKeyword &&
+        (line.tokens.back().kind == TK::InsideKeyword ||
+         line.tokens.back().kind == TK::MatchesKeyword)) {
+      ++modified_case_headers;
+    }
+  }
+  EXPECT_EQ(modified_case_headers, 2U);
 }
 
 TEST_F(TreeUnwrapperTest, IncompleteAutomaticModuleUsesDiagnosticRecovery) {
