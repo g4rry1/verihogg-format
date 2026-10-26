@@ -1230,7 +1230,10 @@ class SVParser {
       return;
     }
     if (!recover_to_outer) {
-      recordGrammarFallback("malformed Annex A item");
+      recordGrammarFallback(
+          !grammar_scopes_.empty() && grammar_scopes_.back().failed
+              ? grammar_scopes_.back().failure_reason
+              : "malformed Annex A item");
       if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
       indent_level_ = saved.indent_level;
       consumeUntilSemi();
