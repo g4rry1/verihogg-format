@@ -703,7 +703,14 @@ class SVParser {
                          std::initializer_list<std::string_view> grammar_rules,
                          Line& line) -> void {
     beginGrammar(std::vector<std::string_view>(grammar_rules));
-    while (!at(TK::EndOfFile) && !at(stop) && !at(alternate_stop) &&
+    int parens = 0;
+    int brackets = 0;
+    int braces = 0;
+    const auto at_boundary = [&] {
+      return parens == 0 && brackets == 0 && braces == 0 &&
+             (at(stop) || at(alternate_stop));
+    };
+    while (!at(TK::EndOfFile) && !at_boundary() &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
       if (isCompilerDirective(peek())) {
@@ -715,6 +722,29 @@ class SVParser {
       if (grammar.failed || grammar.interrupted ||
           !grammar.accepts(peek().kind)) {
         break;
+      }
+      switch (peek().kind) {
+        case TK::OpenParenthesis:
+          ++parens;
+          break;
+        case TK::CloseParenthesis:
+          if (parens > 0) --parens;
+          break;
+        case TK::OpenBracket:
+          ++brackets;
+          break;
+        case TK::CloseBracket:
+          if (brackets > 0) --brackets;
+          break;
+        case TK::OpenBrace:
+        case TK::ApostropheOpenBrace:
+          ++braces;
+          break;
+        case TK::CloseBrace:
+          if (braces > 0) --braces;
+          break;
+        default:
+          break;
       }
       consumeInto(line);
     }

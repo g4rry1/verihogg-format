@@ -2040,6 +2040,22 @@ TEST_F(TreeUnwrapperTest, ProceduralAndGenerateForHeadersFollowAnnexA) {
   EXPECT_EQ(for_headers, 2U);
 }
 
+TEST_F(TreeUnwrapperTest, ForHeaderNestedCallsDoNotEndAtInnerParen) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial for (int unsigned i = 0; "
+      "i < $bits(type_t); ++i) begin end endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_header = false;
+  for (const auto& line : result.lines) {
+    found_header |= !line.tokens.empty() &&
+                    line.tokens.front().kind == TK::ForKeyword &&
+                    line.tokens.back().kind == TK::CloseParenthesis;
+  }
+  EXPECT_TRUE(found_header);
+}
+
 TEST_F(TreeUnwrapperTest, CaseInsideAndMatchesUseAnnexAItems) {
   const auto result = parseWithDiagnostics(
       "module m; initial begin "
