@@ -1588,8 +1588,11 @@ class SVParser {
     const bool prefixed_clocking =
         (at(TK::DefaultKeyword) || at(TK::GlobalKeyword)) &&
         at(TK::ClockingKeyword, 1);
+    const bool constraint_block =
+        at(TK::ConstraintKeyword) ||
+        (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1));
     const bool own_grammar =
-        !virtual_class && !prefixed_clocking &&
+        !virtual_class && !prefixed_clocking && !constraint_block &&
         (!block || (block->layout != BlockLayout::Structural &&
                     block->layout != BlockLayout::Named &&
                     block->layout != BlockLayout::DelimitedRecovery));
@@ -1635,6 +1638,14 @@ class SVParser {
 
     // These declarations use Annex A for their header and for each repeated
     // body item. The chart advances in consume(), alongside line emission.
+    if ((first == TK::ConstraintKeyword ||
+         (first == TK::StaticKeyword && at(TK::ConstraintKeyword, 1))) &&
+        (starts("constraint_declaration") ||
+         starts("extern_constraint_declaration")) &&
+        allowed_here()) {
+      parseConstraintBlock();
+      return;
+    }
     if (first == TK::CoverGroupKeyword && starts("covergroup_declaration") &&
         allowed_here()) {
       parseAnnexDelimitedBlock(TK::EndGroupKeyword, "covergroup_declaration",
@@ -2149,6 +2160,16 @@ class SVParser {
 
   auto consumeAnnexDeclarationToken(TK closeKw, bool& headerEnded,
                                     size_t baseIndent) -> bool {
+    if (at(TK::Semicolon) &&
+        (grammar_scopes_.back().completed("property_spec") ||
+         grammar_scopes_.back().completed("sequence_expr"))) {
+      const bool suspended = grammar_suspended_;
+      grammar_suspended_ = true;
+      consumeInto(line_);
+      grammar_suspended_ = suspended;
+      addLine();
+      return true;
+    }
     if (grammar_scopes_.back().failed || grammar_scopes_.back().interrupted ||
         !grammar_scopes_.back().accepts(peek().kind)) {
       return false;
@@ -2234,22 +2255,36 @@ class SVParser {
     return true;
   }
 
-  // Property and sequence bodies contain one expression after their local
-  // declarations. Keep a declaration chart through that expression so Annex A
-  // decides whether a semicolon is internal or ends the declaration.
+  // Annex A gives property and sequence declarations a header, repeated local
+  // declarations, and one final expression. Advance both possible body rules
+  // together because a user-defined data type and an expression may both
+  // start with an identifier. A completed local declaration gets a fresh
+  // chart; the final expression retains its chart through the closing token.
   auto parseAnnexWholeBlock(TK closeKw,
                             std::string_view declarationRule) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
-    beginGrammar({declarationRule}, true);
-    bool header_ended = false;
-    while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
-                                   isConditionalBoundaryDirective(peek()))) {
+    beginGrammar({declarationRule});
+    consumeGrammarHeader(closeKw);
+    const AnnexState header = endGrammar(false);
+    const std::string_view expression_rule =
+        closeKw == TK::EndPropertyKeyword ? "property_spec" : "sequence_expr";
+    const std::vector<std::string_view> body_rules = {
+        "assertion_variable_declaration", expression_rule};
+    bool complete = !header.failed && !header.interrupted;
+    const bool body_started = complete;
+    if (complete) {
+      ++indent_level_;
+      beginGrammar(body_rules);
+    }
+    while (!at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek())) &&
+           complete) {
       const auto& grammar = grammar_scopes_.back();
       if (isConditionalStartDirective(peek())) {
-        if (!parseAnnexDeclarationConditional(closeKw, header_ended,
-                                              saved.indent_level)) {
-          break;
-        }
+        bool header_ended = true;
+        complete = parseAnnexDeclarationConditional(closeKw, header_ended,
+                                                    saved.indent_level);
         continue;
       }
       if (isCompilerDirective(peek())) {
@@ -2257,20 +2292,43 @@ class SVParser {
         parseDirectiveLine();
         continue;
       }
-      if (grammar.complete() && !grammar.accepts(peek().kind)) break;
-      if (!consumeAnnexDeclarationToken(closeKw, header_ended,
-                                        saved.indent_level))
+      if (grammar.completed(expression_rule) &&
+          (at(TK::Semicolon) || at(closeKw))) {
         break;
+      }
+      if (grammar.completed("assertion_variable_declaration") &&
+          !grammar.completed(expression_rule)) {
+        static_cast<void>(endGrammar());
+        beginGrammar(body_rules);
+        continue;
+      }
+      if (grammar.failed || grammar.interrupted ||
+          !grammar.accepts(peek().kind)) {
+        complete = false;
+        break;
+      }
+      const TK kind = peek().kind;
+      consumeInto(line_);
+      if (kind == TK::Semicolon) addLine();
     }
-    if (grammar_scopes_.back().complete()) {
+    if (complete) {
+      complete = grammar_scopes_.back().completed(expression_rule) &&
+                 (at(TK::Semicolon) || at(closeKw));
+      static_cast<void>(endGrammar(false));
+    } else if (body_started) {
+      static_cast<void>(endGrammar(false));
+    }
+    if (complete) {
+      if (at(TK::Semicolon)) {
+        consumeInto(line_);
+        addLine();
+      }
       addLine();
-      static_cast<void>(endGrammar());
-      indent_level_ = saved.indent_level;
+      pushOpenFrame(closeKw);
+      parseOpenFrameClose();
       return;
     }
     recordGrammarFallback("malformed Annex A declaration");
-    grammar_scopes_.back().interrupted = true;
-    static_cast<void>(endGrammar(false));
     lines_.resize(saved.output_size);
     line_ = saved.line;
     preserved_source_end_ = saved.preserved_source_end;
@@ -2283,6 +2341,60 @@ class SVParser {
     beginGrammar(std::move(rules));
     parseGrammarLeaf();
     return endGrammar();
+  }
+
+  auto parseConstraintBlock() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"constraint_declaration", "extern_constraint_declaration"});
+    bool opened = false;
+    while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
+                                   isConditionalBoundaryDirective(peek()))) {
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      const TK kind = peek().kind;
+      consumeInto(line_);
+      if (kind == TK::OpenBrace) {
+        addLine();
+        opened = true;
+        break;
+      }
+    }
+    const AnnexState header = endGrammar(false);
+    if (!opened || header.failed || header.interrupted) {
+      recordGrammarFallback("malformed Annex A constraint header");
+      lines_.resize(saved.output_size);
+      line_ = saved.line;
+      preserved_source_end_ = saved.preserved_source_end;
+      indent_level_ = saved.indent_level;
+      pos_ = saved.pos;
+      emitOpaque(pos_, findOuterBoundary(pos_));
+      return;
+    }
+
+    const TK outer_close =
+        block_stack_.empty() ? TK::EndOfFile : block_stack_.back().close_kind;
+    pushOpenFrame(TK::CloseBrace);
+    ++indent_level_;
+    while (!at(TK::CloseBrace) && !at(TK::EndOfFile) && !at(outer_close) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (at(TK::Directive)) {
+        parseStatement();
+      } else {
+        static_cast<void>(parseAnnexItem({"constraint_block_item"}));
+      }
+    }
+    if (at(TK::CloseBrace)) {
+      parseOpenFrameClose();
+    } else {
+      recordGrammarFallback("incomplete Annex A constraint block");
+      block_stack_.pop_back();
+      if (indent_level_ > 0) --indent_level_;
+    }
   }
 
   auto parseConfigBlock() -> void {

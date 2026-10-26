@@ -1541,10 +1541,35 @@ TEST_F(TreeUnwrapperTest, LargeAnnexABodiesUseItemScopes) {
 
 TEST_F(TreeUnwrapperTest, LongPropertyDeclarationStaysOnGrammarPath) {
   std::string source = "module m; property p;\n";
-  for (size_t i = 0; i < 1000; ++i) {
+  for (size_t i = 0; i < 10000; ++i) {
     source += "logic v" + std::to_string(i) + ";\n";
   }
   source += "a; endproperty endmodule\n";
+  const auto result = parseWithDiagnostics(source);
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+}
+
+TEST_F(TreeUnwrapperTest,
+       SequenceDeclarationsAndExpressionShareIdentifierStart) {
+  const auto result = parseWithDiagnostics(
+      "module m; sequence s; item_t value; value ##1 value; endsequence "
+      "endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  for (const auto& line : result.lines) {
+    EXPECT_FALSE(line.is_opaque);
+  }
+}
+
+TEST_F(TreeUnwrapperTest, LongSequenceDeclarationStaysOnGrammarPath) {
+  std::string source = "module m; sequence s;\n";
+  for (size_t i = 0; i < 10000; ++i) {
+    source += "logic v" + std::to_string(i) + ";\n";
+  }
+  source += "a ##1 b; endsequence endmodule\n";
   const auto result = parseWithDiagnostics(source);
   for (const auto& warning : result.warnings) {
     ADD_FAILURE() << warning.code << ": " << warning.message;
@@ -1712,6 +1737,52 @@ TEST_F(TreeUnwrapperTest, ConstraintUsesAnnexAAndKeepsFollowingItems) {
   }
   EXPECT_TRUE(preserved_sibling);
   EXPECT_TRUE(resumed_module);
+}
+
+TEST_F(TreeUnwrapperTest, LongConstraintBlockStaysOnGrammarPath) {
+  std::string source = "class c; constraint r {\n";
+  for (size_t i = 0; i < 10000; ++i) {
+    source += "x" + std::to_string(i) + " > 0;\n";
+  }
+  source += "} endclass\n";
+  const auto result = parseWithDiagnostics(source);
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+}
+
+TEST_F(TreeUnwrapperTest, ConstraintItemsAndDirectivesResumeAtOuterClose) {
+  const auto valid = parseWithDiagnostics(
+      "class c; constraint r {\n"
+      "`ifdef A\n"
+      "if (a) { x > 0; y > 0; }\n"
+      "`else\n"
+      "x > 1;\n"
+      "`endif\n"
+      "z > 0;\n"
+      "} endclass");
+  EXPECT_TRUE(valid.warnings.empty());
+
+  const auto invalid = parseWithDiagnostics(
+      "class c; constraint r { nonsense ?; x > 0; } endclass module m; "
+      "endmodule");
+  EXPECT_FALSE(invalid.warnings.empty());
+  bool resumed = false;
+  for (const auto& line : invalid.lines) {
+    resumed |=
+        !line.tokens.empty() && line.tokens.front().kind == TK::ModuleKeyword;
+  }
+  EXPECT_TRUE(resumed);
+
+  const auto missing_close = parseWithDiagnostics(
+      "class c; constraint r { x > 0; endclass module m; endmodule");
+  EXPECT_FALSE(missing_close.warnings.empty());
+  resumed = false;
+  for (const auto& line : missing_close.lines) {
+    resumed |=
+        !line.tokens.empty() && line.tokens.front().kind == TK::ModuleKeyword;
+  }
+  EXPECT_TRUE(resumed);
 }
 
 TEST_F(TreeUnwrapperTest, UnknownTextSkipsNestedBeginBeforeOuterEnd) {
