@@ -1103,6 +1103,73 @@ TEST_F(TreeUnwrapperTest, LabeledAssertionElseBeginParsesActionBlock) {
   EXPECT_EQ(snap(result.lines), expected);
 }
 
+TEST_F(TreeUnwrapperTest, AssertionPropertySpecUsesAnnexRule) {
+  const auto valid = parseWithDiagnostics(
+      "module m; assert property (@(posedge clk) disable iff (rst) "
+      "a |-> b) else $error(\"bad\"); endmodule");
+  EXPECT_TRUE(valid.warnings.empty());
+
+  const auto malformed = parseWithDiagnostics(
+      "module m; assert property (a |-> ) else $error(\"bad\"); "
+      "endmodule module n; logic y; endmodule");
+  ASSERT_FALSE(malformed.warnings.empty());
+  EXPECT_EQ(malformed.warnings.front().code, "annex-a-fallback");
+  bool parsed_second_module = false;
+  for (const auto& line : malformed.lines) {
+    if (line.tokens.size() >= 2 && !line.is_opaque &&
+        line.tokens.front().kind == TK::LogicKeyword &&
+        line.tokens[1].rawText() == "y") {
+      parsed_second_module = true;
+    }
+  }
+  EXPECT_TRUE(parsed_second_module);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalExpressionsResumeEnclosingAnnexRules) {
+  const auto predicate = parseWithDiagnostics(
+      "module m; initial begin if (\n"
+      "`ifdef A\n"
+      "a\n"
+      "`else\n"
+      "b\n"
+      "`endif\n"
+      ") q = 1; end endmodule");
+  EXPECT_TRUE(predicate.warnings.empty());
+
+  const auto property = parseWithDiagnostics(
+      "module m; assert property (\n"
+      "`ifdef A\n"
+      "a |-> b\n"
+      "`else\n"
+      "c |-> d\n"
+      "`endif\n"
+      ") else $error(\"bad\"); endmodule");
+  EXPECT_TRUE(property.warnings.empty());
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalForHeaderResumesAnnexRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin for (int i = 0;\n"
+      "`ifdef A\n"
+      "i < 2\n"
+      "`else\n"
+      "i < 3\n"
+      "`endif\n"
+      "; i++) q = i; end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool saw_for = false;
+  bool saw_body = false;
+  for (const auto& line : result.lines) {
+    if (line.is_opaque) continue;
+    for (const auto& token : line.tokens) {
+      saw_for |= token.kind == TK::ForKeyword;
+      saw_body |= token.kind == TK::Identifier && token.rawText() == "q";
+    }
+  }
+  EXPECT_TRUE(saw_for);
+  EXPECT_TRUE(saw_body);
+}
+
 // ---- begin/end --------------------------------------------------------------
 
 TEST_F(TreeUnwrapperTest, BeginEndAreOwnLines) {

@@ -707,6 +707,14 @@ class SVParser {
         consumeInto(line);
         return;
       }
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_)) {
+          break;
+        }
+        continue;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -747,8 +755,8 @@ class SVParser {
       }
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
-        if (!parseAnnexDeclarationConditional(TK::EndOfFile, header_ended,
-                                              indent_level_)) {
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_)) {
           break;
         }
         continue;
@@ -786,6 +794,14 @@ class SVParser {
     while (!at(TK::EndOfFile) && !at_boundary() &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_)) {
+          break;
+        }
+        continue;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -1885,7 +1901,8 @@ class SVParser {
   auto parseAssertionStatement() -> void {
     consumeInto(line_);  // assert
     consumeInto(line_);  // property
-    consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                          "property_spec", line_);
 
     if (at(TK::Semicolon)) {
       consumeInto(line_);
@@ -2278,7 +2295,7 @@ class SVParser {
     parseDelimitedBody(closeKw, bodyRule);
   }
 
-  auto consumeAnnexDeclarationToken(TK closeKw, bool& headerEnded,
+  auto consumeAnnexConditionalToken(TK closeKw, bool& headerEnded,
                                     size_t baseIndent) -> bool {
     if (at(TK::Semicolon) &&
         (grammar_scopes_.back().completed("property_spec") ||
@@ -2313,8 +2330,8 @@ class SVParser {
   // Conditional compilation is outside Annex A. Each branch advances copies
   // of every active chart as its tokens are emitted. A compatible continuation
   // resumes after endif without replaying any branch tokens.
-  auto parseAnnexDeclarationConditional(TK closeKw, bool& headerEnded,
-                                        size_t baseIndent) -> bool {
+  auto parseAnnexConditional(TK closeKw, bool& headerEnded,
+                             size_t baseIndent) -> bool {
     addLine();
     parseDirectiveLine();  // ifdef / ifndef
     const auto entry = grammar_scopes_;
@@ -2333,14 +2350,13 @@ class SVParser {
       indent_level_ = entry_indent;
       while (!at(TK::EndOfFile) && !isConditionalBoundaryDirective(peek())) {
         if (isConditionalStartDirective(peek())) {
-          if (!parseAnnexDeclarationConditional(closeKw, headerEnded,
-                                                baseIndent)) {
+          if (!parseAnnexConditional(closeKw, headerEnded, baseIndent)) {
             return false;
           }
         } else if (isCompilerDirective(peek())) {
           addLine();
           parseDirectiveLine();
-        } else if (!consumeAnnexDeclarationToken(closeKw, headerEnded,
+        } else if (!consumeAnnexConditionalToken(closeKw, headerEnded,
                                                  baseIndent)) {
           return false;
         }
@@ -2406,8 +2422,8 @@ class SVParser {
       const auto& grammar = grammar_scopes_.back();
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
-        complete = parseAnnexDeclarationConditional(closeKw, header_ended,
-                                                    saved.indent_level);
+        complete =
+            parseAnnexConditional(closeKw, header_ended, saved.indent_level);
         continue;
       }
       if (isCompilerDirective(peek())) {
