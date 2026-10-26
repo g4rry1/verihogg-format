@@ -440,6 +440,44 @@ struct AnnexState {
                found->second.end();
   }
 
+  [[nodiscard]] auto consumedTerminalInRule(std::string_view name,
+                                            TK kind) const -> bool {
+    const int rule = annexRule(name);
+    const int terminal = annexTerminal(kind);
+    if (rule < 0 || terminal < 0 || failed || charts.size() == 1) {
+      return false;
+    }
+    for (const auto item : charts.back().items) {
+      const auto& production = kProductions[item.production];
+      if (production.left == rule && item.dot > 0 &&
+          kSymbols[production.offset + item.dot - 1] == -terminal - 1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  [[nodiscard]] auto hasViableRule(std::string_view name) const -> bool {
+    const int rule = annexRule(name);
+    if (rule < 0 || failed || charts.empty()) return false;
+    return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
+      return item.origin == 0 && kProductions[item.production].left == rule;
+    });
+  }
+
+  [[nodiscard]] auto hasViableProductionStartingWith(std::string_view name,
+                                                     TK kind) const -> bool {
+    const int rule = annexRule(name);
+    const int terminal = annexTerminal(kind);
+    if (rule < 0 || terminal < 0 || failed || charts.empty()) return false;
+    return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
+      const auto& production = kProductions[item.production];
+      return item.origin == 0 && item.dot > 0 && production.left == rule &&
+             production.count > 0 &&
+             kSymbols[production.offset] == -terminal - 1;
+    });
+  }
+
   [[nodiscard]] auto expectsRootTerminal(TK kind) const -> bool {
     const int terminal = annexTerminal(kind);
     if (terminal < 0 || failed) return false;
@@ -2129,7 +2167,9 @@ class SVParser {
   }
 
   // module foo #(...) (...); ... endmodule
-  auto consumeGrammarHeader(TK closeKw) -> void {
+  auto consumeGrammarHeader(
+      TK closeKw, std::initializer_list<std::string_view> boundaryRules,
+      std::initializer_list<std::string_view> completedRules = {}) -> void {
     while (!at(TK::EndOfFile) && !at(closeKw) &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
@@ -2151,9 +2191,18 @@ class SVParser {
         addLine();
         return;
       }
-      const TK kind = peek().kind;
       consumeInto(line_);
-      if (kind == TK::Semicolon) {
+      const auto& grammar = grammar_scopes_.back();
+      const bool boundary =
+          std::ranges::any_of(boundaryRules,
+                              [&](std::string_view rule) {
+                                return grammar.consumedTerminalInRule(
+                                    rule, TK::Semicolon);
+                              }) ||
+          std::ranges::any_of(completedRules, [&](std::string_view rule) {
+            return grammar.completedFrom(rule, 0);
+          });
+      if (boundary) {
         addLine();
         return;
       }
@@ -2165,15 +2214,21 @@ class SVParser {
   auto parseAnnexDelimitedBlock(TK closeKw, std::string_view declarationRule,
                                 std::string_view bodyRule,
                                 bool hasHeader = true) -> void {
-    const bool global_clocking = at(TK::GlobalKeyword);
     beginGrammar({declarationRule});
     if (hasHeader) {
-      consumeGrammarHeader(closeKw);
+      consumeGrammarHeader(closeKw, {declarationRule});
     } else {
       consumeInto(line_);  // specify
+      if (!grammar_scopes_.back().consumedTerminalInRule(declarationRule,
+                                                         TK::SpecifyKeyword)) {
+        recordGrammarFallback("specify header outside Annex A rule");
+      }
       addLine();
     }
-    static_cast<void>(endGrammar(false));
+    const AnnexState header = endGrammar(false);
+    const bool global_clocking = declarationRule == "clocking_declaration" &&
+                                 header.hasViableProductionStartingWith(
+                                     declarationRule, TK::GlobalKeyword);
     if (global_clocking) {
       pushOpenFrame(closeKw);
       ++indent_level_;
@@ -2294,7 +2349,7 @@ class SVParser {
                             std::string_view declarationRule) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({declarationRule});
-    consumeGrammarHeader(closeKw);
+    consumeGrammarHeader(closeKw, {declarationRule});
     const AnnexState header = endGrammar(false);
     const std::string_view expression_rule =
         closeKw == TK::EndPropertyKeyword ? "property_spec" : "sequence_expr";
@@ -2385,9 +2440,9 @@ class SVParser {
         continue;
       }
       if (!grammar_scopes_.back().accepts(peek().kind)) break;
-      const TK kind = peek().kind;
       consumeInto(line_);
-      if (kind == TK::OpenBrace) {
+      if (grammar_scopes_.back().consumedTerminalInRule("constraint_block",
+                                                        TK::OpenBrace)) {
         addLine();
         opened = true;
         break;
@@ -2429,14 +2484,15 @@ class SVParser {
 
   auto parseConfigBlock() -> void {
     beginGrammar({"config_declaration"});
-    consumeGrammarHeader(TK::EndConfigKeyword);
+    consumeGrammarHeader(TK::EndConfigKeyword, {"config_declaration"});
     static_cast<void>(endGrammar(false));
     pushOpenFrame(TK::EndConfigKeyword);
     ++indent_level_;
 
     // config_declaration prescribes zero or more local parameters, exactly
     // one design_statement, then zero or more config_rule_statement items.
-    while (at(TK::LocalParamKeyword) || isCompilerDirective(peek())) {
+    while (annexCanStart("local_parameter_declaration", peek().kind) ||
+           isCompilerDirective(peek())) {
       if (isCompilerDirective(peek())) {
         parseDirectiveLine();
         continue;
@@ -2457,7 +2513,7 @@ class SVParser {
         addLine();
       }
     }
-    if (at(TK::DesignKeyword)) {
+    if (annexCanStart("design_statement", peek().kind)) {
       static_cast<void>(parseAnnexItem({"design_statement"}));
     } else {
       recordGrammarFallback("config requires design_statement");
@@ -2480,7 +2536,8 @@ class SVParser {
 
   auto parsePrimitiveBlock() -> void {
     beginGrammar({"udp_declaration"});
-    consumeGrammarHeader(TK::EndPrimitiveKeyword);
+    consumeGrammarHeader(TK::EndPrimitiveKeyword, {},
+                         {"udp_nonansi_declaration", "udp_ansi_declaration"});
     const AnnexState header = endGrammar(false);
     const bool nonansi = header.completedFrom("udp_nonansi_declaration", 0);
     const bool ansi = header.completedFrom("udp_ansi_declaration", 0);
@@ -2488,8 +2545,8 @@ class SVParser {
     ++indent_level_;
 
     size_t port_declarations = 0;
-    while (at(TK::OutputKeyword) || at(TK::InputKeyword) ||
-           at(TK::RegKeyword) || isCompilerDirective(peek())) {
+    while (annexCanStart("udp_port_declaration", peek().kind) ||
+           isCompilerDirective(peek())) {
       if (isCompilerDirective(peek())) {
         parseDirectiveLine();
       } else {
@@ -2503,11 +2560,12 @@ class SVParser {
     }
     bool sequential = false;
     bool combinational = false;
-    if (at(TK::InitialKeyword)) {
+    if (annexCanStart("udp_initial_statement", peek().kind)) {
       static_cast<void>(parseAnnexItem({"udp_initial_statement"}));
       sequential = true;
     }
-    if (at(TK::TableKeyword)) {
+    if (annexCanStart("combinational_body", peek().kind) ||
+        annexCanStart("sequential_body", peek().kind)) {
       consumeInto(line_);
       addLine();
       pushOpenFrame(TK::EndTableKeyword);
@@ -2580,7 +2638,7 @@ class SVParser {
     if (closeKw == TK::EndPackageKeyword) {
       // package_declaration includes its body; the first grammar-accepted
       // semicolon separates its header from package_item repetitions.
-      consumeGrammarHeader(closeKw);
+      consumeGrammarHeader(closeKw, {"package_declaration"});
     } else {
       // The header chart ends the header, including any package imports. A
       // semicolon inside an import cannot be mistaken for the body boundary.
@@ -2638,8 +2696,6 @@ class SVParser {
     switch (closeKw) {
       case TK::EndClassKeyword:
         roots = {"class_declaration", "interface_class_declaration"};
-        body_rule =
-            at(TK::InterfaceKeyword) ? "interface_class_item" : "class_item";
         break;
       case TK::EndFunctionKeyword:
         roots = {"function_declaration"};
@@ -2651,20 +2707,37 @@ class SVParser {
         break;
     }
     if (!roots.empty()) beginGrammar(roots);
-    consumeGrammarHeader(closeKw);
+    switch (closeKw) {
+      case TK::EndClassKeyword:
+        consumeGrammarHeader(
+            closeKw, {"class_declaration", "interface_class_declaration"});
+        break;
+      case TK::EndFunctionKeyword:
+        consumeGrammarHeader(closeKw, {"function_body_declaration"});
+        break;
+      case TK::EndTaskKeyword:
+        consumeGrammarHeader(closeKw, {"task_body_declaration"});
+        break;
+      default:
+        break;
+    }
     // The declaration grammar validates the viable header prefix. Its body
     // items are parsed with their Annex A rules one at a time, avoiding a
     // whole-class or whole-function chart for large declarations.
-    if (!roots.empty()) static_cast<void>(endGrammar(false));
+    if (!roots.empty()) {
+      const AnnexState header = endGrammar(false);
+      if (closeKw == TK::EndClassKeyword) {
+        body_rule = header.hasViableRule("interface_class_declaration")
+                        ? "interface_class_item"
+                        : "class_item";
+      }
+    }
     parseDelimitedBody(closeKw, body_rule);
   }
 
   // generate ... endgenerate
   auto parseSimpleBlock(TK closeKw) -> void {
     consumeInto(line_);
-    if (at(TK::Semicolon)) {
-      consumeInto(line_);
-    }
     addLine();
 
     parseDelimitedBody(closeKw);
