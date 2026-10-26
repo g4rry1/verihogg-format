@@ -1132,6 +1132,18 @@ class SVParser {
     return {pos_, line_, lines_.size(), preserved_source_end_, indent_level_};
   }
 
+  auto recoverMalformedItem(const LeafCheckpoint& saved) -> void {
+    if (!recovery_enabled_) {
+      consumeUntilSemi();
+      return;
+    }
+    lines_.resize(saved.output_size);
+    line_ = saved.line;
+    preserved_source_end_ = saved.preserved_source_end;
+    indent_level_ = saved.indent_level;
+    emitOpaque(saved.pos, findOuterBoundary(saved.pos));
+  }
+
   auto parseGrammarLeaf(bool recover_to_outer = false,
                         std::optional<LeafCheckpoint> checkpoint = {}) -> void {
     const LeafCheckpoint saved = checkpoint.value_or(leafCheckpoint());
@@ -2817,29 +2829,18 @@ class SVParser {
   // always / always_comb / always_ff / always_latch / initial / final
   auto parseProceduralBlock() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
-    const auto recover_control = [&] {
-      if (!recovery_enabled_) {
-        consumeUntilSemi();
-        return;
-      }
-      lines_.resize(saved.output_size);
-      line_ = saved.line;
-      preserved_source_end_ = saved.preserved_source_end;
-      indent_level_ = saved.indent_level;
-      emitOpaque(saved.pos, findOuterBoundary(saved.pos));
-    };
     consumeInto(line_);  // keyword
     bool has_delay_control = false;
     if (at(TK::Hash)) {
       has_delay_control = true;
       if (!consumeAnnexRule("delay_control", line_)) {
-        recover_control();
+        recoverMalformedItem(saved);
         return;
       }
     }
     if (at(TK::At)) {
       if (!consumeAnnexRule("event_control", line_)) {
-        recover_control();
+        recoverMalformedItem(saved);
         return;
       }
     }
@@ -2943,6 +2944,7 @@ class SVParser {
 
   // for / foreach / while / repeat / forever
   auto parseLoop() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
     if (at(TK::DoKeyword)) {
       consumeInto(line_);
       addLine();
@@ -2972,8 +2974,10 @@ class SVParser {
       }
     }
     if (at(TK::At)) {
-      consumeInto(line_);
-      consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+      if (!consumeAnnexRule("event_control", line_)) {
+        recoverMalformedItem(saved);
+        return;
+      }
       if (at(TK::BeginKeyword)) {
         consumeInto(line_);
         consumeLabel();

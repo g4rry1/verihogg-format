@@ -2460,4 +2460,31 @@ TEST_F(TreeUnwrapperTest, RepeatEventControlSharesBeginHeader) {
   EXPECT_TRUE(found);
 }
 
+TEST_F(TreeUnwrapperTest, RepeatEventControlUsesAnnexAndRecoversAtOuterClose) {
+  const auto valid = parseWithDiagnostics(
+      "module m; initial begin repeat (2) @(\n"
+      "`ifdef A\n"
+      "posedge a\n"
+      "`else\n"
+      "posedge b\n"
+      "`endif\n"
+      ") q = 1; end endmodule");
+  EXPECT_TRUE(valid.warnings.empty());
+
+  const auto malformed = parseWithDiagnostics(
+      "module m; initial begin repeat (2) @( begin end logic x; "
+      "end endmodule module n; logic y; endmodule");
+  ASSERT_FALSE(malformed.warnings.empty());
+  EXPECT_EQ(malformed.warnings.front().code, "annex-a-fallback");
+  bool parsed_second_module = false;
+  for (const auto& line : malformed.lines) {
+    if (line.tokens.size() >= 2 && !line.is_opaque &&
+        line.tokens.front().kind == TK::LogicKeyword &&
+        line.tokens[1].rawText() == "y") {
+      parsed_second_module = true;
+    }
+  }
+  EXPECT_TRUE(parsed_second_module);
+}
+
 // NOLINTEND(misc-use-internal-linkage,bugprone-throwing-static-initialization,cert-err58-cpp,cppcoreguidelines-owning-memory,modernize-use-trailing-return-type)
