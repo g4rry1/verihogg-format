@@ -735,6 +735,41 @@ class SVParser {
     }
   }
 
+  [[nodiscard]] auto consumeAnnexRule(std::string_view rule,
+                                      Line& line) -> bool {
+    beginGrammar({rule});
+    while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
+                                   isConditionalBoundaryDirective(peek()))) {
+      const auto& grammar = grammar_scopes_.back();
+      if (grammar.complete() && !grammar.accepts(peek().kind)) {
+        static_cast<void>(endGrammar());
+        return true;
+      }
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexDeclarationConditional(TK::EndOfFile, header_ended,
+                                              indent_level_)) {
+          break;
+        }
+        continue;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (grammar.failed || grammar.interrupted ||
+          !grammar.accepts(peek().kind)) {
+        break;
+      }
+      consumeInto(line);
+    }
+    const bool complete = grammar_scopes_.back().complete();
+    static_cast<void>(endGrammar(false));
+    if (!complete) recordGrammarFallback("control outside Annex A rule");
+    return complete;
+  }
+
   // Parse a grammar subrule up to its enclosing for-header separator.
   // The second stop protects recovery when a separator is missing.
   auto consumeAnnexUntil(TK stop, TK alternate_stop,
@@ -2275,25 +2310,25 @@ class SVParser {
     return !grammar_scopes_.back().failed;
   }
 
-  // Conditional compilation is outside Annex A. Each branch advances a copy
-  // of the current declaration chart as its tokens are emitted. A compatible
-  // continuation resumes after endif without replaying any branch tokens.
+  // Conditional compilation is outside Annex A. Each branch advances copies
+  // of every active chart as its tokens are emitted. A compatible continuation
+  // resumes after endif without replaying any branch tokens.
   auto parseAnnexDeclarationConditional(TK closeKw, bool& headerEnded,
                                         size_t baseIndent) -> bool {
     addLine();
     parseDirectiveLine();  // ifdef / ifndef
-    const AnnexState entry = grammar_scopes_.back();
+    const auto entry = grammar_scopes_;
     const bool entry_header_ended = headerEnded;
     const size_t entry_indent = indent_level_;
     struct Continuation {
-      AnnexState grammar;
+      std::vector<AnnexState> grammars;
       bool header_ended;
       size_t indent;
     };
     std::vector<Continuation> branches;
     bool has_else = false;
     while (!at(TK::EndOfFile)) {
-      grammar_scopes_.back() = entry;
+      grammar_scopes_ = entry;
       headerEnded = entry_header_ended;
       indent_level_ = entry_indent;
       while (!at(TK::EndOfFile) && !isConditionalBoundaryDirective(peek())) {
@@ -2311,7 +2346,7 @@ class SVParser {
         }
       }
       addLine();
-      branches.push_back({grammar_scopes_.back(), headerEnded, indent_level_});
+      branches.push_back({grammar_scopes_, headerEnded, indent_level_});
       if (!isConditionalAlternativeDirective(peek())) break;
       has_else |= peek().rawText() == "`else";
       parseDirectiveLine();
@@ -2327,14 +2362,17 @@ class SVParser {
     if (branches.empty()) return false;
     const auto& joined = branches.front();
     for (const auto& branch : branches) {
-      if (!joined.grammar.sameContinuation(branch.grammar) ||
-          joined.header_ended != branch.header_ended ||
+      bool same_grammar = joined.grammars.size() == branch.grammars.size();
+      for (size_t i = 0; same_grammar && i < joined.grammars.size(); ++i) {
+        same_grammar = joined.grammars[i].sameContinuation(branch.grammars[i]);
+      }
+      if (!same_grammar || joined.header_ended != branch.header_ended ||
           joined.indent != branch.indent) {
         recordGrammarFallback("incompatible conditional Annex A branches");
         return false;
       }
     }
-    grammar_scopes_.back() = joined.grammar;
+    grammar_scopes_ = joined.grammars;
     headerEnded = joined.header_ended;
     indent_level_ = joined.indent;
     return true;
@@ -2762,24 +2800,42 @@ class SVParser {
 
   // always / always_comb / always_ff / always_latch / initial / final
   auto parseProceduralBlock() -> void {
-    consumeInto(line_);  // keyword
-    if (at(TK::Hash)) {
-      consumeInto(line_);
-      if (at(TK::OpenParenthesis)) {
-        consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
-      } else if (!at(TK::EndOfFile)) {
-        consumeInto(line_);
-      }
-      // A delay followed by a simple statement is one logical line.
-      if (!at(TK::BeginKeyword) && !at(TK::ForkKeyword)) {
+    const LeafCheckpoint saved = leafCheckpoint();
+    const auto recover_control = [&] {
+      if (!recovery_enabled_) {
         consumeUntilSemi();
         return;
       }
+      lines_.resize(saved.output_size);
+      line_ = saved.line;
+      preserved_source_end_ = saved.preserved_source_end;
+      indent_level_ = saved.indent_level;
+      emitOpaque(saved.pos, findOuterBoundary(saved.pos));
+    };
+    consumeInto(line_);  // keyword
+    bool has_delay_control = false;
+    if (at(TK::Hash)) {
+      has_delay_control = true;
+      if (!consumeAnnexRule("delay_control", line_)) {
+        recover_control();
+        return;
+      }
     }
-    // optional @(sensitivity list)
     if (at(TK::At)) {
-      consumeInto(line_);
-      consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+      if (!consumeAnnexRule("event_control", line_)) {
+        recover_control();
+        return;
+      }
+    }
+    const TK next = peek().kind;
+    const bool compound_statement =
+        annexCanStart("seq_block", next) || annexCanStart("par_block", next) ||
+        annexCanStart("conditional_statement", next) ||
+        annexCanStart("case_statement", next) ||
+        annexCanStart("loop_statement", next);
+    if (has_delay_control && !compound_statement) {
+      parseGrammarLeaf();
+      return;
     }
     addLine();
 

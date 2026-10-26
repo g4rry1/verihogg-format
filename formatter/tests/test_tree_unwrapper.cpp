@@ -2317,10 +2317,66 @@ TEST_F(TreeUnwrapperTest, GenerateLabelsStayWithTheirBlockKeywords) {
 }
 
 TEST_F(TreeUnwrapperTest, GrammarTimingControlKeepsSimpleAlwaysLine) {
-  const auto lines = parse("module m; always #5 clk = ~clk; endmodule");
-  ASSERT_GE(lines.size(), 3U);
-  EXPECT_EQ(lines[1].tokens.front().kind, TK::AlwaysKeyword);
-  EXPECT_EQ(lines[1].tokens.back().kind, TK::Semicolon);
+  for (const auto source : {
+           "module m; always #5 clk = ~clk; endmodule",
+           "module m; always #(1 + 2) clk = ~clk; endmodule",
+       }) {
+    const auto result = parseWithDiagnostics(source);
+    ASSERT_GE(result.lines.size(), 3U);
+    EXPECT_EQ(result.lines[1].tokens.front().kind, TK::AlwaysKeyword);
+    EXPECT_EQ(result.lines[1].tokens.back().kind, TK::Semicolon);
+    EXPECT_TRUE(result.warnings.empty()) << source;
+  }
+  const auto event =
+      parseWithDiagnostics("module m; always @* clk = ~clk; endmodule");
+  EXPECT_TRUE(event.warnings.empty());
+  ASSERT_GE(event.lines.size(), 4U);
+  EXPECT_EQ(event.lines[1].tokens.front().kind, TK::AlwaysKeyword);
+  EXPECT_EQ(event.lines[2].tokens.back().kind, TK::Semicolon);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalEventControlResumesAnnexRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; always @(\n"
+      "`ifdef A\n"
+      "posedge a\n"
+      "`else\n"
+      "posedge b\n"
+      "`endif\n"
+      ") begin end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool saw_close = false;
+  bool saw_begin = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() &&
+        line.tokens.back().kind == TK::CloseParenthesis) {
+      saw_close = true;
+    }
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::BeginKeyword) {
+      saw_begin = saw_close;
+    }
+  }
+  EXPECT_TRUE(saw_begin);
+}
+
+TEST_F(TreeUnwrapperTest, MalformedEventControlRecoversAtOuterClose) {
+  const auto result = parseWithDiagnostics(
+      "module m; always @( begin end logic x; endmodule "
+      "module n; logic y; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  size_t module_closes = 0;
+  bool parsed_second_module = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty() || line.is_opaque) continue;
+    if (line.tokens.front().kind == TK::EndModuleKeyword) ++module_closes;
+    if (line.tokens.front().kind == TK::LogicKeyword &&
+        line.tokens.size() >= 2 && line.tokens[1].rawText() == "y") {
+      parsed_second_module = true;
+    }
+  }
+  EXPECT_EQ(module_closes, 2U);
+  EXPECT_TRUE(parsed_second_module);
 }
 
 TEST_F(TreeUnwrapperTest, RepeatEventControlSharesBeginHeader) {
