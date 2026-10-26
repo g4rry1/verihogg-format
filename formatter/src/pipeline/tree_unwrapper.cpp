@@ -316,6 +316,10 @@ struct AnnexState {
       }
       return result;
     }();
+    static const int binary_operator_rule = annexRule("binary_operator");
+    static const int expression_rule = annexRule("expression");
+    static const int constant_expression_rule =
+        annexRule("constant_expression");
     const size_t position = charts.size() - 1;
     auto& chart = charts.back();
     for (size_t cursor = 0; cursor < chart.items.size(); ++cursor) {
@@ -341,8 +345,38 @@ struct AnnexState {
         if (const auto found = origin.waiting.find(production.left);
             found != origin.waiting.end()) {
           const auto parents = found->second;
+          // Annex A permits every association of a binary expression chain.
+          // All completed left operands admit the same suffix here. Keep the
+          // longest left operand for each expression family so an ordinary
+          // long chain does not create quadratic chart history.
+          const bool binary_operator = production.left == binary_operator_rule;
+          size_t longest_expression = position;
+          size_t longest_constant_expression = position;
+          if (binary_operator) {
+            for (const size_t index : parents) {
+              const AnnexItem parent = origin.items[index];
+              if (parent.dot != 1) continue;
+              const int left = kProductions[parent.production].left;
+              if (left == expression_rule) {
+                longest_expression =
+                    std::min(longest_expression, parent.origin);
+              } else if (left == constant_expression_rule) {
+                longest_constant_expression =
+                    std::min(longest_constant_expression, parent.origin);
+              }
+            }
+          }
           for (const size_t index : parents) {
             const AnnexItem parent = origin.items[index];
+            if (binary_operator && parent.dot == 1) {
+              const int left = kProductions[parent.production].left;
+              if ((left == expression_rule &&
+                   parent.origin != longest_expression) ||
+                  (left == constant_expression_rule &&
+                   parent.origin != longest_constant_expression)) {
+                continue;
+              }
+            }
             chart.add({parent.production, static_cast<uint16_t>(parent.dot + 1),
                        parent.origin});
           }
@@ -1230,10 +1264,10 @@ class SVParser {
       return;
     }
     if (!recover_to_outer) {
-      recordGrammarFallback(
-          !grammar_scopes_.empty() && grammar_scopes_.back().failed
-              ? grammar_scopes_.back().failure_reason
-              : "malformed Annex A item");
+      recordGrammarFallback(!grammar_scopes_.empty() &&
+                                    grammar_scopes_.back().failed
+                                ? grammar_scopes_.back().failure_reason
+                                : "malformed Annex A item");
       if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
       indent_level_ = saved.indent_level;
       consumeUntilSemi();

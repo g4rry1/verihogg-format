@@ -1170,6 +1170,23 @@ TEST_F(TreeUnwrapperTest, ConditionalForHeaderResumesAnnexRule) {
   EXPECT_TRUE(saw_body);
 }
 
+TEST_F(TreeUnwrapperTest, LongBinaryExpressionStaysOnAnnexPath) {
+  std::string source = "module m; logic y; assign y = a";
+  for (size_t i = 1; i < 1000; ++i) source += " && a";
+  source += "; logic z; endmodule";
+  const auto result = parseWithDiagnostics(source);
+  EXPECT_TRUE(result.warnings.empty());
+  bool saw_next_declaration = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() >= 2 && !line.is_opaque &&
+        line.tokens.front().kind == TK::LogicKeyword &&
+        line.tokens[1].rawText() == "z") {
+      saw_next_declaration = true;
+    }
+  }
+  EXPECT_TRUE(saw_next_declaration);
+}
+
 // ---- begin/end --------------------------------------------------------------
 
 TEST_F(TreeUnwrapperTest, BeginEndAreOwnLines) {
