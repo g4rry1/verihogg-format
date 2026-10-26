@@ -1274,7 +1274,275 @@ TEST_F(TreeUnwrapperTest, IdentifierRecoveryKeepsUnknownStatement) {
   EXPECT_TRUE(preserved_following_statement);
 }
 
-TEST_F(TreeUnwrapperTest, UnsupportedCovergroupPreservesBodyAndResumes) {
+TEST_F(TreeUnwrapperTest, AnnexAParsesFormerlyOpaqueConstructs) {
+  for (const std::string_view source : {
+           "module m; covergroup cg; cp: coverpoint a; endgroup endmodule",
+           "module m; property p; a |-> b; endproperty endmodule",
+           "module m; sequence s; a ##1 b; endsequence endmodule",
+           "module m; clocking cb @(posedge clk); input a; endclocking "
+           "endmodule",
+           "checker c(input logic a); assert property (a); endchecker",
+           "module m; specify specparam t = 1; endspecify endmodule",
+           "config cfg; design lib.top; default liblist lib; endconfig",
+           "primitive p(out, a); output out; input a; table 0 : 0; 1 : 1; "
+           "endtable endprimitive",
+           "class c; rand int x; constraint r { x inside {[0:3]}; } endclass",
+           "class c; static constraint r { x > 0; } endclass",
+           "module m; covergroup cg @(posedge clk); cp: coverpoint a { bins "
+           "zero = {0}; } endgroup endmodule",
+           "module m; default clocking cb @(posedge clk); input a; endclocking "
+           "endmodule",
+           "module m; global clocking cb @(posedge clk); endclocking endmodule",
+           "module m; specify (a => b) = 1; endspecify endmodule",
+           "config cfg; localparam int W = 1; design lib.top; instance top.u "
+           "use lib.foo; endconfig",
+           "primitive p(output out, input a); table 0 : 0; 1 : 1; endtable "
+           "endprimitive",
+           "primitive p(out, a); output reg out; input a; initial out = 1'b0; "
+           "table 0 : 0 : 0; 1 : 0 : 1; endtable endprimitive",
+       }) {
+    SCOPED_TRACE(source);
+    const auto result = parseWithDiagnostics(source);
+    for (const auto& warning : result.warnings) {
+      ADD_FAILURE() << warning.code << ": " << warning.message;
+    }
+    for (const auto& line : result.lines) {
+      EXPECT_FALSE(line.is_opaque);
+    }
+  }
+}
+
+TEST_F(TreeUnwrapperTest, CovergroupDirectivesPauseGrammarAndResume) {
+  const auto result = parseWithDiagnostics(
+      "module m;\n"
+      "  covergroup cg;\n"
+      "`ifdef USE_A\n"
+      "    a: coverpoint x;\n"
+      "`else\n"
+      "    b: coverpoint y;\n"
+      "`endif\n"
+      "  endgroup\n"
+      "endmodule\n");
+  EXPECT_TRUE(result.warnings.empty());
+  size_t directives = 0;
+  for (const auto& line : result.lines) {
+    EXPECT_FALSE(line.is_opaque);
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::Directive) {
+      ++directives;
+    }
+  }
+  EXPECT_EQ(directives, 3U);
+}
+
+TEST_F(TreeUnwrapperTest, CovergroupMacroFallbackResumesAtNextItem) {
+  const auto result = parseWithDiagnostics(
+      "module m;\n"
+      "  covergroup cg;\n"
+      "    `COVER_ITEM\n"
+      "    cp: coverpoint a;\n"
+      "  endgroup\n"
+      "  logic b;\n"
+      "endmodule\n");
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool saw_coverpoint = false;
+  bool saw_sibling = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty()) {
+      saw_coverpoint |= line.tokens.front().rawText() == "cp";
+      saw_sibling |= line.tokens.front().rawText() == "logic";
+    }
+  }
+  EXPECT_TRUE(saw_coverpoint);
+  EXPECT_TRUE(saw_sibling);
+}
+
+TEST_F(TreeUnwrapperTest, MalformedPropertyRecoversAtCloseOnSameLine) {
+  const auto result = parseWithDiagnostics(
+      "module m; property p; a |-> ; endproperty logic b; endmodule");
+  EXPECT_FALSE(result.warnings.empty());
+  bool saw_property_fallback = false;
+  bool saw_sibling = false;
+  for (const auto& line : result.lines) {
+    saw_property_fallback |=
+        line.is_opaque &&
+        line.raw_text.find("endproperty") != std::string::npos;
+    saw_sibling |=
+        !line.tokens.empty() && line.tokens.front().rawText() == "logic";
+  }
+  EXPECT_TRUE(saw_property_fallback);
+  EXPECT_TRUE(saw_sibling);
+}
+
+TEST_F(TreeUnwrapperTest, AnnexARejectsInvalidBodyOrderWithoutLosingClose) {
+  struct Example {
+    std::string_view source;
+    std::string_view continuation;
+  };
+  for (const auto& example : {
+           Example{"module m; global clocking cb @(posedge clk); input a; "
+                   "endclocking logic b; endmodule",
+                   "logic"},
+           Example{
+               "config cfg; default liblist lib; endconfig module m; endmodule",
+               "module"},
+           Example{"primitive p(out, a); output out; input a; table 0 : 0; 0 : "
+                   "0 : 0; endtable endprimitive module m; endmodule",
+                   "module"},
+           Example{"module m; table 0 : 0; endtable logic b; endmodule",
+                   "logic"},
+       }) {
+    SCOPED_TRACE(example.source);
+    const auto result = parseWithDiagnostics(example.source);
+    EXPECT_FALSE(result.warnings.empty());
+    bool resumed = false;
+    for (const auto& line : result.lines) {
+      resumed |= !line.tokens.empty() &&
+                 line.tokens.front().rawText() == example.continuation;
+    }
+    EXPECT_TRUE(resumed);
+  }
+}
+
+TEST_F(TreeUnwrapperTest, UdpTableSymbolsUseSlangLexemes) {
+  const auto valid = parseWithDiagnostics(
+      "primitive p(out, a); output out; input a; table ? : x; b : 1; endtable "
+      "endprimitive");
+  EXPECT_TRUE(valid.warnings.empty());
+
+  for (const std::string_view entry : {"2 : 0;", "name : 0;", "0 : z;"}) {
+    SCOPED_TRACE(entry);
+    const std::string source =
+        "primitive p(out, a); output out; input a; table " +
+        std::string(entry) + " endtable endprimitive module m; endmodule";
+    const auto result = parseWithDiagnostics(source);
+    EXPECT_FALSE(result.warnings.empty());
+    bool resumed = false;
+    for (const auto& line : result.lines) {
+      resumed |=
+          !line.tokens.empty() && line.tokens.front().kind == TK::ModuleKeyword;
+    }
+    EXPECT_TRUE(resumed);
+  }
+}
+
+TEST_F(TreeUnwrapperTest, UdpRecoveryKeepsOuterPrimitiveClose) {
+  for (const std::string_view body : {
+           "nonsense; table 0 : 0; endtable",
+           "table 0 : 0;",
+       }) {
+    SCOPED_TRACE(body);
+    const std::string source = "primitive p(out, a); output out; input a; " +
+                               std::string(body) +
+                               " endprimitive module m; endmodule";
+    const auto result = parseWithDiagnostics(source);
+    EXPECT_FALSE(result.warnings.empty());
+    bool saw_primitive_close = false;
+    bool saw_module = false;
+    for (const auto& line : result.lines) {
+      if (!line.tokens.empty()) {
+        saw_primitive_close |=
+            line.tokens.front().kind == TK::EndPrimitiveKeyword;
+        saw_module |= line.tokens.front().kind == TK::ModuleKeyword;
+      }
+    }
+    EXPECT_TRUE(saw_primitive_close);
+    EXPECT_TRUE(saw_module);
+  }
+}
+
+TEST_F(TreeUnwrapperTest, LargeAnnexABodiesUseItemScopes) {
+  std::string source = "module m; covergroup cg;\n";
+  for (size_t i = 0; i < 1500; ++i) {
+    source += "p" + std::to_string(i) + ": coverpoint a;\n";
+  }
+  source += "endgroup endmodule\n";
+  auto result = parseWithDiagnostics(source);
+  EXPECT_TRUE(result.warnings.empty());
+
+  source = "config cfg; design lib.top;\n";
+  for (size_t i = 0; i < 1500; ++i) {
+    source += "default liblist lib;\n";
+  }
+  source += "endconfig\n";
+  result = parseWithDiagnostics(source);
+  EXPECT_TRUE(result.warnings.empty());
+
+  source = "primitive p(out, a); output out; input a; table\n";
+  for (size_t i = 0; i < 1500; ++i) {
+    source += "0 : 0;\n";
+  }
+  source += "endtable endprimitive\n";
+  result = parseWithDiagnostics(source);
+  EXPECT_TRUE(result.warnings.empty());
+}
+
+TEST_F(TreeUnwrapperTest, LongPropertyDeclarationStaysOnGrammarPath) {
+  std::string source = "module m; property p;\n";
+  for (size_t i = 0; i < 1000; ++i) {
+    source += "logic v" + std::to_string(i) + ";\n";
+  }
+  source += "a; endproperty endmodule\n";
+  const auto result = parseWithDiagnostics(source);
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalPropertyExpressionResumesGrammar) {
+  const auto result = parseWithDiagnostics(
+      "module m;\n"
+      "property p;\n"
+      "`ifdef USE_A\n"
+      "a;\n"
+      "`else\n"
+      "b;\n"
+      "`endif\n"
+      "endproperty\n"
+      "endmodule\n");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+}
+
+TEST_F(TreeUnwrapperTest, NestedConditionalSequenceResumesGrammar) {
+  const auto result = parseWithDiagnostics(
+      "module m;\n"
+      "sequence s;\n"
+      "`ifdef A\n"
+      "`ifdef B\n"
+      "x;\n"
+      "`else\n"
+      "y;\n"
+      "`endif\n"
+      "`else\n"
+      "z;\n"
+      "`endif\n"
+      "endsequence\n"
+      "endmodule\n");
+  EXPECT_TRUE(result.warnings.empty());
+}
+
+TEST_F(TreeUnwrapperTest, IncompatiblePropertyBranchesRecoverAtClose) {
+  const auto result = parseWithDiagnostics(
+      "module m; property p;\n"
+      "`ifdef A\n"
+      "a;\n"
+      "`else\n"
+      "logic x;\n"
+      "`endif\n"
+      "endproperty logic b; endmodule\n");
+  EXPECT_FALSE(result.warnings.empty());
+  bool resumed = false;
+  for (const auto& line : result.lines) {
+    resumed |= !line.tokens.empty() &&
+               line.tokens.front().rawText() == "logic" &&
+               line.tokens.size() > 1 && line.tokens[1].rawText() == "b";
+  }
+  EXPECT_TRUE(resumed);
+}
+
+TEST_F(TreeUnwrapperTest, MalformedCovergroupItemPreservesTokensAndResumes) {
   auto result = parseWithDiagnostics(
       "module m;\n"
       "  covergroup cg;\n"
@@ -1284,29 +1552,22 @@ TEST_F(TreeUnwrapperTest, UnsupportedCovergroupPreservesBodyAndResumes) {
       "endmodule\n");
 
   ASSERT_EQ(result.warnings.size(), 1U);
-  EXPECT_EQ(result.warnings.front().code, "unsupported-construct");
-  EXPECT_NE(result.warnings.front().message.find("covergroup"),
-            std::string::npos);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
 
-  size_t opaque_count = 0;
+  bool retained_body = false;
   bool resumed = false;
   for (const auto& line : result.lines) {
-    if (line.is_opaque) {
-      ++opaque_count;
-      EXPECT_EQ(line.raw_text,
-                "\n  covergroup cg;\n"
-                "    logic should_stay ;\n"
-                "  endgroup\n");
-    } else if (!line.tokens.empty() &&
-               line.tokens.front().rawText() == "logic") {
-      resumed = true;
+    if (!line.tokens.empty() && line.tokens.front().rawText() == "logic") {
+      retained_body |=
+          line.tokens.size() > 1 && line.tokens[1].rawText() == "should_stay";
+      resumed |= line.tokens.size() > 1 && line.tokens[1].rawText() == "b";
     }
   }
-  EXPECT_EQ(opaque_count, 1U);
+  EXPECT_TRUE(retained_body);
   EXPECT_TRUE(resumed);
 }
 
-TEST_F(TreeUnwrapperTest, AdjacentOpaqueRangesDoNotOverlap) {
+TEST_F(TreeUnwrapperTest, AdjacentCovergroupsUseAnnexA) {
   auto result = parseWithDiagnostics(
       "module m;\n"
       "  covergroup cg1;\n"
@@ -1316,16 +1577,16 @@ TEST_F(TreeUnwrapperTest, AdjacentOpaqueRangesDoNotOverlap) {
       "  endgroup\n"
       "endmodule\n");
 
-  std::vector<std::string> opaque_text;
+  EXPECT_TRUE(result.warnings.empty());
+  size_t covergroup_count = 0;
   for (const auto& line : result.lines) {
-    if (line.is_opaque) {
-      opaque_text.push_back(line.raw_text);
+    EXPECT_FALSE(line.is_opaque);
+    if (!line.tokens.empty() &&
+        line.tokens.front().kind == TK::CoverGroupKeyword) {
+      ++covergroup_count;
     }
   }
-  EXPECT_EQ(opaque_text, (std::vector<std::string>{
-                             "\n  covergroup cg1;\n  endgroup\n\n",
-                             "  covergroup cg2;\n  endgroup\n",
-                         }));
+  EXPECT_EQ(covergroup_count, 2U);
 }
 
 TEST_F(TreeUnwrapperTest, AppendsEofWithTrailingCommentTrivia) {
@@ -1341,7 +1602,7 @@ TEST_F(TreeUnwrapperTest, AppendsEofWithTrailingCommentTrivia) {
   EXPECT_TRUE(has_comment);
 }
 
-TEST_F(TreeUnwrapperTest, NestedOpaqueBlocksResumeAfterOuterClose) {
+TEST_F(TreeUnwrapperTest, InvalidNestedCovergroupRecoversAtOuterClose) {
   auto result = parseWithDiagnostics(
       "module m;\n"
       "  covergroup outer;\n"
@@ -1357,8 +1618,7 @@ TEST_F(TreeUnwrapperTest, NestedOpaqueBlocksResumeAfterOuterClose) {
   for (const auto& line : result.lines) {
     if (line.is_opaque) {
       ++opaque_count;
-      EXPECT_NE(line.raw_text.find("    endgroup\n  endgroup\n"),
-                std::string::npos);
+      EXPECT_NE(line.raw_text.find("covergroup inner;"), std::string::npos);
     } else if (!line.tokens.empty() &&
                line.tokens.front().rawText() == "logic") {
       resumed = true;
@@ -1368,7 +1628,7 @@ TEST_F(TreeUnwrapperTest, NestedOpaqueBlocksResumeAfterOuterClose) {
   EXPECT_TRUE(resumed);
 }
 
-TEST_F(TreeUnwrapperTest, UnknownBoundaryPreservesToEnclosingClose) {
+TEST_F(TreeUnwrapperTest, ConstraintUsesAnnexAAndKeepsFollowingItems) {
   auto result = parseWithDiagnostics(
       "class c;\n"
       "  constraint rule { x inside {[0:3]}; }\n"
@@ -1378,17 +1638,14 @@ TEST_F(TreeUnwrapperTest, UnknownBoundaryPreservesToEnclosingClose) {
       "  logic b;\n"
       "endmodule\n");
 
-  ASSERT_EQ(result.warnings.size(), 1U);
-  EXPECT_EQ(result.warnings.front().code, "unsupported-construct");
+  EXPECT_TRUE(result.warnings.empty());
   bool preserved_sibling = false;
   bool resumed_module = false;
   for (const auto& line : result.lines) {
-    if (line.is_opaque) {
-      preserved_sibling =
-          line.raw_text.find("logic should_stay ;") != std::string::npos;
-    } else if (!line.tokens.empty() &&
-               line.tokens.front().rawText() == "module") {
-      resumed_module = true;
+    EXPECT_FALSE(line.is_opaque);
+    if (!line.tokens.empty()) {
+      preserved_sibling |= line.tokens.front().rawText() == "logic";
+      resumed_module |= line.tokens.front().rawText() == "module";
     }
   }
   EXPECT_TRUE(preserved_sibling);
