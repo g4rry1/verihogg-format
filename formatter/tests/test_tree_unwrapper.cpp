@@ -1426,6 +1426,68 @@ TEST_F(TreeUnwrapperTest, UdpTableSymbolsUseSlangLexemes) {
   }
 }
 
+TEST_F(TreeUnwrapperTest, SpecifyTimingChecksUseSystemIdentifierLexemes) {
+  const auto valid = parseWithDiagnostics(
+      "module m; specify $setup(a, b, 1); $hold(a, b, 1); endspecify "
+      "endmodule");
+  EXPECT_TRUE(valid.warnings.empty());
+
+  const auto edge = parseWithDiagnostics(
+      "module m; specify $setup(edge [01] a, b, 1); endspecify endmodule");
+  EXPECT_TRUE(edge.warnings.empty());
+
+  const auto invalid = parseWithDiagnostics(
+      "module m; specify $bogus(a, b, 1); endspecify logic x; endmodule");
+  EXPECT_FALSE(invalid.warnings.empty());
+  bool resumed = false;
+  for (const auto& line : invalid.lines) {
+    resumed |=
+        !line.tokens.empty() && line.tokens.front().kind == TK::LogicKeyword;
+  }
+  EXPECT_TRUE(resumed);
+
+  const auto invalid_edge = parseWithDiagnostics(
+      "module m; specify $setup(edge [zz] a, b, 1); endspecify logic x; "
+      "endmodule");
+  EXPECT_FALSE(invalid_edge.warnings.empty());
+}
+
+TEST_F(TreeUnwrapperTest, AnnexANumericTerminalsUseSlangLexemes) {
+  for (const std::string_view literal : {
+           "8'b10x?",
+           "8'o7x?",
+           "8'haf?",
+           "8'd42",
+           "8'shFf",
+           "8'h12ab_f001",
+           "8'dx",
+           "8'd?",
+       }) {
+    SCOPED_TRACE(literal);
+    const std::string source =
+        "module m; localparam int a = " + std::string(literal) + "; endmodule";
+    const auto result = parseWithDiagnostics(source);
+    for (const auto& warning : result.warnings) {
+      ADD_FAILURE() << warning.code << ": " << warning.message;
+    }
+  }
+
+  for (const std::string_view literal : {"8'b2", "8'o8", "8'hg", "8'dx1"}) {
+    SCOPED_TRACE(literal);
+    const std::string source =
+        "module m; localparam int a = " + std::string(literal) +
+        "; logic b; endmodule";
+    const auto result = parseWithDiagnostics(source);
+    EXPECT_FALSE(result.warnings.empty());
+    bool resumed = false;
+    for (const auto& line : result.lines) {
+      resumed |=
+          !line.tokens.empty() && line.tokens.front().kind == TK::LogicKeyword;
+    }
+    EXPECT_TRUE(resumed);
+  }
+}
+
 TEST_F(TreeUnwrapperTest, UdpRecoveryKeepsOuterPrimitiveClose) {
   for (const std::string_view body : {
            "nonsense; table 0 : 0; endtable",

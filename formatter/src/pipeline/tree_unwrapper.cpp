@@ -134,15 +134,82 @@ struct AnnexItemHash {
                                      : -32768;
 }
 
-// These Annex A lexical terminals share slang token kinds with identifiers
-// and numbers of other spellings. Check the actual slang lexeme while the
-// chart scans the terminal, rather than broadening UDP table syntax.
+// Some Annex A lexical terminals share slang token kinds with other spellings.
+// Check slang's source lexeme when the chart scans each such terminal.
 [[nodiscard]] auto annexLexemeMatches(AnnexItem item, Token token) -> bool {
   static const int output = annexRule("@lexer_output_symbol");
   static const int level = annexRule("@lexer_level_symbol");
   static const int edge = annexRule("@lexer_edge_symbol");
+  static const int edge_descriptor = annexRule("@lexer_edge_descriptor");
+  static const int x_digit = annexRule("@lexer_x_digit");
+  static const int z_digit = annexRule("@lexer_z_digit");
+  static const int binary_number = annexRule("binary_number");
+  static const int octal_number = annexRule("octal_number");
+  static const int hex_number = annexRule("hex_number");
   const int rule = kProductions[item.production].left;
   const std::string_view lexeme = token.rawText();
+  const std::string_view rule_name = kRuleNames[rule];
+  const auto matches_base = [&](char lower, char upper) {
+    return lexeme.size() >= 2 && lexeme.size() <= 3 && lexeme[0] == '\'' &&
+           (lexeme.size() == 2 || lexeme[1] == 's' || lexeme[1] == 'S') &&
+           (lexeme.back() == lower || lexeme.back() == upper);
+  };
+  if (token.kind == TK::IntegerBase) {
+    if (rule == binary_number) return matches_base('b', 'B');
+    if (rule == octal_number) return matches_base('o', 'O');
+    if (rule == hex_number) return matches_base('h', 'H');
+    if (rule_name == "@lexer_decimal_number") return matches_base('d', 'D');
+  }
+  const auto digit_in_base = [&](int base) {
+    return !lexeme.empty() && std::ranges::all_of(lexeme, [&](char ch) {
+      if (ch == '_' || ch == 'x' || ch == 'X' || ch == 'z' || ch == 'Z' ||
+          ch == '?') {
+        return true;
+      }
+      if (ch >= '0' && ch <= '9') return ch - '0' < base;
+      return base == 16 &&
+             ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'));
+    });
+  };
+  if (rule_name.starts_with("@lexer_binary_value")) {
+    return digit_in_base(2) &&
+           (rule_name != "@lexer_binary_value" || lexeme.front() != '_');
+  }
+  if (rule_name.starts_with("@lexer_octal_value")) {
+    return digit_in_base(8) &&
+           (rule_name != "@lexer_octal_value" || lexeme.front() != '_');
+  }
+  if (rule_name.starts_with("@lexer_hex_value")) {
+    return digit_in_base(16) &&
+           (rule_name != "@lexer_hex_value" || lexeme.front() != '_');
+  }
+  if (rule_name == "@lexer_decimal_number") {
+    if (token.kind == TK::IntegerLiteral) {
+      return !lexeme.empty() && std::ranges::all_of(lexeme, [](char ch) {
+        return ch == '_' || (ch >= '0' && ch <= '9');
+      });
+    }
+    if (token.kind == TK::Identifier) {
+      const auto& production = kProductions[item.production];
+      const bool after_question =
+          item.dot > 0 && kSymbols[production.offset + item.dot - 1] ==
+                              -annexTerminal(TK::Question) - 1;
+      return !lexeme.empty() &&
+             (after_question
+                  ? std::ranges::all_of(lexeme,
+                                        [](char ch) { return ch == '_'; })
+                  : (lexeme[0] == 'x' || lexeme[0] == 'X' || lexeme[0] == 'z' ||
+                     lexeme[0] == 'Z') &&
+                        std::ranges::all_of(lexeme.substr(1),
+                                            [](char ch) { return ch == '_'; }));
+    }
+  }
+  if (rule_name.starts_with('$') && rule_name.ends_with("_timing_check") &&
+      item.dot == 0) {
+    return lexeme ==
+           rule_name.substr(
+               0, rule_name.size() - std::string_view("_timing_check").size());
+  }
   if (rule == output) {
     return lexeme == "0" || lexeme == "1" || lexeme == "x" || lexeme == "X";
   }
@@ -154,6 +221,23 @@ struct AnnexItemHash {
     return lexeme == "r" || lexeme == "R" || lexeme == "f" || lexeme == "F" ||
            lexeme == "p" || lexeme == "P" || lexeme == "n" || lexeme == "N" ||
            lexeme == "*";
+  }
+  if (rule == edge_descriptor) {
+    if (kProductions[item.production].count == 2) {
+      return item.dot == 0 ? lexeme == "0" || lexeme == "1"
+                           : lexeme == "x" || lexeme == "X" || lexeme == "z" ||
+                                 lexeme == "Z";
+    }
+    return lexeme == "01" || lexeme == "10" || lexeme == "x0" ||
+           lexeme == "x1" || lexeme == "X0" || lexeme == "X1" ||
+           lexeme == "z0" || lexeme == "z1" || lexeme == "Z0" ||
+           lexeme == "Z1" || lexeme == "0x" || lexeme == "0X" ||
+           lexeme == "1x" || lexeme == "1X" || lexeme == "0z" ||
+           lexeme == "0Z" || lexeme == "1z" || lexeme == "1Z";
+  }
+  if (rule == x_digit) return lexeme == "x" || lexeme == "X";
+  if (rule == z_digit) {
+    return lexeme == "z" || lexeme == "Z" || lexeme == "?";
   }
   return true;
 }
