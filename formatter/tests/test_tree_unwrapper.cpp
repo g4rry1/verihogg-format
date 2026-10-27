@@ -475,6 +475,77 @@ TEST_F(TreeUnwrapperTest, MissingInstanceListCloseLeavesEndmoduleUnread) {
             TK::EndModuleKeyword);
 }
 
+TEST_F(TreeUnwrapperTest, NestedModuleOutsideBodyRuleRecoversAtOuterEnd) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin module n; endmodule "
+      "int x; end endmodule");
+  EXPECT_TRUE(std::any_of(
+      result.warnings.begin(), result.warnings.end(), [](const auto& warning) {
+        return warning.code == "annex-a-fallback" &&
+               warning.message.find("outside the current Annex A body rule") !=
+                   std::string::npos;
+      }));
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndKeyword);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, NestedConditionalInsideCaseKeepsOuterBranchOpen) {
+  const auto result = parseWithDiagnostics(
+      "`ifdef OUTER\n"
+      "module m; initial begin\n"
+      "case (a)\n"
+      "0: begin\n"
+      "`ifdef INNER\n"
+      "x = 1;\n"
+      "`endif\n"
+      "end\n"
+      "1: begin y = 2; end\n"
+      "endcase\n"
+      "end endmodule\n"
+      "`endif\n");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_second_item = false;
+  bool found_endcase = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_second_item |= line.tokens.front().rawText() == "1";
+    found_endcase |= line.tokens.front().kind == TK::EndCaseKeyword;
+    EXPECT_FALSE(line.is_opaque);
+  }
+  EXPECT_TRUE(found_second_item);
+  EXPECT_TRUE(found_endcase);
+}
+
+TEST_F(TreeUnwrapperTest, SequentialBlockDeclarationOrderFollowsAnnexA) {
+  const auto valid = parseWithDiagnostics(
+      "module m; initial begin int y; y = 1; end endmodule");
+  EXPECT_TRUE(valid.warnings.empty());
+
+  const auto invalid = parseWithDiagnostics(
+      "module m; initial begin y += 1; int x; end endmodule");
+  EXPECT_TRUE(std::any_of(
+      invalid.warnings.begin(), invalid.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+  EXPECT_EQ(invalid.lines[invalid.lines.size() - 3].tokens.front().kind,
+            TK::EndKeyword);
+  EXPECT_EQ(invalid.lines[invalid.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MissingOpeningLabelLeavesBlockCloseUnread) {
+  const auto result =
+      parseWithDiagnostics("module m; initial begin : end endmodule");
+  EXPECT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndKeyword);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
 TEST_F(TreeUnwrapperTest, MprfConditionalPortsKeepDirectivesAsLines) {
   auto lines = parse(
       "`include \"scr1_arch_description.svh\"\n"

@@ -718,6 +718,13 @@ class SVParser {
     auto operator==(const BlockFrame&) const -> bool = default;
   };
 
+  struct GrammarContext {
+    size_t block_depth;
+    std::vector<std::string_view> roots;
+
+    auto operator==(const GrammarContext&) const -> bool = default;
+  };
+
   struct ParserState {
     size_t pos = 0;
     Line line;
@@ -725,7 +732,7 @@ class SVParser {
     std::vector<BlockFrame> block_stack;
     std::vector<AnnexState> grammar_scopes;
     std::vector<std::optional<AnnexState::Checkpoint>> grammar_checkpoints;
-    std::vector<std::vector<std::string_view>> grammar_contexts;
+    std::vector<GrammarContext> grammar_contexts;
   };
 
   struct BranchResult {
@@ -766,7 +773,7 @@ class SVParser {
   std::vector<BlockFrame> block_stack_;
   std::vector<AnnexState> grammar_scopes_;
   std::vector<std::optional<AnnexState::Checkpoint>> grammar_checkpoints_;
-  std::vector<std::vector<std::string_view>> grammar_contexts_;
+  std::vector<GrammarContext> grammar_contexts_;
   size_t last_grammar_warning_pos_ = std::numeric_limits<size_t>::max();
   bool grammar_suspended_ = false;
   bool stop_at_conditional_boundary_ = false;
@@ -1517,43 +1524,22 @@ class SVParser {
 
   // Optional `: label` after end/endmodule/endfunction/etc.
   auto consumeLabel() -> void {
-    if (at(TK::Colon)) {
+    if (!at(TK::Colon)) return;
+    if (!grammarAllows(TK::Colon)) {
+      recordGrammarFallback("opening label outside Annex A rule");
+      return;
+    }
+    consumeInto(line_);
+    if (at(TK::Identifier) && grammarAllows(TK::Identifier)) {
       consumeInto(line_);
-      if (!at(TK::EndOfFile)) {
-        consumeInto(line_);
-      }
+    } else {
+      recordGrammarFallback("incomplete Annex A opening label");
     }
   }
 
   [[nodiscard]] auto looksLikePropertyAssertion(size_t offset = 0) const
       -> bool {
     return at(TK::AssertKeyword, offset) && at(TK::PropertyKeyword, offset + 1);
-  }
-
-  [[nodiscard]] auto looksLikeSupportedLabeledStatement() const -> bool {
-    if (!at(TK::Identifier) || !at(TK::Colon, 1)) {
-      return false;
-    }
-
-    if (looksLikePropertyAssertion(2)) {
-      return true;
-    }
-
-    switch (peek(2).kind) {
-      case TK::BeginKeyword:
-      case TK::IfKeyword:
-      case TK::CaseKeyword:
-      case TK::CaseXKeyword:
-      case TK::CaseZKeyword:
-      case TK::ForKeyword:
-      case TK::ForeachKeyword:
-      case TK::WhileKeyword:
-      case TK::RepeatKeyword:
-      case TK::ForeverKeyword:
-        return true;
-      default:
-        return false;
-    }
   }
 
   [[nodiscard]] auto snapshotState() const -> ParserState {
@@ -1581,11 +1567,20 @@ class SVParser {
   [[nodiscard]] auto structuralStateCompatible(
       const ParserState& lhs, const ParserState& rhs) const -> bool {
     if (lhs.indent_level != rhs.indent_level ||
-        lhs.block_stack != rhs.block_stack ||
+        lhs.block_stack.size() != rhs.block_stack.size() ||
         lhs.grammar_contexts != rhs.grammar_contexts ||
         lhs.grammar_scopes.size() != rhs.grammar_scopes.size() ||
         lhs.grammar_checkpoints.size() != rhs.grammar_checkpoints.size()) {
       return false;
+    }
+    for (size_t i = 0; i < lhs.block_stack.size(); ++i) {
+      const auto& left = lhs.block_stack[i];
+      const auto& right = rhs.block_stack[i];
+      if (left.close_kind != right.close_kind ||
+          left.extra_dedent_after_close != right.extra_dedent_after_close ||
+          left.grammar_body != right.grammar_body) {
+        return false;
+      }
     }
     for (size_t i = 0; i < lhs.grammar_scopes.size(); ++i) {
       const auto& left = lhs.grammar_scopes[i];
@@ -1610,6 +1605,10 @@ class SVParser {
     for (const auto& state : states) {
       if (!structuralStateCompatible(joined, state)) {
         return std::nullopt;
+      }
+      for (size_t i = 0; i < joined.block_stack.size(); ++i) {
+        joined.block_stack[i].statement_phase |=
+            state.block_stack[i].statement_phase;
       }
       for (size_t i = 0; i < joined.grammar_scopes.size(); ++i) {
         joined.grammar_scopes[i].addContinuation(state.grammar_scopes[i]);
@@ -1737,7 +1736,8 @@ class SVParser {
     const size_t stack_size_before = block_stack_.size();
     ++indent_level_;
     grammar_contexts_.push_back(
-        {"statement_or_null", "generate_block", "generate_item"});
+        {block_stack_.size(),
+         {"statement_or_null", "generate_block", "generate_item"}});
     parseStatement();
     grammar_contexts_.pop_back();
     if (block_stack_.size() == stack_size_before) {
@@ -1759,7 +1759,10 @@ class SVParser {
   }
 
   [[nodiscard]] auto grammarRoots() const -> std::vector<std::string_view> {
-    if (!grammar_contexts_.empty()) return grammar_contexts_.back();
+    for (auto it = grammar_contexts_.rbegin(); it != grammar_contexts_.rend();
+         ++it) {
+      if (it->block_depth == block_stack_.size()) return it->roots;
+    }
     if (block_stack_.empty()) {
       return {"description", "timeunits_declaration", "library_description"};
     }
@@ -1768,11 +1771,11 @@ class SVParser {
     }
     switch (block_stack_.back().close_kind) {
       case TK::EndModuleKeyword:
-        return {"module_item", "statement_or_null"};
+        return {"module_item"};
       case TK::EndInterfaceKeyword:
-        return {"interface_item", "statement_or_null"};
+        return {"interface_item"};
       case TK::EndProgramKeyword:
-        return {"program_item", "statement_or_null"};
+        return {"program_item"};
       case TK::EndPackageKeyword:
         return {"package_item"};
       case TK::EndClassKeyword:
@@ -1795,7 +1798,10 @@ class SVParser {
         return {"case_item", "case_generate_item"};
       case TK::EndKeyword:
       case TK::JoinKeyword:
-        return {"block_item_declaration", "statement_or_null"};
+        return block_stack_.back().statement_phase
+                   ? std::vector<std::string_view>{"statement_or_null"}
+                   : std::vector<std::string_view>{"block_item_declaration",
+                                                   "statement_or_null"};
       default:
         return {"statement_or_null"};
     }
@@ -1890,15 +1896,7 @@ class SVParser {
         parseMacroStatement();
         return;
       }
-      const bool structural_region =
-          block_stack_.empty() ||
-          (grammar_contexts_.empty() &&
-           (block_stack_.back().close_kind == TK::EndModuleKeyword ||
-            block_stack_.back().close_kind == TK::EndInterfaceKeyword ||
-            block_stack_.back().close_kind == TK::EndProgramKeyword ||
-            block_stack_.back().close_kind == TK::EndPackageKeyword ||
-            block_stack_.back().close_kind == TK::EndGenerateKeyword));
-      if (isConditionalStartDirective(peek()) && structural_region) {
+      if (isConditionalStartDirective(peek())) {
         parseConditionalRegion();
       } else {
         parseDirectiveLine();
@@ -1940,38 +1938,66 @@ class SVParser {
       return;
     }
 
-    // A block header owns its Annex A state while it is consumed, and its
-    // body is parsed item by item. All other items keep a chart active through
-    // the same consume() calls that emit their UnwrappedLine tokens.
-    const auto block = blockSpec(peek().kind);
-    const bool virtual_class = at(TK::VirtualKeyword) &&
-                               annexCanStart("class_declaration", peek().kind);
-    const bool prefixed_clocking =
-        (at(TK::DefaultKeyword) || at(TK::GlobalKeyword)) &&
-        at(TK::ClockingKeyword, 1);
-    const bool constraint_block =
-        at(TK::ConstraintKeyword) ||
-        (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1));
-    const bool own_grammar =
-        !virtual_class && !prefixed_clocking && !constraint_block &&
-        (!block || (block->layout != BlockLayout::Structural &&
-                    block->layout != BlockLayout::Named &&
-                    block->layout != BlockLayout::DelimitedRecovery));
-    if (own_grammar) beginGrammar(grammarRoots(), true);
-    parseStatementLayout();
-    if (own_grammar) {
-      const AnnexState item = endGrammar();
-      if (!block_stack_.empty() &&
-          (block_stack_.back().close_kind == TK::EndFunctionKeyword ||
-           block_stack_.back().close_kind == TK::EndTaskKeyword) &&
-          !item.completed("tf_item_declaration") &&
-          !item.completed("block_item_declaration")) {
-        block_stack_.back().statement_phase = true;
-      }
+    if (!block_stack_.empty() &&
+        block_stack_.back().grammar_body == "constraint_block_item") {
+      static_cast<void>(parseAnnexItem({"constraint_block_item"}));
+      return;
+    }
+
+    // One live Annex A chart selects the current construction. Declarations
+    // with a repeated body transfer their header to a short-lived chart and
+    // parse body items separately; every other construction keeps this chart
+    // through the same token consumption that emits the output lines.
+    beginGrammar(grammarRoots(), true);
+    const auto segmented_header = [&] {
+      constexpr std::string_view rules[] = {"module_ansi_header",
+                                            "module_nonansi_header",
+                                            "interface_ansi_header",
+                                            "interface_nonansi_header",
+                                            "program_ansi_header",
+                                            "program_nonansi_header",
+                                            "package_declaration",
+                                            "class_declaration",
+                                            "interface_class_declaration",
+                                            "function_declaration",
+                                            "task_declaration",
+                                            "constraint_declaration",
+                                            "extern_constraint_declaration",
+                                            "covergroup_declaration",
+                                            "checker_declaration",
+                                            "clocking_declaration",
+                                            "specify_block",
+                                            "property_declaration",
+                                            "sequence_declaration",
+                                            "config_declaration",
+                                            "udp_declaration"};
+      return std::ranges::any_of(rules, [&](std::string_view rule) {
+        return grammar_scopes_.back().hasActiveRule(rule) &&
+               annexCanStart(rule, peek().kind);
+      });
+    }();
+    if (segmented_header) {
+      AnnexState selector = std::move(grammar_scopes_.back());
+      grammar_scopes_.pop_back();
+      grammar_checkpoints_.pop_back();
+      parseStatementLayout(selector);
+      return;
+    }
+
+    parseStatementLayout(grammar_scopes_.back());
+    const AnnexState item = endGrammar();
+    if (!block_stack_.empty() &&
+        (block_stack_.back().close_kind == TK::EndFunctionKeyword ||
+         block_stack_.back().close_kind == TK::EndTaskKeyword ||
+         block_stack_.back().close_kind == TK::EndKeyword ||
+         block_stack_.back().close_kind == TK::JoinKeyword) &&
+        !item.completed("tf_item_declaration") &&
+        !item.completed("block_item_declaration")) {
+      block_stack_.back().statement_phase = true;
     }
   }
 
-  auto parseStatementLayout() -> void {
+  auto parseStatementLayout(const AnnexState& selector) -> void {
     // Annex A puts unique / unique0 / priority before both if and case.
     // Finish that grammar prefix before selecting the layout function.
     if (!grammar_scopes_.empty() &&
@@ -1987,69 +2013,50 @@ class SVParser {
       }
     }
     const TK first = peek().kind;
-    const auto starts = [&](std::string_view rule) {
-      return annexCanStart(rule, first);
-    };
-    const auto allowed_here = [&] {
-      const auto roots = grammarRoots();
-      return std::ranges::any_of(roots, [&](std::string_view rule) {
-        return annexCanStart(rule, first);
-      });
+    const auto can_begin = [&](std::string_view rule) {
+      return selector.hasActiveRule(rule) && annexCanStart(rule, first);
     };
 
     // These declarations use Annex A for their header and for each repeated
     // body item. The chart advances in consume(), alongside line emission.
-    if ((first == TK::ConstraintKeyword ||
-         (first == TK::StaticKeyword && at(TK::ConstraintKeyword, 1))) &&
-        (starts("constraint_declaration") ||
-         starts("extern_constraint_declaration")) &&
-        allowed_here()) {
+    if (can_begin("constraint_declaration") ||
+        can_begin("extern_constraint_declaration")) {
       parseConstraintBlock();
       return;
     }
-    if (first == TK::CoverGroupKeyword && starts("covergroup_declaration") &&
-        allowed_here()) {
+    if (can_begin("covergroup_declaration")) {
       parseAnnexDelimitedBlock(TK::EndGroupKeyword, "covergroup_declaration",
                                "coverage_spec_or_option");
       return;
     }
-    if (first == TK::CheckerKeyword && starts("checker_declaration") &&
-        allowed_here()) {
+    if (can_begin("checker_declaration")) {
       parseAnnexDelimitedBlock(TK::EndCheckerKeyword, "checker_declaration",
                                "checker_or_generate_item");
       return;
     }
-    if ((first == TK::ClockingKeyword ||
-         ((first == TK::DefaultKeyword || first == TK::GlobalKeyword) &&
-          at(TK::ClockingKeyword, 1))) &&
-        starts("clocking_declaration") && allowed_here()) {
+    if (can_begin("clocking_declaration")) {
       parseAnnexDelimitedBlock(TK::EndClockingKeyword, "clocking_declaration",
                                "clocking_item");
       return;
     }
-    if (first == TK::SpecifyKeyword && starts("specify_block") &&
-        allowed_here()) {
+    if (can_begin("specify_block")) {
       parseAnnexDelimitedBlock(TK::EndSpecifyKeyword, "specify_block",
                                "specify_item", false);
       return;
     }
-    if (first == TK::PropertyKeyword && starts("property_declaration") &&
-        allowed_here()) {
+    if (can_begin("property_declaration")) {
       parseAnnexWholeBlock(TK::EndPropertyKeyword, "property_declaration");
       return;
     }
-    if (first == TK::SequenceKeyword && starts("sequence_declaration") &&
-        allowed_here()) {
+    if (can_begin("sequence_declaration")) {
       parseAnnexWholeBlock(TK::EndSequenceKeyword, "sequence_declaration");
       return;
     }
-    if (first == TK::ConfigKeyword && starts("config_declaration") &&
-        allowed_here()) {
+    if (can_begin("config_declaration")) {
       parseConfigBlock();
       return;
     }
-    if (first == TK::PrimitiveKeyword && starts("udp_declaration") &&
-        allowed_here()) {
+    if (can_begin("udp_declaration")) {
       parsePrimitiveBlock();
       return;
     }
@@ -2060,9 +2067,20 @@ class SVParser {
       parseOpaqueBlock(block->close_kind);
       return;
     }
-    if (looksLikeSupportedLabeledStatement()) {
-      parseLabeledStatement();
-      return;
+    if (first == TK::Identifier && at(TK::Colon, 1)) {
+      AnnexState labeled = selector;
+      labeled.advance(peek());
+      labeled.advance(peek(1));
+      if (!labeled.failed) {
+        for (const std::string_view body_rule :
+             {"statement_item", "concurrent_assertion_statement",
+              "deferred_immediate_assertion_statement"}) {
+          if (labeled.hasActiveRule(body_rule)) {
+            parseLabeledStatement(body_rule);
+            return;
+          }
+        }
+      }
     }
     if (!block_stack_.empty() &&
         (block_stack_.back().grammar_body == "coverage_spec_or_option" ||
@@ -2076,46 +2094,54 @@ class SVParser {
     // Annex A FIRST sets select the construction family. These calls control
     // only line layout; the active chart continues to decide membership and
     // completion as each token is consumed.
-    if (starts("module_ansi_header") || starts("module_nonansi_header")) {
+    if (can_begin("module_ansi_header") || can_begin("module_nonansi_header")) {
       parseStructuralBlock(TK::EndModuleKeyword);
-    } else if (starts("interface_class_declaration") &&
+    } else if (can_begin("interface_class_declaration") &&
                at(TK::ClassKeyword, 1)) {
       parseNamedBlock(TK::EndClassKeyword);
-    } else if (starts("interface_ansi_header") ||
-               starts("interface_nonansi_header")) {
+    } else if (can_begin("interface_ansi_header") ||
+               can_begin("interface_nonansi_header")) {
       parseStructuralBlock(TK::EndInterfaceKeyword);
-    } else if (starts("program_ansi_header") ||
-               starts("program_nonansi_header")) {
+    } else if (can_begin("program_ansi_header") ||
+               can_begin("program_nonansi_header")) {
       parseStructuralBlock(TK::EndProgramKeyword);
-    } else if (starts("package_declaration")) {
+    } else if (can_begin("package_declaration")) {
       parseStructuralBlock(TK::EndPackageKeyword);
-    } else if (starts("class_declaration")) {
+    } else if (can_begin("class_declaration")) {
       parseNamedBlock(TK::EndClassKeyword);
-    } else if (starts("function_declaration")) {
+    } else if (can_begin("function_declaration")) {
       parseNamedBlock(TK::EndFunctionKeyword);
-    } else if (starts("task_declaration")) {
+    } else if (can_begin("task_declaration")) {
       parseNamedBlock(TK::EndTaskKeyword);
-    } else if (starts("generate_region")) {
+    } else if (can_begin("generate_region")) {
       parseSimpleBlock(TK::EndGenerateKeyword);
-    } else if (starts("seq_block")) {
+    } else if (can_begin("seq_block")) {
       parseBeginEnd(TK::EndKeyword);
-    } else if (starts("par_block")) {
+    } else if (can_begin("par_block")) {
       parseFork(TK::JoinKeyword);
-    } else if (starts("case_statement") || starts("case_generate_construct")) {
+    } else if (can_begin("case_statement") ||
+               can_begin("case_generate_construct")) {
       parseCase(TK::EndCaseKeyword);
-    } else if (starts("always_construct") || starts("initial_construct") ||
-               starts("final_construct")) {
+    } else if (can_begin("always_construct") ||
+               can_begin("initial_construct") || can_begin("final_construct")) {
       parseProceduralBlock();
-    } else if (starts("conditional_statement") ||
-               starts("if_generate_construct")) {
+    } else if (can_begin("conditional_statement") ||
+               can_begin("if_generate_construct")) {
       parseIf();
-    } else if (starts("loop_statement") || starts("loop_generate_construct")) {
+    } else if (can_begin("loop_statement") ||
+               can_begin("loop_generate_construct")) {
       parseLoop();
-    } else if (starts("assert_property_statement") &&
+    } else if (can_begin("assert_property_statement") &&
                looksLikePropertyAssertion()) {
       parseAssertionStatement();
     } else if (first == TK::Identifier) {
       parseIdentifierItem();
+    } else if (const auto block = blockSpec(first);
+               block && (block->layout == BlockLayout::Structural ||
+                         block->layout == BlockLayout::Named)) {
+      recordGrammarFallback("block outside the current Annex A body rule");
+      const auto after = findPairedEnd(pos_, block->close_kind);
+      emitOpaque(pos_, after ? *after : findOuterBoundary(pos_));
     } else if (grammarAllows(first) || first == TK::AssignKeyword ||
                first == TK::InputKeyword || first == TK::OutputKeyword ||
                first == TK::InOutKeyword || first == TK::RefKeyword ||
@@ -2134,10 +2160,12 @@ class SVParser {
     }
   }
 
-  auto parseLabeledStatement() -> void {
+  auto parseLabeledStatement(std::string_view body_rule) -> void {
     consumeInto(line_);  // label identifier
     consumeInto(line_);  // colon
+    grammar_contexts_.push_back({block_stack_.size(), {body_rule}});
     parseStatement();
+    grammar_contexts_.pop_back();
   }
 
   auto parseAssertionStatement() -> void {
@@ -2159,7 +2187,7 @@ class SVParser {
     }
 
     if (!at(TK::ElseKeyword) && !at(TK::EndOfFile)) {
-      grammar_contexts_.push_back({"statement_or_null"});
+      grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
       parseStatement();
       grammar_contexts_.pop_back();
     }
@@ -2170,7 +2198,7 @@ class SVParser {
         addLine();
         return;
       }
-      grammar_contexts_.push_back({"statement_or_null"});
+      grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
       parseStatement();
       grammar_contexts_.pop_back();
     }
@@ -2808,6 +2836,11 @@ class SVParser {
       }
       if (!grammar_scopes_.back().accepts(peek().kind)) break;
       consumeInto(line_);
+      if (grammar_scopes_.back().completed("extern_constraint_declaration")) {
+        addLine();
+        static_cast<void>(endGrammar());
+        return;
+      }
       if (grammar_scopes_.back().consumedTerminalInRule("constraint_block",
                                                         TK::OpenBrace)) {
         addLine();
@@ -2830,15 +2863,12 @@ class SVParser {
     const TK outer_close =
         block_stack_.empty() ? TK::EndOfFile : block_stack_.back().close_kind;
     pushOpenFrame(TK::CloseBrace);
+    block_stack_.back().grammar_body = "constraint_block_item";
     ++indent_level_;
     while (!at(TK::CloseBrace) && !at(TK::EndOfFile) && !at(outer_close) &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
-      if (at(TK::Directive)) {
-        parseStatement();
-      } else {
-        static_cast<void>(parseAnnexItem({"constraint_block_item"}));
-      }
+      parseStatement();
     }
     if (at(TK::CloseBrace)) {
       parseOpenFrameClose();
@@ -3172,11 +3202,15 @@ class SVParser {
       }
     }
     const TK next = peek().kind;
+    constexpr std::string_view compound_rules[] = {
+        "seq_block", "par_block", "conditional_statement", "case_statement",
+        "loop_statement"};
     const bool compound_statement =
-        annexCanStart("seq_block", next) || annexCanStart("par_block", next) ||
-        annexCanStart("conditional_statement", next) ||
-        annexCanStart("case_statement", next) ||
-        annexCanStart("loop_statement", next);
+        !grammar_scopes_.empty() &&
+        std::ranges::any_of(compound_rules, [&](std::string_view rule) {
+          return grammar_scopes_.back().hasActiveRule(rule) &&
+                 annexCanStart(rule, next);
+        });
     if (has_delay_control && !compound_statement) {
       parseGrammarLeaf();
       return;
@@ -3227,11 +3261,7 @@ class SVParser {
         return;
       }
       if (at(TK::Directive)) {
-        if (isCompilerDirective(peek())) {
-          parseDirectiveLine();
-        } else {
-          parseStatement();
-        }
+        parseStatement();
       } else {
         parseCaseItem();
       }
