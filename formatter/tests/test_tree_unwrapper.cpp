@@ -549,6 +549,44 @@ TEST_F(TreeUnwrapperTest, ConditionalUdpEntriesKeepAnnexTableState) {
       TK::EndModuleKeyword);
 }
 
+TEST_F(TreeUnwrapperTest, ConditionalUdpPortsKeepAnnexBodyState) {
+  const auto valid = parseWithDiagnostics(
+      "primitive p(out, a);\n"
+      "`ifdef A\n"
+      "output out;\n"
+      "`else\n"
+      "output out;\n"
+      "`endif\n"
+      "input a; table 0 : 0; endtable endprimitive");
+  for (const auto& warning : valid.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+
+  const auto missing = parseWithDiagnostics(
+      "primitive p(out, a);\n"
+      "`ifdef A\n"
+      "output out;\n"
+      "`endif\n"
+      "table 0 : 0; endtable endprimitive");
+  EXPECT_TRUE(std::any_of(
+      missing.warnings.begin(), missing.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+}
+
+TEST_F(TreeUnwrapperTest, MissingUdpTableCloseResumesAtPrimitiveEnd) {
+  const auto result = parseWithDiagnostics(
+      "primitive p(out, a); output out; input a; table 0 : 0; "
+      "endprimitive module m; endmodule");
+  EXPECT_FALSE(result.warnings.empty());
+  bool resumed_module = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty()) {
+      resumed_module |= line.tokens.front().kind == TK::ModuleKeyword;
+    }
+  }
+  EXPECT_TRUE(resumed_module);
+}
+
 TEST_F(TreeUnwrapperTest, ExternUdpDeclarationEndsAtAnnexHeader) {
   const auto result =
       parseWithDiagnostics("extern primitive p(out, a); module m; endmodule");
@@ -575,6 +613,28 @@ TEST_F(TreeUnwrapperTest, UdpTableMacroSuspendsAnnexEntryRule) {
   }
   EXPECT_TRUE(saw_entry);
   EXPECT_TRUE(saw_close);
+}
+
+TEST_F(TreeUnwrapperTest, ConfigItemsResumeAnnexStateAcrossDirectives) {
+  const auto result = parseWithDiagnostics(
+      "config cfg;\n"
+      "`ifdef A\n"
+      "localparam int W = 1;\n"
+      "`else\n"
+      "localparam int W = 2;\n"
+      "`endif\n"
+      "design lib.top;\n"
+      "`ifdef A\n"
+      "default liblist lib;\n"
+      "`else\n"
+      "instance top.u use lib.foo;\n"
+      "`endif\n"
+      "endconfig");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  EXPECT_TRUE(std::none_of(result.lines.begin(), result.lines.end(),
+                           [](const auto& line) { return line.is_opaque; }));
 }
 
 TEST_F(TreeUnwrapperTest, SequentialBlockDeclarationOrderFollowsAnnexA) {

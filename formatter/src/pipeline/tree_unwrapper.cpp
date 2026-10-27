@@ -717,6 +717,11 @@ class SVParser {
     bool udp_has_entry = false;
     bool udp_sequential = false;
     bool udp_combinational = false;
+    bool udp_nonansi_header = false;
+    bool udp_ansi_header = false;
+    bool udp_port_on_all_paths = false;
+    bool udp_port_on_any_path = false;
+    bool udp_initial_seen = false;
 
     auto operator==(const BlockFrame&) const -> bool = default;
   };
@@ -1576,7 +1581,10 @@ class SVParser {
       const auto& right = rhs.block_stack[i];
       if (left.close_kind != right.close_kind ||
           left.extra_dedent_after_close != right.extra_dedent_after_close ||
-          left.grammar_body != right.grammar_body) {
+          left.grammar_body != right.grammar_body ||
+          ((left.close_kind == TK::EndConfigKeyword ||
+            left.close_kind == TK::EndPrimitiveKeyword) &&
+           left.statement_phase != right.statement_phase)) {
         return false;
       }
     }
@@ -1613,6 +1621,12 @@ class SVParser {
             state.block_stack[i].udp_sequential;
         joined.block_stack[i].udp_combinational |=
             state.block_stack[i].udp_combinational;
+        joined.block_stack[i].udp_port_on_all_paths &=
+            state.block_stack[i].udp_port_on_all_paths;
+        joined.block_stack[i].udp_port_on_any_path |=
+            state.block_stack[i].udp_port_on_any_path;
+        joined.block_stack[i].udp_initial_seen |=
+            state.block_stack[i].udp_initial_seen;
       }
       for (size_t i = 0; i < joined.grammar_scopes.size(); ++i) {
         joined.grammar_scopes[i].addContinuation(state.grammar_scopes[i]);
@@ -1771,6 +1785,24 @@ class SVParser {
       return {"description", "timeunits_declaration", "library_description"};
     }
     if (!block_stack_.back().grammar_body.empty()) {
+      if (block_stack_.back().grammar_body == "config_body") {
+        return block_stack_.back().statement_phase
+                   ? std::vector<std::string_view>{"config_rule_statement"}
+                   : std::vector<std::string_view>{
+                         "local_parameter_declaration", "design_statement"};
+      }
+      if (block_stack_.back().grammar_body == "udp_body") {
+        const auto& udp = block_stack_.back();
+        if (udp.statement_phase) return {};
+        std::vector<std::string_view> roots;
+        if (!udp.udp_initial_seen) {
+          if (!udp.udp_ansi_header) roots.push_back("udp_port_declaration");
+          roots.push_back("udp_initial_statement");
+          roots.push_back("combinational_body");
+        }
+        roots.push_back("sequential_body");
+        return roots;
+      }
       if (block_stack_.back().grammar_body == "udp_table_entry") {
         std::vector<std::string_view> roots;
         if (!block_stack_.back().udp_sequential)
@@ -1953,6 +1985,16 @@ class SVParser {
     if (!block_stack_.empty() &&
         block_stack_.back().grammar_body == "constraint_block_item") {
       static_cast<void>(parseAnnexItem({"constraint_block_item"}));
+      return;
+    }
+    if (!block_stack_.empty() &&
+        block_stack_.back().grammar_body == "config_body") {
+      parseConfigItem();
+      return;
+    }
+    if (!block_stack_.empty() &&
+        block_stack_.back().grammar_body == "udp_body") {
+      parseUdpBodyItem();
       return;
     }
     if (!block_stack_.empty() &&
@@ -2913,51 +2955,54 @@ class SVParser {
     consumeGrammarHeader(TK::EndConfigKeyword, {"config_declaration"});
     static_cast<void>(endGrammar(false));
     pushOpenFrame(TK::EndConfigKeyword);
+    block_stack_.back().grammar_body = "config_body";
     ++indent_level_;
-
-    // config_declaration prescribes zero or more local parameters, exactly
-    // one design_statement, then zero or more config_rule_statement items.
-    while (annexCanStart("local_parameter_declaration", peek().kind) ||
-           isCompilerDirective(peek())) {
-      if (isCompilerDirective(peek())) {
-        parseDirectiveLine();
-        continue;
-      }
-      beginGrammar({"local_parameter_declaration"});
-      while (!at(TK::Semicolon) && !at(TK::EndOfFile) &&
-             !matchingOpenFrame(peek().kind) &&
-             grammar_scopes_.back().accepts(peek().kind)) {
-        consumeInto(line_);
-      }
-      const bool complete = grammar_scopes_.back().complete();
-      static_cast<void>(endGrammar());
-      if (!complete || !at(TK::Semicolon)) {
-        recordGrammarFallback("malformed config local parameter");
-        consumeUntilSemi();
-      } else {
-        consumeInto(line_);
-        addLine();
-      }
+    parseLevel(TK::EndConfigKeyword);
+    if (block_stack_.empty() ||
+        block_stack_.back().close_kind != TK::EndConfigKeyword) {
+      recordGrammarFallback("config body lost its closing boundary");
+      return;
     }
-    if (annexCanStart("design_statement", peek().kind)) {
-      static_cast<void>(parseAnnexItem({"design_statement"}));
-    } else {
+    if (!block_stack_.back().statement_phase) {
       recordGrammarFallback("config requires design_statement");
-    }
-    while (!at(TK::EndConfigKeyword) && !at(TK::EndOfFile) &&
-           !(stop_at_conditional_boundary_ &&
-             isConditionalBoundaryDirective(peek()))) {
-      if (at(TK::Directive)) {
-        parseStatement();
-      } else {
-        static_cast<void>(parseAnnexItem({"config_rule_statement"}));
-      }
     }
     if (at(TK::EndConfigKeyword)) {
       parseOpenFrameClose();
     } else {
       recordGrammarFallback("incomplete config declaration");
     }
+  }
+
+  auto parseConfigItem() -> void {
+    const auto roots = grammarRoots();
+    const AnnexState selector(roots);
+    const auto predicted = [&](std::string_view rule) {
+      return selector.hasActiveRule(rule) && annexCanStart(rule, peek().kind);
+    };
+    if (predicted("local_parameter_declaration")) {
+      beginGrammar({"local_parameter_declaration"});
+      while (!at(TK::EndOfFile) && !at(TK::Semicolon) &&
+             !matchingOpenFrame(peek().kind) &&
+             grammar_scopes_.back().accepts(peek().kind)) {
+        consumeInto(line_);
+      }
+      const bool complete = grammar_scopes_.back().complete();
+      static_cast<void>(endGrammar());
+      if (complete && at(TK::Semicolon)) {
+        consumeInto(line_);  // required by config_declaration
+        addLine();
+      } else {
+        recordGrammarFallback("malformed config local parameter");
+        consumeUntilSemi();
+      }
+      return;
+    }
+    if (predicted("design_statement")) {
+      const AnnexState item = parseAnnexItem({"design_statement"});
+      block_stack_.back().statement_phase = item.complete();
+      return;
+    }
+    static_cast<void>(parseAnnexItem(roots));
   }
 
   auto parsePrimitiveBlock() -> void {
@@ -2970,31 +3015,56 @@ class SVParser {
     const bool nonansi = header.completedFrom("udp_nonansi_declaration", 0);
     const bool ansi = header.completedFrom("udp_ansi_declaration", 0);
     pushOpenFrame(TK::EndPrimitiveKeyword);
+    block_stack_.back().grammar_body = "udp_body";
+    block_stack_.back().udp_nonansi_header = nonansi;
+    block_stack_.back().udp_ansi_header = ansi;
     ++indent_level_;
-
-    size_t port_declarations = 0;
-    while (annexCanStart("udp_port_declaration", peek().kind) ||
-           isCompilerDirective(peek())) {
-      if (isCompilerDirective(peek())) {
-        parseDirectiveLine();
-      } else {
-        static_cast<void>(parseAnnexItem({"udp_port_declaration"}));
-        ++port_declarations;
-      }
+    parseLevel(TK::EndPrimitiveKeyword);
+    if (block_stack_.empty() ||
+        block_stack_.back().close_kind != TK::EndPrimitiveKeyword) {
+      recordGrammarFallback("UDP body lost its closing boundary");
+      return;
     }
-    if ((nonansi && port_declarations == 0) ||
-        (ansi && port_declarations != 0)) {
+    const auto& udp = block_stack_.back();
+    if ((udp.udp_nonansi_header && !udp.udp_port_on_all_paths) ||
+        (udp.udp_ansi_header && udp.udp_port_on_any_path)) {
       recordGrammarFallback("UDP port declarations do not match header");
     }
-    bool sequential = false;
-    if (annexCanStart("udp_initial_statement", peek().kind)) {
-      static_cast<void>(parseAnnexItem({"udp_initial_statement"}));
-      sequential = true;
+    if (!udp.statement_phase) {
+      recordGrammarFallback("UDP declaration requires udp_body");
     }
-    if (annexCanStart("combinational_body", peek().kind) ||
-        annexCanStart("sequential_body", peek().kind)) {
-      consumeInto(line_);
+    if (at(TK::EndPrimitiveKeyword)) {
+      parseOpenFrameClose();
+    } else if (!(stop_at_conditional_boundary_ &&
+                 isConditionalBoundaryDirective(peek()))) {
+      recordGrammarFallback("incomplete UDP declaration");
+    }
+  }
+
+  auto parseUdpBodyItem() -> void {
+    const auto roots = grammarRoots();
+    const AnnexState selector(roots);
+    const auto predicted = [&](std::string_view rule) {
+      return selector.hasActiveRule(rule) && annexCanStart(rule, peek().kind);
+    };
+    if (predicted("udp_port_declaration")) {
+      const AnnexState item = parseAnnexItem({"udp_port_declaration"});
+      if (item.complete()) {
+        auto& udp = block_stack_.back();
+        udp.udp_port_on_all_paths = true;
+        udp.udp_port_on_any_path = true;
+      }
+      return;
+    }
+    if (predicted("udp_initial_statement")) {
+      const AnnexState item = parseAnnexItem({"udp_initial_statement"});
+      block_stack_.back().udp_initial_seen = item.complete();
+      return;
+    }
+    if (predicted("combinational_body") || predicted("sequential_body")) {
+      consumeInto(line_);  // table
       addLine();
+      const bool sequential = block_stack_.back().udp_initial_seen;
       pushOpenFrame(TK::EndTableKeyword);
       block_stack_.back().grammar_body = "udp_table_entry";
       block_stack_.back().udp_sequential = sequential;
@@ -3008,6 +3078,7 @@ class SVParser {
       if (!block_stack_.back().udp_has_entry) {
         recordGrammarFallback("UDP table requires an entry");
       }
+      const bool table_closed = at(TK::EndTableKeyword);
       if (at(TK::EndTableKeyword)) {
         parseOpenFrameClose();
       } else {
@@ -3015,18 +3086,10 @@ class SVParser {
         block_stack_.pop_back();
         if (indent_level_ > 0) --indent_level_;
       }
-    } else {
-      recordGrammarFallback("UDP declaration requires udp_body");
-      if (!at(TK::EndPrimitiveKeyword)) {
-        emitOpaque(pos_, findOuterBoundary(pos_));
-      }
+      block_stack_.back().statement_phase = table_closed;
+      return;
     }
-    if (at(TK::EndPrimitiveKeyword)) {
-      parseOpenFrameClose();
-    } else if (!(stop_at_conditional_boundary_ &&
-                 isConditionalBoundaryDirective(peek()))) {
-      recordGrammarFallback("incomplete UDP declaration");
-    }
+    static_cast<void>(parseAnnexItem(roots));
   }
 
   auto parseStructuralBlock(TK closeKw) -> void {
