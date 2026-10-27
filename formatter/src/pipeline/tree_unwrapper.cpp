@@ -714,6 +714,9 @@ class SVParser {
     size_t extra_dedent_after_close = 0;
     std::string_view grammar_body;
     bool statement_phase = false;
+    bool udp_has_entry = false;
+    bool udp_sequential = false;
+    bool udp_combinational = false;
 
     auto operator==(const BlockFrame&) const -> bool = default;
   };
@@ -1537,11 +1540,6 @@ class SVParser {
     }
   }
 
-  [[nodiscard]] auto looksLikePropertyAssertion(size_t offset = 0) const
-      -> bool {
-    return at(TK::AssertKeyword, offset) && at(TK::PropertyKeyword, offset + 1);
-  }
-
   [[nodiscard]] auto snapshotState() const -> ParserState {
     return {
         .pos = pos_,
@@ -1609,6 +1607,12 @@ class SVParser {
       for (size_t i = 0; i < joined.block_stack.size(); ++i) {
         joined.block_stack[i].statement_phase |=
             state.block_stack[i].statement_phase;
+        joined.block_stack[i].udp_has_entry &=
+            state.block_stack[i].udp_has_entry;
+        joined.block_stack[i].udp_sequential |=
+            state.block_stack[i].udp_sequential;
+        joined.block_stack[i].udp_combinational |=
+            state.block_stack[i].udp_combinational;
       }
       for (size_t i = 0; i < joined.grammar_scopes.size(); ++i) {
         joined.grammar_scopes[i].addContinuation(state.grammar_scopes[i]);
@@ -1767,6 +1771,14 @@ class SVParser {
       return {"description", "timeunits_declaration", "library_description"};
     }
     if (!block_stack_.back().grammar_body.empty()) {
+      if (block_stack_.back().grammar_body == "udp_table_entry") {
+        std::vector<std::string_view> roots;
+        if (!block_stack_.back().udp_sequential)
+          roots.push_back("combinational_entry");
+        if (!block_stack_.back().udp_combinational)
+          roots.push_back("sequential_entry");
+        return roots;
+      }
       return {block_stack_.back().grammar_body};
     }
     switch (block_stack_.back().close_kind) {
@@ -1943,6 +1955,15 @@ class SVParser {
       static_cast<void>(parseAnnexItem({"constraint_block_item"}));
       return;
     }
+    if (!block_stack_.empty() &&
+        block_stack_.back().grammar_body == "udp_table_entry") {
+      const AnnexState entry = parseAnnexItem(grammarRoots());
+      auto& table = block_stack_.back();
+      table.udp_combinational |= entry.completed("combinational_entry");
+      table.udp_sequential |= entry.completed("sequential_entry");
+      table.udp_has_entry |= entry.complete();
+      return;
+    }
 
     // One live Annex A chart selects the current construction. Declarations
     // with a repeated body transfer their header to a short-lived chart and
@@ -2015,6 +2036,16 @@ class SVParser {
     const TK first = peek().kind;
     const auto can_begin = [&](std::string_view rule) {
       return selector.hasActiveRule(rule) && annexCanStart(rule, first);
+    };
+    const auto continues_as = [&](std::string_view rule, size_t tokens) {
+      if (!can_begin(rule)) return false;
+      AnnexState continuation = selector;
+      for (size_t offset = 0; offset < tokens; ++offset) {
+        if (!continuation.accepts(peek(offset).kind)) return false;
+        continuation.advance(peek(offset));
+        if (continuation.failed) return false;
+      }
+      return continuation.hasActiveRule(rule);
     };
 
     // These declarations use Annex A for their header and for each repeated
@@ -2096,8 +2127,7 @@ class SVParser {
     // completion as each token is consumed.
     if (can_begin("module_ansi_header") || can_begin("module_nonansi_header")) {
       parseStructuralBlock(TK::EndModuleKeyword);
-    } else if (can_begin("interface_class_declaration") &&
-               at(TK::ClassKeyword, 1)) {
+    } else if (continues_as("interface_class_declaration", 2)) {
       parseNamedBlock(TK::EndClassKeyword);
     } else if (can_begin("interface_ansi_header") ||
                can_begin("interface_nonansi_header")) {
@@ -2131,8 +2161,7 @@ class SVParser {
     } else if (can_begin("loop_statement") ||
                can_begin("loop_generate_construct")) {
       parseLoop();
-    } else if (can_begin("assert_property_statement") &&
-               looksLikePropertyAssertion()) {
+    } else if (continues_as("assert_property_statement", 2)) {
       parseAssertionStatement();
     } else if (first == TK::Identifier) {
       parseIdentifierItem();
@@ -2933,9 +2962,11 @@ class SVParser {
 
   auto parsePrimitiveBlock() -> void {
     beginGrammar({"udp_declaration"});
-    consumeGrammarHeader(TK::EndPrimitiveKeyword, {},
-                         {"udp_nonansi_declaration", "udp_ansi_declaration"});
+    consumeGrammarHeader(
+        TK::EndPrimitiveKeyword, {},
+        {"udp_nonansi_declaration", "udp_ansi_declaration", "udp_declaration"});
     const AnnexState header = endGrammar(false);
+    if (header.complete()) return;  // extern udp_declaration has no body
     const bool nonansi = header.completedFrom("udp_nonansi_declaration", 0);
     const bool ansi = header.completedFrom("udp_ansi_declaration", 0);
     pushOpenFrame(TK::EndPrimitiveKeyword);
@@ -2956,7 +2987,6 @@ class SVParser {
       recordGrammarFallback("UDP port declarations do not match header");
     }
     bool sequential = false;
-    bool combinational = false;
     if (annexCanStart("udp_initial_statement", peek().kind)) {
       static_cast<void>(parseAnnexItem({"udp_initial_statement"}));
       sequential = true;
@@ -2966,25 +2996,16 @@ class SVParser {
       consumeInto(line_);
       addLine();
       pushOpenFrame(TK::EndTableKeyword);
+      block_stack_.back().grammar_body = "udp_table_entry";
+      block_stack_.back().udp_sequential = sequential;
       ++indent_level_;
-      size_t entry_count = 0;
       while (!at(TK::EndTableKeyword) && !at(TK::EndPrimitiveKeyword) &&
              !at(TK::EndOfFile) &&
              !(stop_at_conditional_boundary_ &&
                isConditionalBoundaryDirective(peek()))) {
-        if (at(TK::Directive)) {
-          parseStatement();
-        } else {
-          std::vector<std::string_view> roots;
-          if (!sequential) roots.push_back("combinational_entry");
-          if (!combinational) roots.push_back("sequential_entry");
-          const AnnexState entry = parseAnnexItem(std::move(roots));
-          combinational |= entry.completed("combinational_entry");
-          sequential |= entry.completed("sequential_entry");
-          ++entry_count;
-        }
+        parseStatement();
       }
-      if (entry_count == 0) {
+      if (!block_stack_.back().udp_has_entry) {
         recordGrammarFallback("UDP table requires an entry");
       }
       if (at(TK::EndTableKeyword)) {

@@ -520,6 +520,63 @@ TEST_F(TreeUnwrapperTest, NestedConditionalInsideCaseKeepsOuterBranchOpen) {
   EXPECT_TRUE(found_endcase);
 }
 
+TEST_F(TreeUnwrapperTest, ConditionalUdpEntriesKeepAnnexTableState) {
+  const auto result = parseWithDiagnostics(
+      "primitive p(out, a); output out; input a; table\n"
+      "`ifdef A\n"
+      "0 : 0;\n"
+      "`else\n"
+      "1 : 1;\n"
+      "`endif\n"
+      "endtable endprimitive");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  EXPECT_TRUE(std::none_of(result.lines.begin(), result.lines.end(),
+                           [](const auto& line) { return line.is_opaque; }));
+
+  const auto missing_branch = parseWithDiagnostics(
+      "primitive p(out, a); output out; input a; table\n"
+      "`ifdef A\n"
+      "0 : 0;\n"
+      "`endif\n"
+      "endtable endprimitive module m; endmodule");
+  EXPECT_TRUE(std::any_of(
+      missing_branch.warnings.begin(), missing_branch.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+  EXPECT_EQ(
+      missing_branch.lines[missing_branch.lines.size() - 2].tokens.front().kind,
+      TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, ExternUdpDeclarationEndsAtAnnexHeader) {
+  const auto result =
+      parseWithDiagnostics("extern primitive p(out, a); module m; endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, UdpTableMacroSuspendsAnnexEntryRule) {
+  const auto result = parseWithDiagnostics(
+      "primitive p(out, a); output out; input a; table\n"
+      "`UDP_ROW\n"
+      "0 : 0;\n"
+      "endtable endprimitive");
+  EXPECT_TRUE(std::any_of(
+      result.warnings.begin(), result.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+  bool saw_entry = false;
+  bool saw_close = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    saw_entry |= line.tokens.front().rawText() == "0";
+    saw_close |= line.tokens.front().kind == TK::EndTableKeyword;
+  }
+  EXPECT_TRUE(saw_entry);
+  EXPECT_TRUE(saw_close);
+}
+
 TEST_F(TreeUnwrapperTest, SequentialBlockDeclarationOrderFollowsAnnexA) {
   const auto valid = parseWithDiagnostics(
       "module m; initial begin int y; y = 1; end endmodule");
