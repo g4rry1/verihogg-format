@@ -2428,6 +2428,43 @@ TEST_F(TreeUnwrapperTest, UniquePrefixSelectsAnnexAIfAndCase) {
   EXPECT_TRUE(found_case);
 }
 
+TEST_F(TreeUnwrapperTest, RepeatedCaseBlocksKeepAnnexAItemsIndependent) {
+  std::string source = "module m; always_comb begin case (sel) ";
+  for (int i = 0; i < 120; ++i) {
+    source += std::to_string(i) + ": begin value = " + std::to_string(i) +
+              "; end ";
+  }
+  source += "endcase end endmodule";
+
+  const auto result = parseWithDiagnostics(source);
+  EXPECT_TRUE(result.warnings.empty());
+  size_t case_items = 0;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() >= 2 &&
+        line.tokens.front().kind == TK::IntegerLiteral &&
+        line.tokens[1].kind == TK::Colon) {
+      ++case_items;
+    }
+  }
+  EXPECT_EQ(case_items, 120U);
+}
+
+TEST_F(TreeUnwrapperTest, NestedCaseBodyResumesAtNextAnnexAItem) {
+  const auto result = parseWithDiagnostics(
+      "module m; always_comb begin case (sel) "
+      "0: begin for (int unsigned i = 0; i < N; ++i) begin "
+      "if (a) begin x = i; end end end "
+      "1: begin y = 1; end endcase end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_next_item = false;
+  for (const auto& line : result.lines) {
+    found_next_item |= line.tokens.size() >= 2 &&
+                       line.tokens.front().rawText() == "1" &&
+                       line.tokens[1].kind == TK::Colon;
+  }
+  EXPECT_TRUE(found_next_item);
+}
+
 TEST_F(TreeUnwrapperTest, DoWhileCompletesAsOneAnnexALoop) {
   const auto result = parseWithDiagnostics(
       "module m; initial begin do a = a + 1; while (a < 3); end endmodule");

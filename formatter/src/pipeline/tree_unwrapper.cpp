@@ -740,6 +740,8 @@ class SVParser {
     std::vector<BlockFrame> block_stack;
     std::vector<AnnexState> grammar_scopes;
     std::vector<std::optional<AnnexState::Checkpoint>> grammar_checkpoints;
+    std::vector<bool> grammar_paused;
+    std::vector<bool> grammar_summary_owner;
     std::vector<GrammarContext> grammar_contexts;
   };
 
@@ -781,6 +783,8 @@ class SVParser {
   std::vector<BlockFrame> block_stack_;
   std::vector<AnnexState> grammar_scopes_;
   std::vector<std::optional<AnnexState::Checkpoint>> grammar_checkpoints_;
+  std::vector<bool> grammar_paused_;
+  std::vector<bool> grammar_summary_owner_;
   std::vector<GrammarContext> grammar_contexts_;
   size_t last_grammar_warning_pos_ = std::numeric_limits<size_t>::max();
   bool grammar_suspended_ = false;
@@ -806,7 +810,9 @@ class SVParser {
       interruptGrammar("macro expansion unavailable to Annex A");
     }
     if (!grammar_suspended_ && token.kind != TK::Directive) {
-      for (auto& scope : grammar_scopes_) {
+      for (size_t i = 0; i < grammar_scopes_.size(); ++i) {
+        if (grammar_paused_[i]) continue;
+        auto& scope = grammar_scopes_[i];
         if (scope.failed || scope.interrupted) continue;
         if (token.kind == TK::MacroUsage) {
           scope.interrupted = true;
@@ -1553,6 +1559,8 @@ class SVParser {
         .block_stack = block_stack_,
         .grammar_scopes = grammar_scopes_,
         .grammar_checkpoints = grammar_checkpoints_,
+        .grammar_paused = grammar_paused_,
+        .grammar_summary_owner = grammar_summary_owner_,
         .grammar_contexts = grammar_contexts_,
     };
   }
@@ -1564,6 +1572,8 @@ class SVParser {
     block_stack_ = state.block_stack;
     grammar_scopes_ = state.grammar_scopes;
     grammar_checkpoints_ = state.grammar_checkpoints;
+    grammar_paused_ = state.grammar_paused;
+    grammar_summary_owner_ = state.grammar_summary_owner;
     grammar_contexts_ = state.grammar_contexts;
   }
 
@@ -1573,7 +1583,9 @@ class SVParser {
         lhs.block_stack.size() != rhs.block_stack.size() ||
         lhs.grammar_contexts != rhs.grammar_contexts ||
         lhs.grammar_scopes.size() != rhs.grammar_scopes.size() ||
-        lhs.grammar_checkpoints.size() != rhs.grammar_checkpoints.size()) {
+        lhs.grammar_checkpoints.size() != rhs.grammar_checkpoints.size() ||
+        lhs.grammar_paused != rhs.grammar_paused ||
+        lhs.grammar_summary_owner != rhs.grammar_summary_owner) {
       return false;
     }
     for (size_t i = 0; i < lhs.block_stack.size(); ++i) {
@@ -1750,12 +1762,22 @@ class SVParser {
     }
   }
 
-  auto parseIndentedStatement() -> void {
+  auto parseIndentedStatement(std::vector<std::string_view> roots = {
+                                  "statement_or_null", "generate_block",
+                                  "generate_item"}) -> void {
     const size_t stack_size_before = block_stack_.size();
+    if (!stop_at_conditional_boundary_ && !grammar_scopes_.empty() &&
+        !grammar_scopes_.back().failed && !grammar_scopes_.back().interrupted &&
+        !grammar_paused_.back()) {
+      const auto& waiting = grammar_scopes_.back().charts.back().waiting;
+      std::vector<std::string_view> expected;
+      for (const auto root : roots) {
+        if (waiting.contains(annexRule(root))) expected.push_back(root);
+      }
+      if (!expected.empty()) roots = std::move(expected);
+    }
     ++indent_level_;
-    grammar_contexts_.push_back(
-        {block_stack_.size(),
-         {"statement_or_null", "generate_block", "generate_item"}});
+    grammar_contexts_.push_back({block_stack_.size(), std::move(roots)});
     parseStatement();
     grammar_contexts_.pop_back();
     if (block_stack_.size() == stack_size_before) {
@@ -1858,6 +1880,31 @@ class SVParser {
             ? std::optional{grammar_scopes_.back().checkpoint()}
             : std::nullopt);
     grammar_scopes_.emplace_back(roots);
+    grammar_paused_.push_back(false);
+    grammar_summary_owner_.push_back(false);
+  }
+
+  // The parent chart can consume a completed child nonterminal directly.
+  // Pause it while that child is parsed, then advance it once at endGrammar().
+  auto summarizeChildInParent() -> void {
+    if (grammar_scopes_.size() < 2 || !grammar_checkpoints_.back()) return;
+    const size_t parent_index = grammar_scopes_.size() - 2;
+    const auto& parent = grammar_scopes_[parent_index];
+    if (grammar_paused_[parent_index] || parent.failed || parent.interrupted)
+      return;
+    const auto& waiting = parent.charts.back().waiting;
+    const auto& roots = grammar_scopes_.back().roots;
+    bool has_candidate = false;
+    bool all_candidates_waited = true;
+    for (const uint16_t root : roots) {
+      if (!annexCanStart(kRuleNames[root], peek().kind)) continue;
+      has_candidate = true;
+      all_candidates_waited &= waiting.contains(root);
+    }
+    if (has_candidate && all_candidates_waited) {
+      grammar_paused_[parent_index] = true;
+      grammar_summary_owner_.back() = true;
+    }
   }
 
   [[nodiscard]] auto grammarAllows(TK kind) const -> bool {
@@ -1870,7 +1917,10 @@ class SVParser {
 
   auto endGrammar(bool require_complete = true) -> AnnexState {
     AnnexState state = std::move(grammar_scopes_.back());
+    const bool summarized = grammar_summary_owner_.back();
     grammar_scopes_.pop_back();
+    grammar_paused_.pop_back();
+    grammar_summary_owner_.pop_back();
     const auto checkpoint = grammar_checkpoints_.back();
     grammar_checkpoints_.pop_back();
     if (state.lost_continuation) {
@@ -1878,9 +1928,31 @@ class SVParser {
       recordGrammarFallback("conditional Annex A continuation became invalid");
     }
     if (checkpoint && !grammar_scopes_.empty() &&
-        (state.failed || state.interrupted)) {
-      static_cast<void>(
-          grammar_scopes_.back().skipOpaqueItem(*checkpoint, state.roots));
+        (summarized || !grammar_paused_.back())) {
+      if (summarized) grammar_paused_.back() = false;
+      if (summarized || state.failed || state.interrupted) {
+        std::vector<uint16_t> completed_roots;
+        if (summarized && state.complete()) {
+          for (const uint16_t root : state.roots) {
+            if (state.completed(kRuleNames[root]) &&
+                grammar_scopes_.back()
+                    .charts[checkpoint->chart_count - 1]
+                    .waiting.contains(root)) {
+              completed_roots.push_back(root);
+            }
+          }
+        } else {
+          completed_roots = state.roots;
+          if (summarized && !state.failed && !state.interrupted) {
+            state.interrupted = true;
+            recordGrammarFallback("incomplete summarized Annex A child");
+          }
+        }
+        if (!grammar_scopes_.back().skipOpaqueItem(*checkpoint,
+                                                   completed_roots)) {
+          recordGrammarFallback("Annex A parent cannot resume after child");
+        }
+      }
     }
     if (state.failed && !state.interrupted) {
       recordGrammarFallback(state.failure_reason);
@@ -2033,20 +2105,44 @@ class SVParser {
                                             "property_declaration",
                                             "sequence_declaration",
                                             "config_declaration",
-                                            "udp_declaration"};
+                                            "udp_declaration",
+                                            "always_construct",
+                                            "initial_construct",
+                                            "final_construct",
+                                            "seq_block",
+                                            "par_block",
+                                            "case_statement",
+                                            "case_generate_construct"};
       return std::ranges::any_of(rules, [&](std::string_view rule) {
         return grammar_scopes_.back().hasActiveRule(rule) &&
                annexCanStart(rule, peek().kind);
       });
     }();
     if (segmented_header) {
+      summarizeChildInParent();
+      const bool resume_parent = grammar_summary_owner_.back();
+      const auto checkpoint = grammar_checkpoints_.back();
+      const std::vector<uint16_t> roots = grammar_scopes_.back().roots;
+      const size_t outer_depth = block_stack_.size();
       AnnexState selector = std::move(grammar_scopes_.back());
       grammar_scopes_.pop_back();
       grammar_checkpoints_.pop_back();
+      grammar_paused_.pop_back();
+      grammar_summary_owner_.pop_back();
       parseStatementLayout(selector);
+      if (resume_parent && checkpoint) {
+        grammar_paused_.back() = false;
+        if (block_stack_.size() != outer_depth) {
+          grammar_scopes_.back().interrupted = true;
+          recordGrammarFallback("segmented Annex A block interrupted");
+        } else if (!grammar_scopes_.back().skipOpaqueItem(*checkpoint, roots)) {
+          recordGrammarFallback("Annex A parent cannot resume after block");
+        }
+      }
       return;
     }
 
+    summarizeChildInParent();
     parseStatementLayout(grammar_scopes_.back());
     const AnnexState item = endGrammar();
     if (!block_stack_.empty() &&
@@ -2063,25 +2159,30 @@ class SVParser {
   auto parseStatementLayout(const AnnexState& selector) -> void {
     // Annex A puts unique / unique0 / priority before both if and case.
     // Finish that grammar prefix before selecting the layout function.
-    if (!grammar_scopes_.empty() &&
-        annexCanStart("unique_priority", peek().kind) &&
-        grammarAllows(peek().kind)) {
-      const size_t origin = grammar_scopes_.back().charts.size() - 1;
+    std::optional<AnnexState> prefixed;
+    const AnnexState* selection = &selector;
+    if (annexCanStart("unique_priority", peek().kind) &&
+        selector.hasActiveRule("unique_priority")) {
+      prefixed = selector;
+      const size_t origin = prefixed->charts.size() - 1;
+      prefixed->advance(peek());
       consumeInto(line_);
-      if (!grammar_scopes_.back().completedFrom("unique_priority", origin)) {
+      if (prefixed->failed ||
+          !prefixed->completedFrom("unique_priority", origin)) {
         recordGrammarFallback("incomplete Annex A unique_priority");
-        grammar_scopes_.back().interrupted = true;
+        if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
         consumeUntilSemi();
         return;
       }
+      selection = &*prefixed;
     }
     const TK first = peek().kind;
     const auto can_begin = [&](std::string_view rule) {
-      return selector.hasActiveRule(rule) && annexCanStart(rule, first);
+      return selection->hasActiveRule(rule) && annexCanStart(rule, first);
     };
     const auto continues_as = [&](std::string_view rule, size_t tokens) {
       if (!can_begin(rule)) return false;
-      AnnexState continuation = selector;
+      AnnexState continuation = *selection;
       for (size_t offset = 0; offset < tokens; ++offset) {
         if (!continuation.accepts(peek(offset).kind)) return false;
         continuation.advance(peek(offset));
@@ -2141,7 +2242,7 @@ class SVParser {
       return;
     }
     if (first == TK::Identifier && at(TK::Colon, 1)) {
-      AnnexState labeled = selector;
+      AnnexState labeled = *selection;
       labeled.advance(peek());
       labeled.advance(peek(1));
       if (!labeled.failed) {
@@ -3252,8 +3353,14 @@ class SVParser {
 
   // begin [:label] ... end [:label]
   auto parseBeginEnd(TK closeKw) -> void {
+    beginGrammar({"seq_block"});
     consumeInto(line_);  // begin
     consumeLabel();
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted ||
+        !header.hasViableRule("seq_block")) {
+      recordGrammarFallback("invalid Annex A sequential block header");
+    }
     addLine();
 
     parseDelimitedBody(closeKw);
@@ -3261,8 +3368,14 @@ class SVParser {
 
   // fork ... join / join_any / join_none
   auto parseFork(TK closeKw) -> void {
+    beginGrammar({"par_block"});
     consumeInto(line_);
     consumeLabel();
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted ||
+        !header.hasViableRule("par_block")) {
+      recordGrammarFallback("invalid Annex A parallel block header");
+    }
     addLine();
     parseDelimitedBody(closeKw);
   }
@@ -3270,38 +3383,61 @@ class SVParser {
   // always / always_comb / always_ff / always_latch / initial / final
   auto parseProceduralBlock() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"always_construct", "initial_construct", "final_construct"});
     consumeInto(line_);  // keyword
     bool has_delay_control = false;
+    bool has_event_control = false;
     if (at(TK::Hash)) {
       has_delay_control = true;
       if (!consumeAnnexRule("delay_control", line_)) {
+        static_cast<void>(endGrammar(false));
         recoverMalformedItem(saved);
         return;
       }
     }
     if (at(TK::At)) {
+      has_event_control = true;
       if (!consumeAnnexRule("event_control", line_)) {
+        static_cast<void>(endGrammar(false));
         recoverMalformedItem(saved);
         return;
       }
+    }
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted) {
+      recoverMalformedItem(saved);
+      return;
+    }
+    std::vector<std::string_view> body_roots;
+    if (has_delay_control || has_event_control ||
+        header.hasViableRule("initial_construct")) {
+      body_roots = {"statement_or_null"};
+    } else if (header.hasViableRule("final_construct")) {
+      body_roots = {"function_statement"};
+    } else if (header.hasViableRule("always_construct")) {
+      body_roots = {"statement"};
+    } else {
+      recordGrammarFallback("procedural body outside Annex A rule");
+      recoverMalformedItem(saved);
+      return;
     }
     const TK next = peek().kind;
     constexpr std::string_view compound_rules[] = {
         "seq_block", "par_block", "conditional_statement", "case_statement",
         "loop_statement"};
     const bool compound_statement =
-        !grammar_scopes_.empty() &&
         std::ranges::any_of(compound_rules, [&](std::string_view rule) {
-          return grammar_scopes_.back().hasActiveRule(rule) &&
-                 annexCanStart(rule, next);
+          return header.hasActiveRule(rule) && annexCanStart(rule, next);
         });
     if (has_delay_control && !compound_statement) {
+      beginGrammar(body_roots);
       parseGrammarLeaf();
+      static_cast<void>(endGrammar());
       return;
     }
     addLine();
 
-    parseIndentedStatement();
+    parseIndentedStatement(std::move(body_roots));
   }
 
   // if (...) stmt [else [if (...)] stmt]
@@ -3328,16 +3464,28 @@ class SVParser {
 
   // case/casex/casez (...) ... endcase
   auto parseCase(TK closeKw) -> void {
+    beginGrammar({"case_statement", "case_generate_construct"});
     consumeInto(line_);  // case / casex / casez
     consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                           "case_expression", line_);
+    std::string_view body_rule = "case_item";
     if ((at(TK::InsideKeyword) || at(TK::MatchesKeyword)) &&
         grammarAllows(peek().kind)) {
+      body_rule =
+          at(TK::InsideKeyword) ? "case_inside_item" : "case_pattern_item";
       consumeInto(line_);
+    }
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted) {
+      recordGrammarFallback("invalid Annex A case header");
+    } else if (body_rule == "case_item" &&
+               !header.hasViableRule("case_statement")) {
+      body_rule = "case_generate_item";
     }
     addLine();
 
     pushOpenFrame(closeKw);
+    block_stack_.back().grammar_body = body_rule;
     ++indent_level_;
     while (!at(closeKw) && !at(TK::EndOfFile)) {
       if (stop_at_conditional_boundary_ &&
@@ -3357,9 +3505,8 @@ class SVParser {
   }
 
   auto parseCaseItem() -> void {
-    beginGrammar({"case_item", "case_pattern_item", "case_inside_item",
-                  "case_generate_item"},
-                 true);
+    beginGrammar({block_stack_.back().grammar_body}, true);
+    summarizeChildInParent();
     if (at(TK::DefaultKeyword)) {
       consumeInto(line_);
       if (at(TK::Colon)) {
