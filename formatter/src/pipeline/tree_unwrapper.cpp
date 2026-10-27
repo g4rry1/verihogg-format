@@ -279,6 +279,7 @@ struct AnnexState {
     size_t chart_count;
     size_t total_items;
     bool healthy;
+    std::vector<AnnexState> branched_paths;
   };
 
   std::vector<AnnexChart> charts;
@@ -286,7 +287,12 @@ struct AnnexState {
   size_t total_items = 0;
   bool failed = false;
   bool interrupted = false;
+  bool lost_continuation = false;
   std::string_view failure_reason;
+  // Conditional compilation can leave several valid Annex A continuations.
+  // Each path keeps its own Earley history; the next source token advances all
+  // paths in this same parser, without replaying any branch tokens.
+  std::vector<AnnexState> alternatives;
 
   explicit AnnexState(const std::vector<std::string_view>& names) {
     static const auto by_left = [] {
@@ -388,18 +394,45 @@ struct AnnexState {
 
   [[nodiscard]] auto accepts(TK kind) const -> bool {
     const int terminal = annexTerminal(kind);
-    return terminal >= 0 && !failed &&
-           charts.back().scanning.contains(terminal);
+    if (terminal < 0 || failed || interrupted) return false;
+    if (charts.back().scanning.contains(terminal)) return true;
+    return std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+      return !path.failed && !path.interrupted &&
+             path.charts.back().scanning.contains(terminal);
+    });
   }
 
   [[nodiscard]] auto checkpoint() const -> Checkpoint {
-    return {charts.size(), total_items, !failed && !interrupted};
+    Checkpoint saved{charts.size(), total_items, !failed && !interrupted, {}};
+    if (!alternatives.empty()) saved.branched_paths.push_back(*this);
+    return saved;
   }
 
   // An opaque item occupies one grammar nonterminal. Resume the enclosing
   // grammar after that item without treating its unknown tokens as terminals.
   [[nodiscard]] auto skipOpaqueItem(
       Checkpoint saved, const std::vector<uint16_t>& item_roots) -> bool {
+    if (!saved.branched_paths.empty()) {
+      // Restore every continuation to the point before the unavailable item.
+      // A macro may have invalidated some paths while its tokens were read.
+      AnnexState restored = std::move(saved.branched_paths.front());
+      auto paths = std::move(restored.alternatives);
+      restored.alternatives.clear();
+      const auto resume = [&](AnnexState& path) {
+        return path.skipOpaqueItem(
+            {path.charts.size(), path.total_items,
+             !path.failed && !path.interrupted, {}},
+            item_roots);
+      };
+      bool valid = resume(restored);
+      for (auto& path : paths) {
+        valid &= resume(path);
+        restored.addContinuation(path);
+      }
+      *this = std::move(restored);
+      if (!valid) interrupted = true;
+      return valid;
+    }
     if (!saved.healthy || saved.chart_count == 0 ||
         saved.chart_count > charts.size()) {
       return false;
@@ -410,7 +443,9 @@ struct AnnexState {
     total_items = saved.total_items;
     failed = false;
     interrupted = false;
+    lost_continuation = false;
     failure_reason = {};
+    alternatives.clear();
     AnnexChart next(charts.size());
     const auto& origin = charts.back();
     for (const auto rule : item_roots) {
@@ -434,34 +469,56 @@ struct AnnexState {
 
   [[nodiscard]] auto sameContinuation(const AnnexState& other) const -> bool {
     if (roots != other.roots || failed != other.failed ||
-        interrupted != other.interrupted) {
+        interrupted != other.interrupted ||
+        lost_continuation != other.lost_continuation) {
       return false;
     }
     if (failed || interrupted) return true;
-    const auto& lhs = charts.back();
-    const auto& rhs = other.charts.back();
-    if (lhs.completed_roots != rhs.completed_roots ||
-        lhs.scanning.size() != rhs.scanning.size()) {
-      return false;
-    }
-    for (const auto& [terminal, items] : lhs.scanning) {
-      if (!rhs.scanning.contains(terminal)) return false;
+    // Earley completions consult the origin chart, so equal FIRST sets at the
+    // current position do not imply equal continuations. Keep a single chart
+    // only when every item and its origin history agree between branches.
+    if (charts.size() != other.charts.size()) return false;
+    for (size_t i = 0; i < charts.size(); ++i) {
+      if (charts[i].items != other.charts[i].items) return false;
     }
     return true;
   }
 
-  [[nodiscard]] auto complete() const -> bool {
-    if (failed || charts.size() == 1) return false;
-    for (const auto root : roots) {
-      if (charts.back().completed_roots.contains(root)) return true;
+  auto addContinuation(const AnnexState& other) -> void {
+    AnnexState path = other;
+    path.alternatives.clear();
+    if (!sameContinuation(path) &&
+        !std::ranges::any_of(alternatives, [&](const AnnexState& existing) {
+          return existing.sameContinuation(path);
+        })) {
+      alternatives.push_back(std::move(path));
     }
-    return false;
+    for (const auto& additional : other.alternatives) {
+      addContinuation(additional);
+    }
+  }
+
+  [[nodiscard]] auto complete() const -> bool {
+    if (failed || lost_continuation || charts.size() == 1) return false;
+    bool primary_complete = false;
+    for (const auto root : roots) {
+      primary_complete |= charts.back().completed_roots.contains(root);
+    }
+    return primary_complete &&
+           std::ranges::all_of(alternatives, [](const AnnexState& path) {
+             return path.complete();
+           });
   }
 
   [[nodiscard]] auto completed(std::string_view name) const -> bool {
     const int rule = annexRule(name);
-    if (rule < 0 || failed || charts.size() == 1) return false;
-    return charts.back().completed_roots.contains(rule);
+    if (rule < 0 || failed || lost_continuation || charts.size() == 1) {
+      return false;
+    }
+    return charts.back().completed_roots.contains(rule) &&
+           std::ranges::all_of(alternatives, [&](const AnnexState& path) {
+             return path.completed(name);
+           });
   }
 
   [[nodiscard]] auto completedFrom(std::string_view name,
@@ -469,9 +526,12 @@ struct AnnexState {
     const int rule = annexRule(name);
     if (rule < 0 || failed) return false;
     const auto found = charts.back().completed_origins.find(rule);
-    return found != charts.back().completed_origins.end() &&
-           std::find(found->second.begin(), found->second.end(), origin) !=
-               found->second.end();
+    return (found != charts.back().completed_origins.end() &&
+            std::find(found->second.begin(), found->second.end(), origin) !=
+                found->second.end()) ||
+           std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+             return path.completedFrom(name, origin);
+           });
   }
 
   [[nodiscard]] auto consumedTerminalInRule(std::string_view name,
@@ -488,7 +548,9 @@ struct AnnexState {
         return true;
       }
     }
-    return false;
+    return std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+      return path.consumedTerminalInRule(name, kind);
+    });
   }
 
   [[nodiscard]] auto hasViableRule(std::string_view name) const -> bool {
@@ -496,6 +558,18 @@ struct AnnexState {
     if (rule < 0 || failed || charts.empty()) return false;
     return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
       return item.origin == 0 && kProductions[item.production].left == rule;
+    }) || std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+      return path.hasViableRule(name);
+    });
+  }
+
+  [[nodiscard]] auto hasActiveRule(std::string_view name) const -> bool {
+    const int rule = annexRule(name);
+    if (rule < 0 || failed || charts.empty()) return false;
+    return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
+      return kProductions[item.production].left == rule;
+    }) || std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+      return path.hasActiveRule(name);
     });
   }
 
@@ -509,6 +583,8 @@ struct AnnexState {
       return item.origin == 0 && item.dot > 0 && production.left == rule &&
              production.count > 0 &&
              kSymbols[production.offset] == -terminal - 1;
+    }) || std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+      return path.hasViableProductionStartingWith(name, kind);
     });
   }
 
@@ -522,10 +598,35 @@ struct AnnexState {
         return true;
       }
     }
-    return false;
+    return std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+      return path.expectsRootTerminal(kind);
+    });
   }
 
   auto advance(Token token) -> void {
+    if (failed || interrupted) return;
+    auto other_paths = std::move(alternatives);
+    advanceOne(token);
+    for (auto& path : other_paths) path.advanceOne(token);
+    lost_continuation |= std::ranges::any_of(
+        other_paths, [](const AnnexState& path) {
+          return path.failed || path.interrupted || path.lost_continuation;
+        });
+    std::erase_if(other_paths, [](const AnnexState& path) {
+      return path.failed || path.interrupted;
+    });
+    if (failed && !other_paths.empty()) {
+      lost_continuation = true;
+      AnnexState first = std::move(other_paths.front());
+      other_paths.erase(other_paths.begin());
+      *this = std::move(first);
+      lost_continuation = true;
+    }
+    alternatives = std::move(other_paths);
+  }
+
+ private:
+  auto advanceOne(Token token) -> void {
     if (failed) return;
     const int terminal = annexTerminal(token.kind);
     if (terminal < 0) {
@@ -551,6 +652,8 @@ struct AnnexState {
     charts.push_back(std::move(next));
     close();
   }
+
+ public:
 };
 
 [[nodiscard]] auto startsWithCompilerDirective(const Line& line) -> bool {
@@ -638,6 +741,17 @@ class SVParser {
     size_t output_size;
     size_t preserved_source_end;
     size_t indent_level;
+  };
+
+  struct ListDepth {
+    int parens = 0;
+    int brackets = 0;
+    int braces = 0;
+
+    auto operator==(const ListDepth&) const -> bool = default;
+    [[nodiscard]] auto topLevel() const -> bool {
+      return parens == 0 && brackets == 0 && braces == 0;
+    }
   };
 
   gsl::span<const Token> tokens_;
@@ -1405,7 +1519,10 @@ class SVParser {
       return false;
     }
     for (size_t i = 0; i < lhs.grammar_scopes.size(); ++i) {
-      if (!lhs.grammar_scopes[i].sameContinuation(rhs.grammar_scopes[i])) {
+      const auto& left = lhs.grammar_scopes[i];
+      const auto& right = rhs.grammar_scopes[i];
+      if (left.roots != right.roots || left.failed != right.failed ||
+          left.interrupted != right.interrupted) {
         return false;
       }
     }
@@ -1424,6 +1541,9 @@ class SVParser {
     for (const auto& state : states) {
       if (!structuralStateCompatible(joined, state)) {
         return std::nullopt;
+      }
+      for (size_t i = 0; i < joined.grammar_scopes.size(); ++i) {
+        joined.grammar_scopes[i].addContinuation(state.grammar_scopes[i]);
       }
     }
     return joined;
@@ -1634,6 +1754,10 @@ class SVParser {
     grammar_scopes_.pop_back();
     const auto checkpoint = grammar_checkpoints_.back();
     grammar_checkpoints_.pop_back();
+    if (state.lost_continuation) {
+      state.interrupted = true;
+      recordGrammarFallback("conditional Annex A continuation became invalid");
+    }
     if (checkpoint && !grammar_scopes_.empty() &&
         (state.failed || state.interrupted)) {
       static_cast<void>(
@@ -1985,25 +2109,50 @@ class SVParser {
 
   // Identifier-led items can become declarations, assignments or
   // instantiations. Consume the common prefix once; list layout starts only
-  // when the next consumed tokens actually open a parameter or port list.
+  // while an Annex A instantiation production remains viable.
   auto parseIdentifierItem() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
+    const auto has_instantiation = [&] {
+      if (grammar_scopes_.empty() || grammar_scopes_.back().failed ||
+          grammar_scopes_.back().interrupted) {
+        return false;
+      }
+      const auto& grammar = grammar_scopes_.back();
+      return grammar.hasViableRule("module_instantiation") ||
+             grammar.hasViableRule("interface_instantiation") ||
+             grammar.hasViableRule("program_instantiation") ||
+             grammar.hasViableRule("checker_instantiation") ||
+             grammar.hasViableRule("udp_instantiation") ||
+             grammar.hasActiveRule("hierarchical_instance") ||
+             grammar.hasActiveRule("udp_instance");
+    };
+    const bool instantiation_prefix = has_instantiation();
+    bool parameter_list_had_directive = false;
+    const auto can_layout_instance = [&] {
+      return has_instantiation() ||
+             (instantiation_prefix && !grammar_scopes_.empty() &&
+              (grammar_scopes_.back().interrupted ||
+               (grammar_scopes_.back().failed &&
+                parameter_list_had_directive)));
+    };
     while (at(TK::Directive) && isCompilerDirective(peek())) {
       addLine();
       parseDirectiveLine();
     }
-    if (at(TK::Hash)) {
+    if (at(TK::Hash) && can_layout_instance() && grammarAllows(TK::Hash)) {
       consumeInto(line_);
-      parseParenthesizedListInto(line_);
+      parameter_list_had_directive = parseParenthesizedListInto(line_);
       while (at(TK::Directive) && isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
       }
     }
-    if (at(TK::Identifier)) {
+    if (at(TK::Identifier) && can_layout_instance() &&
+        grammarAllows(TK::Identifier)) {
       consumeInto(line_);
-      if (at(TK::OpenParenthesis)) {
+      if (at(TK::OpenParenthesis) && can_layout_instance() &&
+          grammarAllows(TK::OpenParenthesis)) {
         parseParenthesizedListInto(line_);
         while (at(TK::Comma) && grammarAllows(TK::Comma)) {
           consumeInto(line_);
@@ -2188,27 +2337,57 @@ class SVParser {
 
   // Each top-level comma-separated item in a parenthesized list gets its own
   // UnwrappedLine, so parameters and ports can expand vertically.
-  auto parseParenthesizedListInto(Line& line) -> void {
+  static auto advanceListDepth(ListDepth& depth, TK kind) -> void {
+    switch (kind) {
+      case TK::OpenParenthesis:
+        ++depth.parens;
+        break;
+      case TK::CloseParenthesis:
+        if (depth.parens > 0) --depth.parens;
+        break;
+      case TK::OpenBracket:
+        ++depth.brackets;
+        break;
+      case TK::CloseBracket:
+        if (depth.brackets > 0) --depth.brackets;
+        break;
+      case TK::ApostropheOpenBrace:
+      case TK::OpenBrace:
+        ++depth.braces;
+        break;
+      case TK::CloseBrace:
+        if (depth.braces > 0) --depth.braces;
+        break;
+      default:
+        break;
+    }
+  }
+
+  auto parseParenthesizedListInto(Line& line) -> bool {
     if (!at(TK::OpenParenthesis)) {
-      return;
+      return false;
     }
     line.tokens.push_back(consume());
 
     addLine();
-    int parenDepth = 0;
-    int bracketDepth = 0;
-    int braceDepth = 0;
-
-    auto atTopLevel = [&]() -> bool {
-      return parenDepth == 0 && bracketDepth == 0 && braceDepth == 0;
-    };
+    bool had_compiler_directive = false;
+    ListDepth depth;
 
     while (!at(TK::EndOfFile)) {
-      if (at(TK::CloseParenthesis) && atTopLevel()) {
+      had_compiler_directive |= isCompilerDirective(peek());
+      if (at(TK::CloseParenthesis) && depth.topLevel()) {
         break;
       }
 
-      if (atTopLevel() && isCompilerDirective(peek()) &&
+      if (depth.topLevel() && isConditionalStartDirective(peek()) &&
+          !grammar_scopes_.empty()) {
+        bool header_ended = true;
+        static_cast<void>(parseAnnexConditional(TK::EndOfFile, header_ended,
+                                                indent_level_, &depth));
+        continue;
+      }
+
+      if (depth.topLevel() && isCompilerDirective(peek()) &&
           (line.tokens.empty() || hasLeadingNewline(peek()))) {
         addLine();
         const bool was_suspended = std::exchange(grammar_suspended_, true);
@@ -2224,47 +2403,20 @@ class SVParser {
         continue;
       }
 
-      if (at(TK::Comma) && atTopLevel()) {
+      if (at(TK::Comma) && depth.topLevel()) {
         consumeInto(line);
         addLine();
         continue;
       }
 
-      switch (peek().kind) {
-        case TK::OpenParenthesis:
-          ++parenDepth;
-          break;
-        case TK::CloseParenthesis:
-          if (parenDepth > 0) {
-            --parenDepth;
-          }
-          break;
-        case TK::OpenBracket:
-          ++bracketDepth;
-          break;
-        case TK::CloseBracket:
-          if (bracketDepth > 0) {
-            --bracketDepth;
-          }
-          break;
-        case TK::ApostropheOpenBrace:
-        case TK::OpenBrace:
-          ++braceDepth;
-          break;
-        case TK::CloseBrace:
-          if (braceDepth > 0) {
-            --braceDepth;
-          }
-          break;
-        default:
-          break;
-      }
+      advanceListDepth(depth, peek().kind);
       consumeInto(line);
     }
     addLine();
     if (at(TK::CloseParenthesis)) {
       line.tokens.push_back(consume());
     }
+    return had_compiler_directive;
   }
 
   // module foo #(...) (...); ... endmodule
@@ -2274,6 +2426,14 @@ class SVParser {
     while (!at(TK::EndOfFile) && !at(closeKw) &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_)) {
+          break;
+        }
+        continue;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -2345,7 +2505,8 @@ class SVParser {
   }
 
   auto consumeAnnexConditionalToken(TK closeKw, bool& headerEnded,
-                                    size_t baseIndent) -> bool {
+                                    size_t baseIndent,
+                                    ListDepth* listDepth = nullptr) -> bool {
     if (at(TK::Semicolon) &&
         (grammar_scopes_.back().completed("property_spec") ||
          grammar_scopes_.back().completed("sequence_expr"))) {
@@ -2361,12 +2522,20 @@ class SVParser {
       return false;
     }
     const TK kind = peek().kind;
+    if (listDepth && kind == TK::CloseParenthesis && listDepth->topLevel()) {
+      return false;
+    }
     if (kind == closeKw) {
       addLine();
       if (indent_level_ > baseIndent) --indent_level_;
     }
+    const bool list_separator =
+        listDepth && kind == TK::Comma && listDepth->topLevel();
+    if (listDepth) advanceListDepth(*listDepth, kind);
     consumeInto(line_);
-    if (kind == TK::Semicolon) {
+    if (list_separator) {
+      addLine();
+    } else if (kind == TK::Semicolon) {
       addLine();
       if (!headerEnded) {
         headerEnded = true;
@@ -2379,17 +2548,19 @@ class SVParser {
   // Conditional compilation is outside Annex A. Each branch advances copies
   // of every active chart as its tokens are emitted. A compatible continuation
   // resumes after endif without replaying any branch tokens.
-  auto parseAnnexConditional(TK closeKw, bool& headerEnded,
-                             size_t baseIndent) -> bool {
+  auto parseAnnexConditional(TK closeKw, bool& headerEnded, size_t baseIndent,
+                             ListDepth* listDepth = nullptr) -> bool {
     addLine();
     parseDirectiveLine();  // ifdef / ifndef
     const auto entry = grammar_scopes_;
     const bool entry_header_ended = headerEnded;
     const size_t entry_indent = indent_level_;
+    const ListDepth entry_depth = listDepth ? *listDepth : ListDepth{};
     struct Continuation {
       std::vector<AnnexState> grammars;
       bool header_ended;
       size_t indent;
+      ListDepth depth;
     };
     std::vector<Continuation> branches;
     bool has_else = false;
@@ -2397,21 +2568,24 @@ class SVParser {
       grammar_scopes_ = entry;
       headerEnded = entry_header_ended;
       indent_level_ = entry_indent;
+      if (listDepth) *listDepth = entry_depth;
       while (!at(TK::EndOfFile) && !isConditionalBoundaryDirective(peek())) {
         if (isConditionalStartDirective(peek())) {
-          if (!parseAnnexConditional(closeKw, headerEnded, baseIndent)) {
+          if (!parseAnnexConditional(closeKw, headerEnded, baseIndent,
+                                     listDepth)) {
             return false;
           }
         } else if (isCompilerDirective(peek())) {
           addLine();
           parseDirectiveLine();
         } else if (!consumeAnnexConditionalToken(closeKw, headerEnded,
-                                                 baseIndent)) {
+                                                 baseIndent, listDepth)) {
           return false;
         }
       }
       addLine();
-      branches.push_back({grammar_scopes_, headerEnded, indent_level_});
+      branches.push_back({grammar_scopes_, headerEnded, indent_level_,
+                          listDepth ? *listDepth : ListDepth{}});
       if (!isConditionalAlternativeDirective(peek())) break;
       has_else |= peek().rawText() == "`else";
       parseDirectiveLine();
@@ -2422,24 +2596,35 @@ class SVParser {
     }
     parseDirectiveLine();  // endif
     if (!has_else) {
-      branches.push_back({entry, entry_header_ended, entry_indent});
+      branches.push_back(
+          {entry, entry_header_ended, entry_indent, entry_depth});
     }
     if (branches.empty()) return false;
     const auto& joined = branches.front();
     for (const auto& branch : branches) {
       bool same_grammar = joined.grammars.size() == branch.grammars.size();
       for (size_t i = 0; same_grammar && i < joined.grammars.size(); ++i) {
-        same_grammar = joined.grammars[i].sameContinuation(branch.grammars[i]);
+        const auto& left = joined.grammars[i];
+        const auto& right = branch.grammars[i];
+        same_grammar = left.roots == right.roots &&
+                       left.failed == right.failed &&
+                       left.interrupted == right.interrupted;
       }
       if (!same_grammar || joined.header_ended != branch.header_ended ||
-          joined.indent != branch.indent) {
+          joined.indent != branch.indent || joined.depth != branch.depth) {
         recordGrammarFallback("incompatible conditional Annex A branches");
         return false;
       }
     }
     grammar_scopes_ = joined.grammars;
+    for (size_t branch = 1; branch < branches.size(); ++branch) {
+      for (size_t i = 0; i < grammar_scopes_.size(); ++i) {
+        grammar_scopes_[i].addContinuation(branches[branch].grammars[i]);
+      }
+    }
     headerEnded = joined.header_ended;
     indent_level_ = joined.indent;
+    if (listDepth) *listDepth = joined.depth;
     return true;
   }
 
@@ -2747,9 +2932,32 @@ class SVParser {
       // semicolon inside an import cannot be mistaken for the body boundary.
       while (!at(closeKw) && !at(TK::EndOfFile) &&
              !grammar_scopes_.back().complete()) {
+        if (isConditionalStartDirective(peek())) {
+          bool header_ended = true;
+          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                     indent_level_)) {
+            break;
+          }
+          continue;
+        }
         if (isCompilerDirective(peek())) {
           addLine();
           parseDirectiveLine();
+          continue;
+        }
+        if (grammar_scopes_.back().interrupted ||
+            grammar_scopes_.back().failed) {
+          // An unavailable macro can interrupt the Annex A header before the
+          // port list. Preserve that list's formatter layout while looking
+          // for the header's semicolon; the grammar fallback was diagnosed at
+          // the interruption.
+          if (at(TK::OpenParenthesis)) {
+            parseParenthesizedListInto(line_);
+          } else {
+            const TK kind = peek().kind;
+            consumeInto(line_);
+            if (kind == TK::Semicolon) break;
+          }
           continue;
         }
         if (!grammar_scopes_.back().accepts(peek().kind)) break;
@@ -2763,7 +2971,9 @@ class SVParser {
           consumeInto(line_);
         }
       }
-      if (grammar_scopes_.back().interrupted || grammar_scopes_.back().failed) {
+      if ((grammar_scopes_.back().interrupted ||
+           grammar_scopes_.back().failed) &&
+          !line_.tokens.empty() && line_.tokens.back().kind != TK::Semicolon) {
         // A macro or malformed token interrupted the header chart. Preserve
         // the rest of this header through its next source semicolon.
         consumeUntilSemi();

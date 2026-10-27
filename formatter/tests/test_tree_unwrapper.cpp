@@ -344,6 +344,109 @@ TEST_F(TreeUnwrapperTest, MultipleInstancesCompleteOneAnnexAItem) {
   EXPECT_TRUE(found_second);
 }
 
+TEST_F(TreeUnwrapperTest, IdentifierLedItemsUseViableAnnexProductions) {
+  const auto result = parseWithDiagnostics(
+      "module m; type_t v; child u(a, b); child u2[2](a); "
+      "initial begin v = a; end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool saw_declaration = false;
+  bool saw_instance_list = false;
+  bool saw_assignment = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty() || line.is_opaque) continue;
+    saw_declaration |= line.tokens.front().rawText() == "type_t" &&
+                       line.tokens.back().kind == TK::Semicolon;
+    saw_instance_list |= line.tokens.front().rawText() == "child" &&
+                         line.tokens.back().kind == TK::OpenParenthesis;
+    saw_assignment |= line.tokens.front().rawText() == "v" &&
+                      line.tokens.back().kind == TK::Semicolon;
+  }
+  EXPECT_TRUE(saw_declaration);
+  EXPECT_TRUE(saw_instance_list);
+  EXPECT_TRUE(saw_assignment);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalParameterListResumesAnnexInstantiation) {
+  const auto result = parseWithDiagnostics(
+      "module m; child #(\n"
+      "`ifdef A\n.P(1)\n`else\n.P(2)\n`endif\n"
+      ") u(.a(a), .b(b)); endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool saw_instance_ports = false;
+  bool saw_second_port = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty() || line.is_opaque) continue;
+    saw_instance_ports |= line.tokens.front().kind == TK::CloseParenthesis &&
+                          line.tokens.back().kind == TK::OpenParenthesis;
+    saw_second_port |= line.tokens.front().kind == TK::Dot &&
+                       line.tokens.size() > 1 &&
+                       line.tokens[1].rawText() == "b";
+  }
+  EXPECT_TRUE(saw_instance_ports);
+  EXPECT_TRUE(saw_second_port);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalModulePortListResumesAnnexHeader) {
+  const auto result = parseWithDiagnostics(
+      "module m(\n`ifdef A\ninput logic a\n`else\ninput logic b\n"
+      "`endif\n); logic x; endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool saw_body = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::LogicKeyword &&
+        line.tokens.back().kind == TK::Semicolon) {
+      saw_body = true;
+    }
+  }
+  EXPECT_TRUE(saw_body);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalWholeModuleHeaderResumesAnnexGrammar) {
+  const auto result = parseWithDiagnostics(
+      "module m\n`ifdef A\n(input logic a)\n`else\n"
+      "(input logic b)\n`endif\n; logic x; endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalFunctionHeaderResumesAnnexGrammar) {
+  const auto result = parseWithDiagnostics(
+      "module m; function int f\n`ifdef A\n(input int a)\n"
+      "`else\n(input int b)\n`endif\n; return 0; "
+      "endfunction endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndFunctionKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, DifferentConditionalPortContinuationsRemainLive) {
+  const auto result = parseWithDiagnostics(
+      "module m(\n`ifdef A\ninput logic a,\n`else\n`endif\n"
+      "input logic b); logic x; endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool saw_close = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() &&
+        line.tokens.front().kind == TK::EndModuleKeyword) {
+      saw_close = true;
+    }
+  }
+  EXPECT_TRUE(saw_close);
+}
+
+TEST_F(TreeUnwrapperTest, InvalidConditionalPortPathFallsBackAtHeader) {
+  const auto result = parseWithDiagnostics(
+      "module m(\n`ifdef A\ninput logic a\n`else\ninput logic b,\n"
+      "`endif\n); logic x; endmodule");
+  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(),
+                          [](const auto& warning) {
+                            return warning.code == "annex-a-fallback";
+                          }));
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
 TEST_F(TreeUnwrapperTest, MprfConditionalPortsKeepDirectivesAsLines) {
   auto lines = parse(
       "`include \"scr1_arch_description.svh\"\n"
@@ -2023,6 +2126,22 @@ TEST_F(TreeUnwrapperTest, MacroInFunctionItemResumesAnnexABody) {
   EXPECT_TRUE(found_return);
   EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
             TK::EndPackageKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MacroAfterConditionalPredicateKeepsOuterClose) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin if (\n"
+      "`ifdef A\na\n`else\nb\n`endif\n"
+      ") `MAKE_STMT\n"
+      "x = 1; end endmodule");
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  EXPECT_NE(result.warnings.front().message.find("macro expansion"),
+            std::string::npos);
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndKeyword);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
 }
 
 TEST_F(TreeUnwrapperTest, MacroCaseItemResumesAtFollowingLabel) {
