@@ -823,20 +823,89 @@ class SVParser {
 
   // ---- helpers ----
 
-  auto consumeBalancedInto(TK open, TK close, Line& line) -> void {
-    if (!at(open)) {
-      return;
-    }
+  auto consumeBalancedInto(TK open, TK close, Line& line,
+                           TK recovery_close = TK::EndOfFile) -> bool {
+    if (!at(open)) return false;
     consumeInto(line);
-    int depth = 1;
-    while (pos_ < tokens_.size() && !at(TK::EndOfFile) && depth > 0) {
-      if (at(open)) {
-        ++depth;
-      } else if (at(close)) {
-        --depth;
+    ListDepth depth;
+    bool valid = true;
+    bool diagnosed = false;
+    while (pos_ < tokens_.size() && !at(TK::EndOfFile)) {
+      if (at(close) && depth.topLevel()) {
+        if (!grammarAllows(close)) {
+          valid = false;
+          if (!diagnosed) {
+            recordGrammarFallback("delimited header outside Annex A rule");
+            diagnosed = true;
+          }
+        }
+        consumeInto(line);
+        if (!valid && !grammar_scopes_.empty() &&
+            !grammar_scopes_.back().interrupted) {
+          if (!diagnosed) {
+            recordGrammarFallback("delimited header outside Annex A rule");
+          }
+          grammar_scopes_.back().interrupted = true;
+        }
+        return valid;
       }
+      if (recovery_close != TK::EndOfFile &&
+          matchesBlockClose(recovery_close, peek().kind)) {
+        break;
+      }
+      if (isConditionalStartDirective(peek()) &&
+          !grammar_scopes_.empty()) {
+        bool header_ended = true;
+        const bool resumed = parseAnnexConditional(
+            TK::EndOfFile, header_ended, indent_level_, &depth);
+        valid &= resumed;
+        diagnosed |= !resumed;
+        continue;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (at(TK::MacroUsage) ||
+          (at(TK::Directive) && !isCompilerDirective(peek()))) {
+        // consume() records the precise unavailable-macro fallback.
+        consumeInto(line);
+        valid = false;
+        diagnosed = true;
+        continue;
+      }
+      if (!grammarAllows(peek().kind)) {
+        valid = false;
+        if (!diagnosed) {
+          recordGrammarFallback("delimited header outside Annex A rule");
+          diagnosed = true;
+        }
+        if (!grammar_scopes_.empty()) {
+          grammar_scopes_.back().interrupted = true;
+        }
+      }
+      advanceListDepth(depth, peek().kind);
       consumeInto(line);
+      if (!grammar_scopes_.empty()) {
+        const auto& grammar = grammar_scopes_.back();
+        if (grammar.failed) {
+          valid = false;
+          if (!diagnosed) {
+            recordGrammarFallback(grammar.failure_reason);
+            diagnosed = true;
+          }
+        } else if (grammar.interrupted) {
+          valid = false;
+          diagnosed = true;
+        }
+      }
     }
+    if (!diagnosed) {
+      recordGrammarFallback("unterminated Annex A delimited header");
+    }
+    if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
+    return false;
   }
 
   // The grammar scope identifies the closing delimiter of an expression.
@@ -2363,7 +2432,8 @@ class SVParser {
     }
   }
 
-  auto parseParenthesizedListInto(Line& line) -> bool {
+  auto parseParenthesizedListInto(
+      Line& line, TK recovery_close = TK::EndOfFile) -> bool {
     if (!at(TK::OpenParenthesis)) {
       return false;
     }
@@ -2376,6 +2446,12 @@ class SVParser {
     while (!at(TK::EndOfFile)) {
       had_compiler_directive |= isCompilerDirective(peek());
       if (at(TK::CloseParenthesis) && depth.topLevel()) {
+        break;
+      }
+      if (depth.topLevel() &&
+          ((recovery_close != TK::EndOfFile &&
+            matchesBlockClose(recovery_close, peek().kind)) ||
+           matchingOpenFrame(peek().kind))) {
         break;
       }
 
@@ -2415,6 +2491,9 @@ class SVParser {
     addLine();
     if (at(TK::CloseParenthesis)) {
       line.tokens.push_back(consume());
+    } else {
+      recordGrammarFallback("unterminated Annex A parenthesized list");
+      if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
     }
     return had_compiler_directive;
   }
@@ -2952,7 +3031,7 @@ class SVParser {
           // for the header's semicolon; the grammar fallback was diagnosed at
           // the interruption.
           if (at(TK::OpenParenthesis)) {
-            parseParenthesizedListInto(line_);
+            parseParenthesizedListInto(line_, closeKw);
           } else {
             const TK kind = peek().kind;
             consumeInto(line_);
@@ -2963,10 +3042,11 @@ class SVParser {
         if (!grammar_scopes_.back().accepts(peek().kind)) break;
         if (at(TK::Hash)) {
           consumeInto(line_);
-          consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+          static_cast<void>(consumeBalancedInto(
+              TK::OpenParenthesis, TK::CloseParenthesis, line_, closeKw));
         } else if (at(TK::OpenParenthesis)) {
           // Port lists are layout choices over the same grammar consumption.
-          parseParenthesizedListInto(line_);
+          parseParenthesizedListInto(line_, closeKw);
         } else {
           consumeInto(line_);
         }
@@ -3217,7 +3297,13 @@ class SVParser {
         consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                               "expression", line_);
       } else {
-        consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_);
+        if (!consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis,
+                                 line_, block_stack_.empty()
+                                            ? TK::EndOfFile
+                                            : block_stack_.back().close_kind)) {
+          recoverMalformedItem(saved);
+          return;
+        }
       }
     }
     if (at(TK::At)) {

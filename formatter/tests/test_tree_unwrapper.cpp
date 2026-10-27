@@ -420,6 +420,16 @@ TEST_F(TreeUnwrapperTest, ConditionalFunctionHeaderResumesAnnexGrammar) {
             TK::EndFunctionKeyword);
 }
 
+TEST_F(TreeUnwrapperTest, ConditionalModuleParametersResumeAnnexHeader) {
+  const auto result = parseWithDiagnostics(
+      "module m #(\n`ifdef A\nparameter int X = 1\n"
+      "`else\nparameter int X = 2\n`endif\n)(); "
+      "logic x; endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
 TEST_F(TreeUnwrapperTest, DifferentConditionalPortContinuationsRemainLive) {
   const auto result = parseWithDiagnostics(
       "module m(\n`ifdef A\ninput logic a,\n`else\n`endif\n"
@@ -443,6 +453,24 @@ TEST_F(TreeUnwrapperTest, InvalidConditionalPortPathFallsBackAtHeader) {
                           [](const auto& warning) {
                             return warning.code == "annex-a-fallback";
                           }));
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MissingHeaderListCloseLeavesEndmoduleUnread) {
+  const auto result = parseWithDiagnostics(
+      "module m(input logic a; logic x; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MissingInstanceListCloseLeavesEndmoduleUnread) {
+  const auto result = parseWithDiagnostics(
+      "module m; child u(a, b; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
   EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
             TK::EndModuleKeyword);
 }
@@ -2224,6 +2252,35 @@ TEST_F(TreeUnwrapperTest, DoWhileCompletesAsOneAnnexALoop) {
     }
   }
   EXPECT_TRUE(found_tail);
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalForeachIndicesResumeAnnexLoop) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial foreach (a[\n"
+      "`ifdef A\ni\n`else\nj\n`endif\n"
+      "]) a[i] = 0; endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MalformedForeachHeaderRecoversAtOuterEnd) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin foreach (a[i + 1]) x = 0; "
+      "end endmodule");
+  EXPECT_TRUE(std::any_of(result.lines.begin(), result.lines.end(),
+                          [](const auto& line) {
+                            return !line.tokens.empty() &&
+                                   line.tokens.front().kind == TK::ForeachKeyword;
+                          }));
+  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(),
+                          [](const auto& warning) {
+                            return warning.code == "annex-a-fallback";
+                          }));
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndKeyword);
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
 }
 
 TEST_F(TreeUnwrapperTest, ProceduralAndGenerateForHeadersFollowAnnexA) {
