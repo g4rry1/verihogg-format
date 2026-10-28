@@ -3002,13 +3002,28 @@ class SVParser {
       return true;
     }
     if (!at(TK::WaitKeyword)) return false;
-    if (!at(TK::OpenParenthesis, 1)) {
-      static_cast<void>(parseAnnexItem({"wait_statement"}));
-      return true;
-    }
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"wait_statement"});
     consumeInto(line_);  // wait
+    while (isCompilerDirective(peek())) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_)) {
+          static_cast<void>(endGrammar(false));
+          recoverMalformedItem(saved);
+          return true;
+        }
+      } else {
+        addLine();
+        parseDirectiveLine();
+      }
+    }
+    if (!at(TK::OpenParenthesis)) {
+      parseGrammarLeaf(true, saved);
+      static_cast<void>(endGrammar());
+      return true;
+    }
     consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                           "expression", line_);
     const AnnexState prefix = endGrammar(false);
