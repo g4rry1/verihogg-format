@@ -744,6 +744,7 @@ class SVParser {
     std::vector<bool> grammar_paused;
     std::vector<bool> grammar_summary_owner;
     std::vector<GrammarContext> grammar_contexts;
+    uint8_t source_modes = 0;
   };
 
   struct BranchResult {
@@ -787,6 +788,11 @@ class SVParser {
   std::vector<bool> grammar_paused_;
   std::vector<bool> grammar_summary_owner_;
   std::vector<GrammarContext> grammar_contexts_;
+  static constexpr uint8_t kSourceBeforeDescription = 1;
+  static constexpr uint8_t kSourceAfterTimeunits = 2;
+  static constexpr uint8_t kSourceAfterDescription = 4;
+  static constexpr uint8_t kLibraryText = 8;
+  uint8_t source_modes_ = kSourceBeforeDescription | kLibraryText;
   size_t last_grammar_warning_pos_ = std::numeric_limits<size_t>::max();
   bool grammar_suspended_ = false;
   bool stop_at_conditional_boundary_ = false;
@@ -1634,6 +1640,7 @@ class SVParser {
         .grammar_paused = grammar_paused_,
         .grammar_summary_owner = grammar_summary_owner_,
         .grammar_contexts = grammar_contexts_,
+        .source_modes = source_modes_,
     };
   }
 
@@ -1647,6 +1654,7 @@ class SVParser {
     grammar_paused_ = state.grammar_paused;
     grammar_summary_owner_ = state.grammar_summary_owner;
     grammar_contexts_ = state.grammar_contexts;
+    source_modes_ = state.source_modes;
   }
 
   [[nodiscard]] auto structuralStateCompatible(
@@ -1666,6 +1674,7 @@ class SVParser {
       if (left.close_kind != right.close_kind ||
           left.extra_dedent_after_close != right.extra_dedent_after_close ||
           left.grammar_body != right.grammar_body ||
+          left.constructor_body != right.constructor_body ||
           ((left.close_kind == TK::EndConfigKeyword ||
             left.close_kind == TK::EndPrimitiveKeyword) &&
            left.statement_phase != right.statement_phase)) {
@@ -1715,6 +1724,7 @@ class SVParser {
       for (size_t i = 0; i < joined.grammar_scopes.size(); ++i) {
         joined.grammar_scopes[i].addContinuation(state.grammar_scopes[i]);
       }
+      joined.source_modes |= state.source_modes;
     }
     return joined;
   }
@@ -1877,7 +1887,15 @@ class SVParser {
       if (it->block_depth == block_stack_.size()) return it->roots;
     }
     if (block_stack_.empty()) {
-      return {"description", "timeunits_declaration", "library_description"};
+      std::vector<std::string_view> roots;
+      if (source_modes_ & (kSourceBeforeDescription | kSourceAfterTimeunits |
+                           kSourceAfterDescription))
+        roots.push_back("description");
+      if (source_modes_ & kSourceBeforeDescription)
+        roots.push_back("timeunits_declaration");
+      if (source_modes_ & kLibraryText)
+        roots.push_back("library_description");
+      return roots;
     }
     if (!block_stack_.back().grammar_body.empty()) {
       if (block_stack_.back().grammar_body == "config_body") {
@@ -2061,6 +2079,28 @@ class SVParser {
 
   // NOLINTBEGIN(misc-no-recursion)
 
+  // source_text ::= [ timeunits_declaration ] { description };
+  // library_text ::= { library_description }. Keep only the continuations
+  // allowed by the next Annex A top-level production, including both paths
+  // while a config declaration or ';' remains ambiguous.
+  [[nodiscard]] auto nextSourceModes(TK first) const -> uint8_t {
+    uint8_t next = 0;
+    if ((source_modes_ & kSourceBeforeDescription) &&
+        annexCanStart("timeunits_declaration", first)) {
+      next |= kSourceAfterTimeunits;
+    }
+    if ((source_modes_ & (kSourceBeforeDescription | kSourceAfterTimeunits |
+                         kSourceAfterDescription)) &&
+        annexCanStart("description", first)) {
+      next |= kSourceAfterDescription;
+    }
+    if ((source_modes_ & kLibraryText) &&
+        annexCanStart("library_description", first)) {
+      next |= kLibraryText;
+    }
+    return next;
+  }
+
   auto parseLevel(TK stopKind) -> void {
     while (pos_ < tokens_.size()) {
       auto kind = peek().kind;
@@ -2118,6 +2158,18 @@ class SVParser {
       default:
         return false;
     }
+  }
+
+  auto parseLibraryDescriptionRule() -> bool {
+    if (at(TK::ConfigKeyword)) {
+      parseConfigBlock();
+      return true;
+    }
+    if (at(TK::LibraryKeyword) || at(TK::IncludeKeyword)) {
+      static_cast<void>(parseAnnexItem({"library_description"}, true));
+      return true;
+    }
+    return false;
   }
 
   // module_item ::= port_declaration ';' | non_port_module_item. Enter the
@@ -2929,6 +2981,9 @@ class SVParser {
     if (!active_continuation && !grammar_scopes_.empty()) return false;
     const auto roots = grammarRoots();
     for (const std::string_view root : roots) {
+      if (root == "library_description" &&
+          parseLibraryDescriptionRule())
+        return true;
       if (root == "timeunits_declaration" && parseTimeunitsRule())
         return true;
       if (root == "description" && block_stack_.empty()) {
@@ -2989,6 +3044,19 @@ class SVParser {
   }
 
   auto parseStatement() -> void {
+    const bool top_level = grammar_contexts_.empty() &&
+                           block_stack_.empty() &&
+                           peek().kind != TK::Directive;
+    const size_t start = pos_;
+    const uint8_t next_modes =
+        top_level ? nextSourceModes(peek().kind) : source_modes_;
+    if (top_level && !next_modes)
+      recordGrammarFallback("item outside Annex A source_text or library_text");
+    parseStatementImpl();
+    if (top_level && next_modes && pos_ > start) source_modes_ = next_modes;
+  }
+
+  auto parseStatementImpl() -> void {
     if (stop_at_conditional_boundary_ &&
         isConditionalBoundaryDirective(peek())) {
       return;
@@ -3062,7 +3130,10 @@ class SVParser {
     }
 
     if (grammar_scopes_.empty() && block_stack_.empty() &&
-        parseDescriptionRule()) return;
+        (source_modes_ & (kSourceBeforeDescription | kSourceAfterTimeunits |
+                          kSourceAfterDescription)) &&
+        parseDescriptionRule())
+      return;
     if (parseDirectGrammarRule()) return;
 
     if (!block_stack_.empty() &&
