@@ -4943,29 +4943,43 @@ class SVParser {
 
   // conditional_statement and if_generate_construct from Annex A.
   auto parseIf(bool generate) -> void {
-    const std::string_view condition_rule =
-        generate ? "constant_expression" : "cond_predicate";
+    const std::string_view rule =
+        generate ? "if_generate_construct" : "conditional_statement";
     const std::vector<std::string_view> body_roots = {
         generate ? "generate_block" : "statement_or_null"};
     while (at(TK::IfKeyword)) {
       const LeafCheckpoint saved = leafCheckpoint();
-      consumeInto(line_);
-      if (!at(TK::OpenParenthesis)) {
-        recordGrammarFallback("if requires '(' in Annex A");
-        recoverMalformedItem(saved);
-        return;
+      beginGrammar({rule});
+      while (!at(TK::EndOfFile) &&
+             !grammar_scopes_.back().allPathsHaveActiveRule(
+                 body_roots.front()) &&
+             !grammar_scopes_.back().complete()) {
+        if (isConditionalStartDirective(peek())) {
+          bool header_ended = true;
+          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                     indent_level_)) {
+            break;
+          }
+          continue;
+        }
+        if (isCompilerDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+          continue;
+        }
+        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        consumeInto(line_);
       }
-      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                            condition_rule, line_);
-      if (line_.tokens.empty() ||
-          line_.tokens.back().kind != TK::CloseParenthesis) {
-        recordGrammarFallback("incomplete Annex A if condition");
+      const AnnexState header = endGrammar(false);
+      if (header.failed || header.interrupted ||
+          (!header.allPathsHaveActiveRule(body_roots.front()) &&
+           !header.complete())) {
+        recordGrammarFallback("invalid Annex A if header");
         recoverMalformedItem(saved);
         return;
       }
       addLine();
-
-      parseIndentedStatement(body_roots);
+      if (!header.complete()) parseIndentedStatement(body_roots);
       if (!at(TK::ElseKeyword)) return;
       consumeInto(line_);
       if (generate || !at(TK::IfKeyword)) {
