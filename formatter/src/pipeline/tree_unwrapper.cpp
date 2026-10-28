@@ -2177,6 +2177,7 @@ class SVParser {
   // declarations and instantiations retain their local item chart.
   auto parseModuleItemRule(bool allow_port_declaration) -> bool {
     if (parseTimeunitsRule()) return true;
+    if (parseDefaultClockingOrDisableRule(false)) return true;
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
@@ -2367,6 +2368,20 @@ class SVParser {
     }
   }
 
+  // The two 'default' alternatives belong to different Annex A item rules
+  // in checker and module-like bodies. Their shared keyword is resolved by
+  // the local declaration chart while tokens are emitted.
+  auto parseDefaultClockingOrDisableRule(bool checker) -> bool {
+    if (!at(TK::DefaultKeyword) ||
+        (!at(TK::ClockingKeyword, 1) && !at(TK::DisableKeyword, 1)))
+      return false;
+    static_cast<void>(parseAnnexItem(
+        {checker ? "checker_or_generate_item_declaration"
+                 : "module_or_generate_item_declaration"},
+        true));
+    return true;
+  }
+
   // class_constructor_declaration has its own header and body production.
   // A local Annex A prefix distinguishes 'function new' and
   // 'function class_scope new' from function_declaration.
@@ -2522,6 +2537,7 @@ class SVParser {
 
   auto parseInterfaceItemRule(bool allow_port_declaration) -> bool {
     if (parseTimeunitsRule()) return true;
+    if (parseDefaultClockingOrDisableRule(false)) return true;
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
@@ -2568,6 +2584,7 @@ class SVParser {
 
   auto parseProgramItemRule(bool allow_port_declaration) -> bool {
     if (parseTimeunitsRule()) return true;
+    if (parseDefaultClockingOrDisableRule(false)) return true;
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
@@ -2597,6 +2614,12 @@ class SVParser {
   // generate_item ::= module_or_generate_item |
   // interface_or_generate_item | checker_or_generate_item.
   auto parseGenerateItemRule() -> bool {
+    if (parseDefaultClockingOrDisableRule(false)) return true;
+    if (at(TK::RandKeyword)) {
+      static_cast<void>(parseAnnexItem(
+          {"checker_or_generate_item_declaration"}, true));
+      return true;
+    }
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseBuiltInDataDeclarationRule() || parseNetDeclarationRule() ||
@@ -2619,6 +2642,12 @@ class SVParser {
   }
 
   auto parseCheckerItemRule() -> bool {
+    if (parseDefaultClockingOrDisableRule(true)) return true;
+    if (at(TK::RandKeyword)) {
+      static_cast<void>(parseAnnexItem(
+          {"checker_or_generate_item_declaration"}, true));
+      return true;
+    }
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseBuiltInDataDeclarationRule())
       return true;
