@@ -2236,7 +2236,8 @@ class SVParser {
         parseStructuralBlock(TK::EndModuleKeyword);
         return true;
       case TK::InterfaceKeyword:
-        if (at(TK::ClassKeyword, 1)) return false;
+        if (at(TK::ClassKeyword, 1))
+          return parsePackageOrGenerateDeclarationRule();
         parseStructuralBlock(TK::EndInterfaceKeyword);
         return true;
       case TK::ProgramKeyword:
@@ -2584,6 +2585,10 @@ class SVParser {
   auto parseCheckerDeclarationRule() -> bool {
     switch (peek().kind) {
       case TK::FunctionKeyword:
+        // checker_or_generate_item_declaration contains function_declaration,
+        // but not class_constructor_declaration.
+        parseNamedBlock(TK::EndFunctionKeyword);
+        return true;
       case TK::CheckerKeyword:
       case TK::CoverGroupKeyword:
       case TK::PropertyKeyword:
@@ -3064,6 +3069,7 @@ class SVParser {
     if (!active_continuation && !grammar_scopes_.empty()) return false;
     const auto roots = grammarRoots();
     for (const std::string_view root : roots) {
+      if (!annexCanStart(root, peek().kind)) continue;
       if (root == "library_description" &&
           parseLibraryDescriptionRule())
         return true;
