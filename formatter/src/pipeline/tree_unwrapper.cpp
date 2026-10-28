@@ -2124,6 +2124,7 @@ class SVParser {
   // distinct non_port_module_item productions here; shared-prefix ports,
   // declarations and instantiations retain their local item chart.
   auto parseModuleItemRule(bool allow_port_declaration) -> bool {
+    if (parseTimeunitsRule()) return true;
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
@@ -2175,6 +2176,13 @@ class SVParser {
   auto parseParameterOverrideRule() -> bool {
     if (!at(TK::DefParamKeyword)) return false;
     static_cast<void>(parseAnnexItem({"parameter_override"}, true));
+    return true;
+  }
+
+  auto parseTimeunitsRule() -> bool {
+    if (!at(TK::TimeUnitKeyword) && !at(TK::TimePrecisionKeyword))
+      return false;
+    static_cast<void>(parseAnnexItem({"timeunits_declaration"}));
     return true;
   }
 
@@ -2255,6 +2263,15 @@ class SVParser {
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
     if (parseClassConstructorRule()) return true;
+    if (at(TK::ImportKeyword)) {
+      static_cast<void>(
+          parseAnnexItem({"dpi_import_export", "data_declaration"}, true));
+      return true;
+    }
+    if (at(TK::ExportKeyword)) {
+      static_cast<void>(parseAnnexItem({"dpi_import_export"}, true));
+      return true;
+    }
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
       parseConstraintBlock({"extern_constraint_declaration"});
@@ -2452,6 +2469,7 @@ class SVParser {
   }
 
   auto parseInterfaceItemRule(bool allow_port_declaration) -> bool {
+    if (parseTimeunitsRule()) return true;
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
@@ -2497,6 +2515,7 @@ class SVParser {
   }
 
   auto parseProgramItemRule(bool allow_port_declaration) -> bool {
+    if (parseTimeunitsRule()) return true;
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
@@ -2558,7 +2577,13 @@ class SVParser {
   }
 
   auto parsePackageItemRule() -> bool {
+    if (parseTimeunitsRule()) return true;
     if (parseAnonymousProgramRule()) return true;
+    if (at(TK::ExportKeyword)) {
+      static_cast<void>(parseAnnexItem(
+          {"package_export_declaration", "dpi_import_export"}, true));
+      return true;
+    }
     return parseParameterDeclarationRule() ||
            parseTypeDeclarationRule() ||
            parseNettypeDeclarationRule() ||
@@ -2904,6 +2929,8 @@ class SVParser {
     if (!active_continuation && !grammar_scopes_.empty()) return false;
     const auto roots = grammarRoots();
     for (const std::string_view root : roots) {
+      if (root == "timeunits_declaration" && parseTimeunitsRule())
+        return true;
       if (root == "description" && block_stack_.empty()) {
         if (parseDescriptionRule()) return true;
       }
