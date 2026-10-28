@@ -3067,6 +3067,10 @@ class SVParser {
       if (root == "interface_class_item") {
         if (parseInterfaceClassItemRule()) return true;
       }
+      if (root == "constraint_block_item" ||
+          root == "constraint_expression") {
+        if (parseConstraintConditionalRule()) return true;
+      }
       if (root == "tf_item_declaration" ||
           root == "block_item_declaration") {
         if (parseBlockOrTfItemDeclarationRule(root == "tf_item_declaration"))
@@ -3169,11 +3173,6 @@ class SVParser {
       return;
     if (parseDirectGrammarRule()) return;
 
-    if (!block_stack_.empty() &&
-        block_stack_.back().grammar_body == "constraint_block_item") {
-      static_cast<void>(parseAnnexItem({"constraint_block_item"}));
-      return;
-    }
     if (!block_stack_.empty() &&
         block_stack_.back().grammar_body == "config_body") {
       parseConfigItem();
@@ -4177,6 +4176,68 @@ class SVParser {
     }
     consumeInto(line_);
     addLine();
+  }
+
+  // constraint_set ::= constraint_expression |
+  //                    '{' { constraint_expression } '}'. The braced form
+  // enters the child production for each member, without holding a chart
+  // across an arbitrarily large constraint body.
+  auto parseConstraintSetRule() -> void {
+    if (at(TK::OpenBrace)) {
+      beginGrammar({"constraint_set"});
+      consumeInto(line_);
+      const AnnexState prefix = endGrammar(false);
+      if (prefix.failed || prefix.interrupted ||
+          !prefix.hasViableRule("constraint_set")) {
+        recordGrammarFallback("invalid Annex A braced constraint set");
+      }
+      addLine();
+      parseDelimitedBody(TK::CloseBrace, "constraint_expression");
+      return;
+    }
+    parseIndentedStatement({"constraint_expression"});
+  }
+
+  // The if and foreach alternatives of constraint_expression contain one or
+  // two constraint_set children. Keep their header chart live up to the
+  // child boundary, then call that production directly.
+  auto parseConstraintConditionalRule() -> bool {
+    if (!at(TK::IfKeyword) && !at(TK::ForeachKeyword)) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    const bool has_else = at(TK::IfKeyword);
+    beginGrammar({"constraint_expression"});
+    while (!at(TK::EndOfFile) &&
+           !grammar_scopes_.back().hasActiveRule("constraint_set")) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_))
+          break;
+        continue;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      consumeInto(line_);
+    }
+    const AnnexState prefix = endGrammar(false);
+    if (prefix.failed || prefix.interrupted ||
+        !prefix.hasActiveRule("constraint_set")) {
+      recordGrammarFallback("invalid Annex A constraint conditional header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    addLine();
+    parseConstraintSetRule();
+    if (has_else && at(TK::ElseKeyword)) {
+      consumeInto(line_);
+      addLine();
+      parseConstraintSetRule();
+    }
+    return true;
   }
 
   auto parseConstraintBlock(std::vector<std::string_view> roots = {
