@@ -2518,6 +2518,30 @@ TEST_F(TreeUnwrapperTest, TypedefUsesTypeRuleInModulePackageAndInterfaceClass) {
   EXPECT_EQ(typedefs, 3U);
 }
 
+TEST_F(TreeUnwrapperTest, BuiltInDataTypesCallDeclarationRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; logic [3:0] a; int b; "
+      "struct packed { logic x; } c; "
+      "function int f(); int local_value; return local_value; endfunction "
+      "endmodule "
+      "class cls; string name; endclass");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_logic = false;
+  bool found_struct = false;
+  bool found_string = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_logic |= line.tokens.front().kind == TK::LogicKeyword;
+    found_struct |= line.tokens.front().kind == TK::StructKeyword;
+    found_string |= line.tokens.front().kind == TK::StringKeyword;
+  }
+  EXPECT_TRUE(found_logic);
+  EXPECT_TRUE(found_struct);
+  EXPECT_TRUE(found_string);
+}
+
 TEST_F(TreeUnwrapperTest, ContinuousAssignmentResumesAcrossConditional) {
   const auto result = parseWithDiagnostics(
       "module m;\n"

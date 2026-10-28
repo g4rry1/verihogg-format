@@ -2148,6 +2148,33 @@ class SVParser {
     return true;
   }
 
+  auto parseBuiltInDataDeclarationRule() -> bool {
+    switch (peek().kind) {
+      case TK::BitKeyword:
+      case TK::ByteKeyword:
+      case TK::CHandleKeyword:
+      case TK::EnumKeyword:
+      case TK::EventKeyword:
+      case TK::IntKeyword:
+      case TK::IntegerKeyword:
+      case TK::LogicKeyword:
+      case TK::LongIntKeyword:
+      case TK::RealKeyword:
+      case TK::RealTimeKeyword:
+      case TK::RegKeyword:
+      case TK::ShortIntKeyword:
+      case TK::ShortRealKeyword:
+      case TK::StringKeyword:
+      case TK::StructKeyword:
+      case TK::TimeKeyword:
+      case TK::UnionKeyword:
+        static_cast<void>(parseAnnexItem({"data_declaration"}, true));
+        return true;
+      default:
+        return false;
+    }
+  }
+
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
@@ -2442,6 +2469,9 @@ class SVParser {
           root == "interface_class_item" || root == "tf_item_declaration" ||
           root == "block_item_declaration") {
         if (parseTypeDeclarationRule()) return true;
+        if (root != "interface_class_item" &&
+            parseBuiltInDataDeclarationRule())
+          return true;
       }
       if (root == "generate_block") {
         parseGenerateBlockRule();
