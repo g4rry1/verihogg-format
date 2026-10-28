@@ -1602,9 +1602,10 @@ class SVParser {
       consumeUntilSemi();
       return;
     }
-    if (start < tokens_.size()) {
-      warnUnsupported(tokens_[start], unsupportedConstructName(tokens_[start]));
-    }
+    recordGrammarFallback(!grammar_scopes_.empty() &&
+                                  grammar_scopes_.back().failed
+                              ? grammar_scopes_.back().failure_reason
+                              : "malformed Annex A item");
     // No line produced by this item is retained when its source is emitted
     // opaquely. Earlier siblings stay intact, and the outer close is not read.
     lines_.resize(saved.output_size);
