@@ -2498,6 +2498,26 @@ TEST_F(TreeUnwrapperTest, BindRuleFailureRecoversAtModuleClose) {
   EXPECT_TRUE(found_assignment);
 }
 
+TEST_F(TreeUnwrapperTest, AssertPropertyHeaderRecoversAtModuleClose) {
+  const auto result = parseWithDiagnostics(
+      "module broken; assert property a; endmodule "
+      "module next; assert property (b); endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_next = false;
+  bool found_assert = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_next |= line.tokens.front().kind == TK::ModuleKeyword &&
+                  line.tokens.size() > 1 && line.tokens[1].rawText() == "next";
+    found_assert |= line.tokens.front().kind == TK::AssertKeyword &&
+                    line.tokens.size() > 1 &&
+                    line.tokens[1].kind == TK::PropertyKeyword;
+  }
+  EXPECT_TRUE(found_next);
+  EXPECT_TRUE(found_assert);
+}
+
 TEST_F(TreeUnwrapperTest, RepeatedCaseBlocksKeepAnnexAItemsIndependent) {
   std::string source = "module m; always_comb begin case (sel) ";
   for (int i = 0; i < 120; ++i) {

@@ -1276,6 +1276,25 @@ class SVParser {
             (actual == TK::JoinAnyKeyword || actual == TK::JoinNoneKeyword));
   }
 
+  [[nodiscard]] auto recoveryBlockSpec(size_t index) const
+      -> std::optional<BlockSpec> {
+    const TK kind = tokens_[index].kind;
+    if (index > 0) {
+      const TK preceding = tokens_[index - 1].kind;
+      // Annex A uses these keyword pairs inside assertion statements; they
+      // do not open property_declaration or sequence_declaration blocks.
+      if ((kind == TK::PropertyKeyword &&
+           (preceding == TK::AssertKeyword ||
+            preceding == TK::AssumeKeyword ||
+            preceding == TK::CoverKeyword ||
+            preceding == TK::RestrictKeyword)) ||
+          (kind == TK::SequenceKeyword && preceding == TK::CoverKeyword)) {
+        return std::nullopt;
+      }
+    }
+    return blockSpec(kind);
+  }
+
   [[nodiscard]] auto sourceLineStart(size_t index) const -> size_t {
     const size_t offset =
         std::min(tokens_[index].location().offset(), source_.size());
@@ -1312,7 +1331,7 @@ class SVParser {
           isConditionalBoundaryDirective(tokens_[i])) {
         return std::nullopt;
       }
-      if (auto nested = blockSpec(tokens_[i].kind)) {
+      if (auto nested = recoveryBlockSpec(i)) {
         expected.push_back(nested->close_kind);
       } else if (matchesBlockClose(expected.back(), tokens_[i].kind)) {
         expected.pop_back();
@@ -1341,7 +1360,7 @@ class SVParser {
           cleanLineStart(i, start)) {
         return i;
       }
-      if (auto block = blockSpec(kind)) {
+      if (auto block = recoveryBlockSpec(i)) {
         nested.push_back(block->close_kind);
         continue;
       }
@@ -2218,6 +2237,8 @@ class SVParser {
   // continue through their local Annex A rule below.
   auto parseStatementItemRule() -> bool {
     switch (peek().kind) {
+      case TK::AssertKeyword:
+        return parseAssertPropertyStatementRule();
       case TK::BeginKeyword:
         parseBeginEnd(TK::EndKeyword);
         return true;
@@ -2358,12 +2379,16 @@ class SVParser {
             parseQualifiedStatementRule()) return true;
         if (parseStatementItemRule()) return true;
       }
+      if (root == "concurrent_assertion_statement") {
+        if (parseAssertPropertyStatementRule()) return true;
+      }
       if (root == "statement_item") {
         if (parseQualifiedStatementRule() || parseStatementItemRule())
           return true;
       }
       if (root == "module_item" || root == "non_port_module_item") {
-        if (parseModuleItemRule() || parseModuleCommonLeafRule() ||
+        if (parseModuleItemRule() || parseAssertPropertyStatementRule() ||
+            parseModuleCommonLeafRule() ||
             parsePackageOrGenerateDeclarationRule() ||
             parseGenerateConstructRule()) return true;
         if (at(TK::ClockingKeyword)) {
@@ -2404,12 +2429,14 @@ class SVParser {
       }
       if (root == "interface_item" || root == "program_item" ||
           root == "generate_item") {
+        if (parseAssertPropertyStatementRule()) return true;
         if (parseModuleCommonLeafRule(root == "program_item")) return true;
         if (parsePackageOrGenerateDeclarationRule() ||
             parseGenerateConstructRule()) return true;
       }
       if (root == "checker_or_generate_item") {
-        if (parseModuleCommonLeafRule(true) ||
+        if (parseAssertPropertyStatementRule() ||
+            parseModuleCommonLeafRule(true) ||
             parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
             parseProceduralConstructRule(true)) return true;
       }
@@ -2761,7 +2788,7 @@ class SVParser {
       parseLoop(can_begin("loop_generate_construct") &&
                 !can_begin("loop_statement"));
     } else if (continues_as("assert_property_statement", 2)) {
-      parseAssertionStatement();
+      static_cast<void>(parseAssertPropertyStatementRule());
     } else if (first == TK::Identifier) {
       parseIdentifierItem();
     } else if (const auto block = blockSpec(first);
@@ -2796,22 +2823,33 @@ class SVParser {
     grammar_contexts_.pop_back();
   }
 
-  auto parseAssertionStatement() -> void {
+  auto parseAssertPropertyStatementRule() -> bool {
+    if (!at(TK::AssertKeyword) || !at(TK::PropertyKeyword, 1)) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"assert_property_statement"});
     consumeInto(line_);  // assert
     consumeInto(line_);  // property
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted ||
+        !header.hasViableRule("assert_property_statement") ||
+        !at(TK::OpenParenthesis)) {
+      recordGrammarFallback("invalid Annex A assert property header");
+      recoverMalformedItem(saved);
+      return true;
+    }
     consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                           "property_spec", line_);
 
     if (at(TK::Semicolon)) {
       consumeInto(line_);
       addLine();
-      return;
+      return true;
     }
 
     if (at(TK::EndOfFile) || (stop_at_conditional_boundary_ &&
                               isConditionalBoundaryDirective(peek()))) {
       addLine();
-      return;
+      return true;
     }
 
     if (!at(TK::ElseKeyword) && !at(TK::EndOfFile)) {
@@ -2824,12 +2862,13 @@ class SVParser {
       consumeInto(line_);
       if (at(TK::EndOfFile)) {
         addLine();
-        return;
+        return true;
       }
       grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
       parseStatement();
       grammar_contexts_.pop_back();
     }
+    return true;
   }
 
   // Identifier-led items can become declarations, assignments or
