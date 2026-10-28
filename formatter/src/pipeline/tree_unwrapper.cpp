@@ -1019,9 +1019,9 @@ class SVParser {
   // Parse a grammar subrule up to its enclosing for-header separator.
   // The second stop protects recovery when a separator is missing.
   auto consumeAnnexUntil(TK stop, TK alternate_stop,
-                         std::initializer_list<std::string_view> grammar_rules,
-                         Line& line) -> void {
-    beginGrammar(std::vector<std::string_view>(grammar_rules));
+                         std::vector<std::string_view> grammar_rules,
+                         Line& line) -> bool {
+    beginGrammar(std::move(grammar_rules));
     int parens = 0;
     int brackets = 0;
     int braces = 0;
@@ -1083,29 +1083,65 @@ class SVParser {
                isConditionalBoundaryDirective(peek()))) {
         consumeInto(line);
       }
-      return;
+      return false;
     }
     static_cast<void>(endGrammar());
+    return true;
   }
 
-  auto consumeForHeader(Line& line) -> void {
-    if (!at(TK::OpenParenthesis)) return;
+  auto consumeForHeader(Line& line, bool generate) -> bool {
+    if (!at(TK::OpenParenthesis)) {
+      recordGrammarFallback("for header requires '(' in Annex A");
+      return false;
+    }
+    bool valid = true;
     consumeInto(line);
     if (!at(TK::Semicolon)) {
-      consumeAnnexUntil(TK::Semicolon, TK::CloseParenthesis,
-                        {"for_initialization", "genvar_initialization"}, line);
+      valid &= consumeAnnexUntil(
+          TK::Semicolon, TK::CloseParenthesis,
+          generate ? std::vector<std::string_view>{"genvar_initialization"}
+                   : std::vector<std::string_view>{"for_initialization"},
+          line);
+    } else if (generate) {
+      valid = false;
+      recordGrammarFallback("generate for requires genvar initialization");
     }
-    if (at(TK::Semicolon)) consumeInto(line);
+    if (at(TK::Semicolon)) {
+      consumeInto(line);
+    } else {
+      valid = false;
+    }
     if (!at(TK::Semicolon) && !at(TK::CloseParenthesis)) {
-      consumeAnnexUntil(TK::Semicolon, TK::CloseParenthesis,
-                        {"expression", "genvar_expression"}, line);
+      valid &= consumeAnnexUntil(
+          TK::Semicolon, TK::CloseParenthesis,
+          generate ? std::vector<std::string_view>{"genvar_expression"}
+                   : std::vector<std::string_view>{"expression"},
+          line);
+    } else if (generate) {
+      valid = false;
+      recordGrammarFallback("generate for requires genvar expression");
     }
-    if (at(TK::Semicolon)) consumeInto(line);
+    if (at(TK::Semicolon)) {
+      consumeInto(line);
+    } else {
+      valid = false;
+    }
     if (!at(TK::CloseParenthesis)) {
-      consumeAnnexUntil(TK::CloseParenthesis, TK::EndOfFile,
-                        {"for_step", "genvar_iteration"}, line);
+      valid &= consumeAnnexUntil(
+          TK::CloseParenthesis, TK::EndOfFile,
+          generate ? std::vector<std::string_view>{"genvar_iteration"}
+                   : std::vector<std::string_view>{"for_step"},
+          line);
+    } else if (generate) {
+      valid = false;
+      recordGrammarFallback("generate for requires genvar iteration");
     }
-    if (at(TK::CloseParenthesis)) consumeInto(line);
+    if (at(TK::CloseParenthesis)) {
+      consumeInto(line);
+    } else {
+      valid = false;
+    }
+    return valid;
   }
 
   auto consumeUntilSemi() -> void {
@@ -2182,7 +2218,9 @@ class SVParser {
                                             "randcase_statement",
                                             "generate_region",
                                             "conditional_statement",
-                                            "if_generate_construct"};
+                                            "if_generate_construct",
+                                            "loop_statement",
+                                            "loop_generate_construct"};
       return std::ranges::any_of(rules, [&](std::string_view rule) {
         return grammar_scopes_.back().hasActiveRule(rule) &&
                annexCanStart(rule, peek().kind);
@@ -2375,7 +2413,8 @@ class SVParser {
               !can_begin("conditional_statement"));
     } else if (can_begin("loop_statement") ||
                can_begin("loop_generate_construct")) {
-      parseLoop();
+      parseLoop(can_begin("loop_generate_construct") &&
+                !can_begin("loop_statement"));
     } else if (continues_as("assert_property_statement", 2)) {
       parseAssertionStatement();
     } else if (first == TK::Identifier) {
@@ -3636,44 +3675,67 @@ class SVParser {
             : std::vector<std::string_view>{"statement_or_null"});
   }
 
-  // for / foreach / while / repeat / forever
-  auto parseLoop() -> void {
+  // loop_statement and loop_generate_construct from Annex A.
+  auto parseLoop(bool generate) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     if (at(TK::DoKeyword)) {
       consumeInto(line_);
       addLine();
-      parseIndentedStatement();
-      if (at(TK::WhileKeyword) && grammarAllows(TK::WhileKeyword)) {
-        consumeInto(line_);
-        consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                              "expression", line_);
-        if (at(TK::Semicolon) && grammarAllows(TK::Semicolon)) {
-          consumeInto(line_);
-        }
-        addLine();
+      parseIndentedStatement({"statement_or_null"});
+      if (!at(TK::WhileKeyword)) {
+        recordGrammarFallback("do statement requires Annex A while tail");
+        return;
       }
+      consumeInto(line_);
+      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                            "expression", line_);
+      if (at(TK::Semicolon)) {
+        consumeInto(line_);
+      } else {
+        recordGrammarFallback("do while requires ';' in Annex A");
+      }
+      addLine();
       return;
     }
     const TK loop_kind = peek().kind;
-    consumeInto(line_);  // keyword
-    if (at(TK::OpenParenthesis)) {
-      if (loop_kind == TK::ForKeyword) {
-        consumeForHeader(line_);
-      } else if (loop_kind == TK::WhileKeyword ||
-                 loop_kind == TK::RepeatKeyword) {
-        consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                              "expression", line_);
-      } else {
-        if (!consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis,
-                                 line_, block_stack_.empty()
-                                            ? TK::EndOfFile
-                                            : block_stack_.back().close_kind)) {
-          recoverMalformedItem(saved);
-          return;
-        }
+    const bool foreach = loop_kind == TK::ForeachKeyword;
+    if (foreach) beginGrammar({"loop_statement"});
+    consumeInto(line_);
+    if (loop_kind == TK::ForKeyword) {
+      if (!consumeForHeader(line_, generate)) {
+        recoverMalformedItem(saved);
+        return;
+      }
+    } else if (loop_kind == TK::WhileKeyword ||
+               loop_kind == TK::RepeatKeyword) {
+      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                            "expression", line_);
+      if (line_.tokens.empty() ||
+          line_.tokens.back().kind != TK::CloseParenthesis) {
+        recordGrammarFallback("incomplete Annex A loop header");
+        recoverMalformedItem(saved);
+        return;
+      }
+    } else if (foreach) {
+      if (!consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_,
+                               block_stack_.empty()
+                                   ? TK::EndOfFile
+                                   : block_stack_.back().close_kind)) {
+        static_cast<void>(endGrammar(false));
+        recoverMalformedItem(saved);
+        return;
+      }
+      const AnnexState header = endGrammar(false);
+      if (header.failed || header.interrupted ||
+          !header.hasViableRule("loop_statement") ||
+          !header.consumedTerminalInRule("loop_statement",
+                                         TK::CloseParenthesis)) {
+        recordGrammarFallback("incomplete Annex A foreach header");
+        recoverMalformedItem(saved);
+        return;
       }
     }
-    if (at(TK::At)) {
+    if (!generate && at(TK::At)) {
       if (!consumeAnnexRule("event_control", line_)) {
         recoverMalformedItem(saved);
         return;
@@ -3688,7 +3750,11 @@ class SVParser {
     }
     addLine();
 
-    parseIndentedStatement();
+    parseIndentedStatement(
+        generate ? std::vector<std::string_view>{"generate_block"}
+        : loop_kind == TK::ForeachKeyword
+            ? std::vector<std::string_view>{"statement"}
+            : std::vector<std::string_view>{"statement_or_null"});
   }
 
   // NOLINTEND(misc-no-recursion)

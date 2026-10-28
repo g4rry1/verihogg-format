@@ -2568,6 +2568,24 @@ TEST_F(TreeUnwrapperTest, ProceduralAndGenerateIfCallDifferentBodyRules) {
   EXPECT_TRUE(found_generate_body);
 }
 
+TEST_F(TreeUnwrapperTest, ForHeadersUseProceduralOrGenerateProduction) {
+  const auto procedural =
+      parseWithDiagnostics("module m; initial for (;;) x = 1; endmodule");
+  EXPECT_TRUE(procedural.warnings.empty());
+
+  const auto generate = parseWithDiagnostics(
+      "module m; generate for (; g < 2; g++) begin : item "
+      "wire x; end endgenerate endmodule");
+  EXPECT_TRUE(std::any_of(
+      generate.warnings.begin(), generate.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+  EXPECT_FALSE(std::any_of(generate.warnings.begin(), generate.warnings.end(),
+                           [](const auto& warning) {
+                             return warning.code ==
+                                    "token-conservation-fallback";
+                           }));
+}
+
 TEST_F(TreeUnwrapperTest, DoWhileCompletesAsOneAnnexALoop) {
   const auto result = parseWithDiagnostics(
       "module m; initial begin do a = a + 1; while (a < 3); end endmodule");
@@ -2580,6 +2598,15 @@ TEST_F(TreeUnwrapperTest, DoWhileCompletesAsOneAnnexALoop) {
     }
   }
   EXPECT_TRUE(found_tail);
+}
+
+TEST_F(TreeUnwrapperTest, LoopAlternativesCallAnnexBodyRules) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin forever x++; repeat (2) x++; "
+      "while (x < 3) x++; for (int i = 0; i < 2; i++) x++; "
+      "end generate for (genvar g = 0; g < 2; g++) "
+      "begin : item wire y; end endgenerate endmodule");
+  EXPECT_TRUE(result.warnings.empty());
 }
 
 TEST_F(TreeUnwrapperTest, ConditionalForeachIndicesResumeAnnexLoop) {
