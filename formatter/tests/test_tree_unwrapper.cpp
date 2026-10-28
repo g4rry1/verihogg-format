@@ -2497,6 +2497,16 @@ TEST_F(TreeUnwrapperTest, ConditionalCaseAlternativeWithNestedDirective) {
   EXPECT_TRUE(result.warnings.empty());
 }
 
+TEST_F(TreeUnwrapperTest, ConditionalCaseLabelResumesSameAnnexRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial case (sel) 1\n"
+      "`ifdef A\n+ 1\n`else\n+ 2\n`endif\n"
+      ": x = 1; endcase endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+            TK::EndModuleKeyword);
+}
+
 TEST_F(TreeUnwrapperTest, RandcaseUsesAnnexAItems) {
   const auto result = parseWithDiagnostics(
       "module m; initial randcase 1: a = 0; "

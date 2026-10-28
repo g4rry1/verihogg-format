@@ -3914,11 +3914,28 @@ class SVParser {
         colon_seen = true;
       }
     } else {
-      while (!at(TK::Directive) && !at(TK::EndOfFile) &&
-             !at(TK::EndCaseKeyword) &&
+      while (!at(TK::EndOfFile) && !at(TK::EndCaseKeyword) &&
              !(at(TK::Colon) &&
                (grammar_scopes_.back().failed ||
                 grammar_scopes_.back().expectsRootTerminal(TK::Colon)))) {
+        if (stop_at_conditional_boundary_ &&
+            isConditionalBoundaryDirective(peek())) {
+          break;
+        }
+        if (isConditionalStartDirective(peek())) {
+          bool header_ended = true;
+          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                     indent_level_)) {
+            break;
+          }
+          continue;
+        }
+        if (isCompilerDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+          continue;
+        }
+        if (at(TK::Directive)) break;
         consumeInto(line_);
       }
       if (at(TK::Colon)) {
@@ -3927,6 +3944,7 @@ class SVParser {
       }
     }
     const AnnexState header = endGrammar(false);
+    colon_seen |= header.consumedTerminalInRule(item_rule, TK::Colon);
     if ((!default_item && !colon_seen) || header.failed || header.interrupted ||
         !header.hasViableRule(item_rule)) {
       recordGrammarFallback("invalid Annex A case item header");
