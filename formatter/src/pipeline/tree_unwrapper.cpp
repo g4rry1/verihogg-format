@@ -3086,6 +3086,17 @@ class SVParser {
       if (root == "clocking_item") {
         if (parseClockingItemRule()) return true;
       }
+      if (root == "coverage_spec_or_option") {
+        if (parseCoverageSpecRule()) return true;
+      }
+      if (root == "bins_or_options") {
+        parseAnnexSemicolonItem("bins_or_options");
+        return true;
+      }
+      if (root == "cross_body_item" && at(TK::FunctionKeyword)) {
+        parseNamedBlock(TK::EndFunctionKeyword);
+        return true;
+      }
       if (root == "tf_item_declaration" ||
           root == "block_item_declaration") {
         if (parseBlockOrTfItemDeclarationRule(root == "tf_item_declaration"))
@@ -4893,6 +4904,63 @@ class SVParser {
       return true;
     }
     return false;
+  }
+
+  // coverage_spec ::= cover_point | cover_cross. The local header chart
+  // resolves optional labels and types. Once it reaches bins_or_empty or
+  // cross_body, that child enters its own production and emits its items.
+  auto parseCoverageSpecRule() -> bool {
+    if (!annexCanStart("cover_point", peek().kind) &&
+        !annexCanStart("cover_cross", peek().kind))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"cover_point", "cover_cross"});
+    while (!at(TK::EndOfFile) &&
+           !grammar_scopes_.back().hasActiveRule("bins_or_empty") &&
+           !grammar_scopes_.back().hasActiveRule("cross_body")) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_))
+          break;
+        continue;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      consumeInto(line_);
+    }
+    const AnnexState header = endGrammar(false);
+    const std::string_view body_rule =
+        header.hasActiveRule("bins_or_empty")
+            ? "bins_or_empty"
+            : header.hasActiveRule("cross_body") ? "cross_body" : "";
+    if (header.failed || header.interrupted || body_rule.empty() ||
+        (!at(TK::OpenBrace) && !at(TK::Semicolon))) {
+      recordGrammarFallback("invalid Annex A coverage spec header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    beginGrammar({body_rule});
+    const bool braced = at(TK::OpenBrace);
+    consumeInto(line_);
+    const AnnexState body_prefix = endGrammar(!braced);
+    if (body_prefix.failed || body_prefix.interrupted ||
+        !body_prefix.hasViableRule(body_rule)) {
+      recordGrammarFallback("invalid Annex A coverage spec body");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    addLine();
+    if (braced) {
+      parseDelimitedBody(TK::CloseBrace,
+                         body_rule == "bins_or_empty" ? "bins_or_options"
+                                                      : "cross_body_item");
+    }
+    return true;
   }
 
   auto parseCaseItem() -> void {
