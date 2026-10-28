@@ -2485,6 +2485,43 @@ class SVParser {
     return true;
   }
 
+  // class_constructor_declaration places its optional super.new call after
+  // block_item_declaration and before function_statement_or_null.
+  auto parseConstructorSuperRule() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (block_stack_.back().statement_phase) {
+      recordGrammarFallback("super.new outside Annex A constructor position");
+      recoverMalformedItem(saved);
+      return;
+    }
+    consumeInto(line_);  // super
+    consumeInto(line_);  // .
+    consumeInto(line_);  // new
+    bool valid = true;
+    if (at(TK::OpenParenthesis)) {
+      consumeInto(line_);
+      if (at(TK::DefaultKeyword)) {
+        consumeInto(line_);
+      } else if (!at(TK::CloseParenthesis)) {
+        valid = consumeAnnexUntil(TK::CloseParenthesis, TK::EndOfFile,
+                                  {"list_of_arguments"}, line_);
+      }
+      if (at(TK::CloseParenthesis)) {
+        consumeInto(line_);
+      } else {
+        valid = false;
+      }
+    }
+    if (valid && at(TK::Semicolon)) {
+      consumeInto(line_);
+      addLine();
+      block_stack_.back().statement_phase = true;
+      return;
+    }
+    recordGrammarFallback("invalid Annex A constructor super.new call");
+    recoverMalformedItem(saved);
+  }
+
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
@@ -3282,6 +3319,13 @@ class SVParser {
     }
     if (at(TK::Directive) && !isCompilerDirective(peek())) {
       parseMacroStatement();
+      return;
+    }
+
+    if (!block_stack_.empty() && block_stack_.back().constructor_body &&
+        at(TK::SuperKeyword) && at(TK::Dot, 1) &&
+        at(TK::NewKeyword, 2)) {
+      parseConstructorSuperRule();
       return;
     }
 
