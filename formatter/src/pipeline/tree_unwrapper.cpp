@@ -2108,9 +2108,9 @@ class SVParser {
     }
   }
 
-  // module_item ::= port_declaration ';' | non_port_module_item.
-  // These non_port_module_item alternatives have distinct Annex A leading
-  // terminals. The remaining alternatives are parsed by the local item rule.
+  // module_item ::= port_declaration ';' | non_port_module_item. Enter the
+  // distinct non_port_module_item productions here; shared-prefix ports,
+  // declarations and instantiations retain their local item chart.
   auto parseModuleItemRule() -> bool {
     switch (peek().kind) {
       case TK::GenerateKeyword:
@@ -2132,8 +2132,21 @@ class SVParser {
                                  "specify_item", false);
         return true;
       default:
-        return false;
+        break;
     }
+    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
+        parseNetDeclarationRule() || parseParameterOverrideRule() ||
+        parseAssertPropertyStatementRule() || parseModuleCommonLeafRule() ||
+        parsePackageOrGenerateDeclarationRule() ||
+        parseGenerateConstructRule()) {
+      return true;
+    }
+    if (at(TK::ClockingKeyword)) {
+      parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                               "clocking_declaration", "clocking_item");
+      return true;
+    }
+    return parseProceduralConstructRule(true);
   }
 
   auto parseParameterOverrideRule() -> bool {
@@ -2241,6 +2254,8 @@ class SVParser {
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
+    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule())
+      return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
       parseConstraintBlock();
@@ -2301,9 +2316,97 @@ class SVParser {
   }
 
   auto parseInterfaceItemRule() -> bool {
-    if (!at(TK::ModPortKeyword)) return false;
-    static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
-    return true;
+    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
+        parseNetDeclarationRule())
+      return true;
+    if (at(TK::ModPortKeyword)) {
+      static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
+      return true;
+    }
+    if (at(TK::InterfaceKeyword) && !at(TK::ClassKeyword, 1)) {
+      parseStructuralBlock(TK::EndInterfaceKeyword);
+      return true;
+    }
+    if (at(TK::ProgramKeyword)) {
+      parseStructuralBlock(TK::EndProgramKeyword);
+      return true;
+    }
+    if (at(TK::GenerateKeyword)) {
+      parseSimpleBlock(TK::EndGenerateKeyword);
+      return true;
+    }
+    if (parseProceduralConstructRule(true)) return true;
+    if (at(TK::ClockingKeyword)) {
+      parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                               "clocking_declaration", "clocking_item");
+      return true;
+    }
+    return parseAssertPropertyStatementRule() ||
+           parseModuleCommonLeafRule() ||
+           parsePackageOrGenerateDeclarationRule() ||
+           parseGenerateConstructRule();
+  }
+
+  auto parseProgramItemRule() -> bool {
+    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
+        parseNetDeclarationRule())
+      return true;
+    if (at(TK::GenerateKeyword)) {
+      parseSimpleBlock(TK::EndGenerateKeyword);
+      return true;
+    }
+    if (parseProceduralConstructRule(false)) return true;
+    if (at(TK::ClockingKeyword)) {
+      parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                               "clocking_declaration", "clocking_item");
+      return true;
+    }
+    return parseAssertPropertyStatementRule() ||
+           parseModuleCommonLeafRule(true) ||
+           parsePackageOrGenerateDeclarationRule() ||
+           parseGenerateConstructRule();
+  }
+
+  // generate_item ::= module_or_generate_item |
+  // interface_or_generate_item | checker_or_generate_item.
+  auto parseGenerateItemRule() -> bool {
+    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
+        parseNetDeclarationRule() || parseParameterOverrideRule())
+      return true;
+    if (at(TK::GenerateKeyword)) {
+      parseSimpleBlock(TK::EndGenerateKeyword);
+      return true;
+    }
+    if (parseProceduralConstructRule(true)) return true;
+    if (at(TK::ClockingKeyword)) {
+      parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                               "clocking_declaration", "clocking_item");
+      return true;
+    }
+    return parseAssertPropertyStatementRule() ||
+           parseModuleCommonLeafRule() ||
+           parsePackageOrGenerateDeclarationRule() ||
+           parseGenerateConstructRule();
+  }
+
+  auto parseCheckerItemRule() -> bool {
+    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule())
+      return true;
+    return parseAssertPropertyStatementRule() ||
+           parseModuleCommonLeafRule(true) ||
+           parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
+           parseProceduralConstructRule(true);
+  }
+
+  auto parsePackageItemRule() -> bool {
+    return parseTypeDeclarationRule() ||
+           parseBuiltInDataDeclarationRule() ||
+           parseNetDeclarationRule() ||
+           parsePackageOrGenerateDeclarationRule();
+  }
+
+  auto parseBlockOrTfItemDeclarationRule() -> bool {
+    return parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule();
   }
 
   auto parseProceduralConstructRule(bool allow_always) -> bool {
@@ -2483,24 +2586,6 @@ class SVParser {
     if (!grammar_scopes_.empty()) return false;
     const auto roots = grammarRoots();
     for (const std::string_view root : roots) {
-      if (root == "module_item" || root == "non_port_module_item" ||
-          root == "interface_item" || root == "non_port_interface_item" ||
-          root == "program_item" || root == "non_port_program_item" ||
-          root == "generate_item" || root == "checker_or_generate_item" ||
-          root == "package_item" || root == "class_item" ||
-          root == "interface_class_item" || root == "tf_item_declaration" ||
-          root == "block_item_declaration") {
-        if (parseTypeDeclarationRule()) return true;
-        if (root != "interface_class_item" &&
-            parseBuiltInDataDeclarationRule())
-          return true;
-      }
-      if (root == "module_item" || root == "non_port_module_item" ||
-          root == "interface_item" || root == "non_port_interface_item" ||
-          root == "program_item" || root == "non_port_program_item" ||
-          root == "generate_item" || root == "package_item") {
-        if (parseNetDeclarationRule()) return true;
-      }
       if (root == "generate_block") {
         parseGenerateBlockRule();
         return true;
@@ -2520,76 +2605,32 @@ class SVParser {
           return true;
       }
       if (root == "module_item" || root == "non_port_module_item") {
-        if (parseModuleItemRule() || parseParameterOverrideRule() ||
-            parseAssertPropertyStatementRule() ||
-            parseModuleCommonLeafRule() ||
-            parsePackageOrGenerateDeclarationRule() ||
-            parseGenerateConstructRule()) return true;
-        if (at(TK::ClockingKeyword)) {
-          parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                                   "clocking_declaration", "clocking_item");
-          return true;
-        }
-        if (parseProceduralConstructRule(true)) return true;
+        if (parseModuleItemRule()) return true;
       }
       if (root == "interface_item" || root == "non_port_interface_item") {
         if (parseInterfaceItemRule()) return true;
-        if (at(TK::InterfaceKeyword) && !at(TK::ClassKeyword, 1)) {
-          parseStructuralBlock(TK::EndInterfaceKeyword);
-          return true;
-        }
-        if (at(TK::ProgramKeyword)) {
-          parseStructuralBlock(TK::EndProgramKeyword);
-          return true;
-        }
-        if (at(TK::GenerateKeyword)) {
-          parseSimpleBlock(TK::EndGenerateKeyword);
-          return true;
-        }
-        if (parseProceduralConstructRule(true)) return true;
       }
       if (root == "program_item" || root == "non_port_program_item") {
-        if (at(TK::GenerateKeyword)) {
-          parseSimpleBlock(TK::EndGenerateKeyword);
-          return true;
-        }
-        if (parseProceduralConstructRule(false)) return true;
+        if (parseProgramItemRule()) return true;
       }
       if (root == "generate_item") {
-        if (at(TK::GenerateKeyword)) {
-          parseSimpleBlock(TK::EndGenerateKeyword);
-          return true;
-        }
-        if (parseProceduralConstructRule(true)) return true;
-      }
-      if (root == "interface_item" || root == "non_port_interface_item" ||
-          root == "program_item" || root == "non_port_program_item" ||
-          root == "generate_item") {
-        if (root == "generate_item" && parseParameterOverrideRule())
-          return true;
-        if (at(TK::ClockingKeyword)) {
-          parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                                   "clocking_declaration", "clocking_item");
-          return true;
-        }
-        if (parseAssertPropertyStatementRule()) return true;
-        if (parseModuleCommonLeafRule(root == "program_item" ||
-                                      root == "non_port_program_item"))
-          return true;
-        if (parsePackageOrGenerateDeclarationRule() ||
-            parseGenerateConstructRule()) return true;
+        if (parseGenerateItemRule()) return true;
       }
       if (root == "checker_or_generate_item") {
-        if (parseAssertPropertyStatementRule() ||
-            parseModuleCommonLeafRule(true) ||
-            parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
-            parseProceduralConstructRule(true)) return true;
+        if (parseCheckerItemRule()) return true;
       }
       if (root == "package_item") {
-        if (parsePackageOrGenerateDeclarationRule()) return true;
+        if (parsePackageItemRule()) return true;
       }
       if (root == "class_item") {
         if (parseClassItemRule()) return true;
+      }
+      if (root == "interface_class_item") {
+        if (parseTypeDeclarationRule()) return true;
+      }
+      if (root == "tf_item_declaration" ||
+          root == "block_item_declaration") {
+        if (parseBlockOrTfItemDeclarationRule()) return true;
       }
     }
     return false;
