@@ -2727,6 +2727,25 @@ TEST_F(TreeUnwrapperTest, ParameterItemsUseChildAndParentRules) {
   EXPECT_EQ(parameter_items, 7U);
 }
 
+TEST_F(TreeUnwrapperTest, NettypeDeclarationsUseAnnexRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; nettype logic wire_t; wire_t signal; endmodule "
+      "package p; nettype int word_t; endpackage "
+      "class c; nettype bit flag_t; endclass");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t nettypes = 0;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    if (line.tokens.front().kind == TK::NetTypeKeyword) {
+      EXPECT_EQ(line.tokens.back().kind, TK::Semicolon);
+      ++nettypes;
+    }
+  }
+  EXPECT_EQ(nettypes, 3U);
+}
+
 TEST_F(TreeUnwrapperTest, InterfaceModportAndClockingCallAnnexRules) {
   const auto result = parseWithDiagnostics(
       "interface bus(input logic clk); "

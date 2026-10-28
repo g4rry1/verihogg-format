@@ -2146,7 +2146,8 @@ class SVParser {
         break;
     }
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
-        parseNetDeclarationRule() || parseParameterOverrideRule() ||
+        parseNettypeDeclarationRule() || parseNetDeclarationRule() ||
+        parseParameterOverrideRule() ||
         parseAssertPropertyStatementRule() || parseModuleCommonLeafRule() ||
         parsePackageOrGenerateDeclarationRule() ||
         parseGenerateConstructRule()) {
@@ -2169,6 +2170,12 @@ class SVParser {
   auto parseTypeDeclarationRule() -> bool {
     if (!at(TK::TypedefKeyword)) return false;
     static_cast<void>(parseAnnexItem({"type_declaration"}, true));
+    return true;
+  }
+
+  auto parseNettypeDeclarationRule() -> bool {
+    if (!at(TK::NetTypeKeyword)) return false;
+    static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
     return true;
   }
 
@@ -2278,7 +2285,8 @@ class SVParser {
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
     if (parseParameterDeclarationRule()) return true;
-    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule())
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parseBuiltInDataDeclarationRule())
       return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
@@ -2397,8 +2405,8 @@ class SVParser {
       return true;
     }
     if (parseParameterDeclarationRule()) return true;
-    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
-        parseNetDeclarationRule())
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parseBuiltInDataDeclarationRule() || parseNetDeclarationRule())
       return true;
     if (at(TK::ModPortKeyword)) {
       static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
@@ -2442,8 +2450,8 @@ class SVParser {
       return true;
     }
     if (parseParameterDeclarationRule()) return true;
-    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
-        parseNetDeclarationRule())
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parseBuiltInDataDeclarationRule() || parseNetDeclarationRule())
       return true;
     if (at(TK::GenerateKeyword)) {
       parseSimpleBlock(TK::EndGenerateKeyword);
@@ -2465,8 +2473,9 @@ class SVParser {
   // interface_or_generate_item | checker_or_generate_item.
   auto parseGenerateItemRule() -> bool {
     if (parseParameterDeclarationRule()) return true;
-    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
-        parseNetDeclarationRule() || parseParameterOverrideRule())
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parseBuiltInDataDeclarationRule() || parseNetDeclarationRule() ||
+        parseParameterOverrideRule())
       return true;
     if (at(TK::GenerateKeyword)) {
       parseSimpleBlock(TK::EndGenerateKeyword);
@@ -2485,7 +2494,8 @@ class SVParser {
   }
 
   auto parseCheckerItemRule() -> bool {
-    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule())
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parseBuiltInDataDeclarationRule())
       return true;
     return parseAssertPropertyStatementRule() ||
            parseModuleCommonLeafRule(true) ||
@@ -2496,6 +2506,7 @@ class SVParser {
   auto parsePackageItemRule() -> bool {
     return parseParameterDeclarationRule() ||
            parseTypeDeclarationRule() ||
+           parseNettypeDeclarationRule() ||
            parseBuiltInDataDeclarationRule() ||
            parseNetDeclarationRule() ||
            parsePackageOrGenerateDeclarationRule();
@@ -2509,7 +2520,8 @@ class SVParser {
       static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
       return true;
     }
-    return parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule();
+    return parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+           parseBuiltInDataDeclarationRule();
   }
 
   auto parseProceduralConstructRule(bool allow_always) -> bool {
