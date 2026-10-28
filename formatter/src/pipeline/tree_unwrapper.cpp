@@ -3071,6 +3071,10 @@ class SVParser {
           root == "constraint_expression") {
         if (parseConstraintConditionalRule()) return true;
       }
+      if (root == "rs_production") {
+        parseRsProductionRule();
+        return true;
+      }
       if (root == "tf_item_declaration" ||
           root == "block_item_declaration") {
         if (parseBlockOrTfItemDeclarationRule(root == "tf_item_declaration"))
@@ -4812,6 +4816,59 @@ class SVParser {
     }
     addLine();
     parseDelimitedBody(TK::EndSequenceKeyword, "rs_production");
+  }
+
+  // rs_production ::= [ data_type_or_void ] rs_production_identifier
+  // [ '(' tf_port_list ')' ] ':' rs_rule { '|' rs_rule } ';'. The parent
+  // production remains live while each rs_rule is parsed as a child.
+  auto parseRsProductionRule() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"rs_production"});
+    while (!at(TK::EndOfFile) &&
+           !grammar_scopes_.back().hasActiveRule("rs_rule")) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_))
+          break;
+        continue;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      consumeInto(line_);
+    }
+    bool valid = !grammar_scopes_.back().failed &&
+                 !grammar_scopes_.back().interrupted &&
+                 grammar_scopes_.back().hasActiveRule("rs_rule");
+    if (valid) {
+      addLine();
+      do {
+        const size_t before = pos_;
+        const AnnexState rule = parseAnnexItem({"rs_rule"});
+        valid = pos_ > before && !rule.failed && !rule.interrupted &&
+                rule.complete();
+        if (!valid || !at(TK::Or)) break;
+        consumeInto(line_);
+        addLine();
+      } while (true);
+    }
+    if (valid && at(TK::Semicolon) && grammarAllows(TK::Semicolon)) {
+      consumeInto(line_);
+    } else {
+      valid = false;
+    }
+    const AnnexState production = endGrammar(false);
+    if (!valid || production.failed || production.interrupted ||
+        !production.complete()) {
+      recordGrammarFallback("invalid Annex A randsequence production");
+      recoverMalformedItem(saved);
+      return;
+    }
+    addLine();
   }
 
   auto parseCaseItem() -> void {
