@@ -2526,6 +2526,48 @@ TEST_F(TreeUnwrapperTest, GenerateRegionParsesRepeatedAnnexAItems) {
   EXPECT_EQ(declarations, 120U);
 }
 
+TEST_F(TreeUnwrapperTest, DescriptionCallsNestedModuleAndGenerateRules) {
+  const auto result = parseWithDiagnostics(
+      "module automatic outer; "
+      "macromodule inner; endmodule : inner "
+      "generate wire x; endgenerate "
+      "endmodule : outer");
+  EXPECT_TRUE(result.warnings.empty());
+  size_t module_headers = 0;
+  bool found_generate = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    module_headers += line.tokens.front().kind == TK::ModuleKeyword ||
+                      line.tokens.front().kind == TK::MacromoduleKeyword;
+    found_generate |= line.tokens.front().kind == TK::GenerateKeyword;
+  }
+  EXPECT_EQ(module_headers, 2U);
+  EXPECT_TRUE(found_generate);
+}
+
+TEST_F(TreeUnwrapperTest, ProceduralAndGenerateIfCallDifferentBodyRules) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin "
+      "if (a) x = 1; else if (b) x = 2; else x = 3; end "
+      "generate if (1) begin : yes wire y; end : yes "
+      "else begin : no wire n; end : no endgenerate endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_else_if = false;
+  bool found_generate_body = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_else_if |= line.tokens.size() >= 2 &&
+                     line.tokens.front().kind == TK::ElseKeyword &&
+                     line.tokens[1].kind == TK::IfKeyword;
+    for (size_t i = 1; i < line.tokens.size(); ++i) {
+      found_generate_body |= line.tokens[i - 1].kind == TK::WireKeyword &&
+                             line.tokens[i].rawText() == "n";
+    }
+  }
+  EXPECT_TRUE(found_else_if);
+  EXPECT_TRUE(found_generate_body);
+}
+
 TEST_F(TreeUnwrapperTest, DoWhileCompletesAsOneAnnexALoop) {
   const auto result = parseWithDiagnostics(
       "module m; initial begin do a = a + 1; while (a < 3); end endmodule");

@@ -1994,6 +1994,62 @@ class SVParser {
     }
   }
 
+  // description ::= module_declaration | udp_declaration |
+  // interface_declaration | program_declaration | package_declaration |
+  // ... | config_declaration. The keyword alternatives enter their rule
+  // functions directly; shared-prefix alternatives still use local grammar
+  // state in parseStatement().
+  auto parseDescriptionRule() -> bool {
+    switch (peek().kind) {
+      case TK::ModuleKeyword:
+      case TK::MacromoduleKeyword:
+        parseStructuralBlock(TK::EndModuleKeyword);
+        return true;
+      case TK::InterfaceKeyword:
+        if (at(TK::ClassKeyword, 1)) return false;
+        parseStructuralBlock(TK::EndInterfaceKeyword);
+        return true;
+      case TK::ProgramKeyword:
+        parseStructuralBlock(TK::EndProgramKeyword);
+        return true;
+      case TK::PackageKeyword:
+        parseStructuralBlock(TK::EndPackageKeyword);
+        return true;
+      case TK::PrimitiveKeyword:
+        parsePrimitiveBlock();
+        return true;
+      case TK::ConfigKeyword:
+        parseConfigBlock();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // module_item ::= port_declaration ';' | non_port_module_item.
+  // These non_port_module_item alternatives have distinct Annex A leading
+  // terminals. The remaining alternatives are parsed by the local item rule.
+  auto parseModuleItemRule() -> bool {
+    switch (peek().kind) {
+      case TK::GenerateKeyword:
+        parseSimpleBlock(TK::EndGenerateKeyword);
+        return true;
+      case TK::ModuleKeyword:
+      case TK::MacromoduleKeyword:
+        parseStructuralBlock(TK::EndModuleKeyword);
+        return true;
+      case TK::ProgramKeyword:
+        parseStructuralBlock(TK::EndProgramKeyword);
+        return true;
+      case TK::SpecifyKeyword:
+        parseAnnexDelimitedBlock(TK::EndSpecifyKeyword, "specify_block",
+                                 "specify_item", false);
+        return true;
+      default:
+        return false;
+    }
+  }
+
   auto parseStatement() -> void {
     if (stop_at_conditional_boundary_ &&
         isConditionalBoundaryDirective(peek())) {
@@ -2052,6 +2108,16 @@ class SVParser {
     if (at(TK::Directive) && !isCompilerDirective(peek())) {
       parseMacroStatement();
       return;
+    }
+
+    if (grammar_scopes_.empty()) {
+      if (block_stack_.empty() && parseDescriptionRule()) return;
+      if (!block_stack_.empty() &&
+          (block_stack_.back().grammar_body == "module_item" ||
+           block_stack_.back().grammar_body == "non_port_module_item") &&
+          parseModuleItemRule()) {
+        return;
+      }
     }
 
     if (!block_stack_.empty() &&
@@ -2114,7 +2180,9 @@ class SVParser {
                                             "case_statement",
                                             "case_generate_construct",
                                             "randcase_statement",
-                                            "generate_region"};
+                                            "generate_region",
+                                            "conditional_statement",
+                                            "if_generate_construct"};
       return std::ranges::any_of(rules, [&](std::string_view rule) {
         return grammar_scopes_.back().hasActiveRule(rule) &&
                annexCanStart(rule, peek().kind);
@@ -2303,7 +2371,8 @@ class SVParser {
       parseProceduralBlock();
     } else if (can_begin("conditional_statement") ||
                can_begin("if_generate_construct")) {
-      parseIf();
+      parseIf(can_begin("if_generate_construct") &&
+              !can_begin("conditional_statement"));
     } else if (can_begin("loop_statement") ||
                can_begin("loop_generate_construct")) {
       parseLoop();
@@ -3449,25 +3518,28 @@ class SVParser {
     parseIndentedStatement(std::move(body_roots));
   }
 
-  // if (...) stmt [else [if (...)] stmt]
-  auto parseIf() -> void {
-    consumeInto(line_);  // if
-    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                          "cond_predicate", line_);
-    addLine();
+  // conditional_statement and if_generate_construct from Annex A.
+  auto parseIf(bool generate) -> void {
+    const std::string_view condition_rule =
+        generate ? "constant_expression" : "cond_predicate";
+    const std::vector<std::string_view> body_roots = {
+        generate ? "generate_block" : "statement_or_null"};
+    while (at(TK::IfKeyword)) {
+      consumeInto(line_);
+      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                            condition_rule, line_);
+      addLine();
 
-    parseIndentedStatement();
-
-    if (at(TK::ElseKeyword) && grammarAllows(TK::ElseKeyword)) {
-      consumeInto(line_);  // else
-      if (at(TK::IfKeyword)) {
-        // else if: `if (...)` is added into the same line_ that already has
-        // `else`
-        parseIf();
+      parseIndentedStatement(body_roots);
+      if (!at(TK::ElseKeyword)) return;
+      consumeInto(line_);
+      if (generate || !at(TK::IfKeyword)) {
+        addLine();
+        parseIndentedStatement(body_roots);
         return;
       }
-      addLine();
-      parseIndentedStatement();
+      // The procedural production repeats `else if (...) statement_or_null`.
+      // Keep `else if` together while calling the same rule for its body.
     }
   }
 
