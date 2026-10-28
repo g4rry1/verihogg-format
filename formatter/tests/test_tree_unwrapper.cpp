@@ -2542,6 +2542,27 @@ TEST_F(TreeUnwrapperTest, BuiltInDataTypesCallDeclarationRule) {
   EXPECT_TRUE(found_string);
 }
 
+TEST_F(TreeUnwrapperTest, NetTypesCallNetDeclarationRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; wire a; tri [3:0] b; logic c; endmodule "
+      "package p; uwire signal; endpackage");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_wire = false;
+  bool found_tri = false;
+  bool found_uwire = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_wire |= line.tokens.front().kind == TK::WireKeyword;
+    found_tri |= line.tokens.front().kind == TK::TriKeyword;
+    found_uwire |= line.tokens.front().kind == TK::UWireKeyword;
+  }
+  EXPECT_TRUE(found_wire);
+  EXPECT_TRUE(found_tri);
+  EXPECT_TRUE(found_uwire);
+}
+
 TEST_F(TreeUnwrapperTest, ContinuousAssignmentResumesAcrossConditional) {
   const auto result = parseWithDiagnostics(
       "module m;\n"
