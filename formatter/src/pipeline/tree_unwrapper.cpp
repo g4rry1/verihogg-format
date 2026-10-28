@@ -588,6 +588,22 @@ struct AnnexState {
     });
   }
 
+  [[nodiscard]] auto hasActiveProductionContaining(std::string_view name,
+                                                    TK kind) const -> bool {
+    const int rule = annexRule(name);
+    const int terminal = annexTerminal(kind);
+    if (rule < 0 || terminal < 0 || failed || charts.empty()) return false;
+    return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
+      const auto& production = kProductions[item.production];
+      if (production.left != rule) return false;
+      const auto begin = kSymbols + production.offset;
+      return std::find(begin, begin + production.count, -terminal - 1) !=
+             begin + production.count;
+    }) || std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+      return path.hasActiveProductionContaining(name, kind);
+    });
+  }
+
   [[nodiscard]] auto expectsRootTerminal(TK kind) const -> bool {
     const int terminal = annexTerminal(kind);
     if (terminal < 0 || failed) return false;
@@ -715,6 +731,7 @@ class SVParser {
     std::string_view grammar_body;
     bool statement_phase = false;
     bool constructor_body = false;
+    bool tf_ports_in_header = false;
     bool udp_has_entry = false;
     bool udp_sequential = false;
     bool udp_combinational = false;
@@ -1675,6 +1692,7 @@ class SVParser {
           left.extra_dedent_after_close != right.extra_dedent_after_close ||
           left.grammar_body != right.grammar_body ||
           left.constructor_body != right.constructor_body ||
+          left.tf_ports_in_header != right.tf_ports_in_header ||
           ((left.close_kind == TK::EndConfigKeyword ||
             left.close_kind == TK::EndPrimitiveKeyword) &&
            left.statement_phase != right.statement_phase)) {
@@ -1843,10 +1861,12 @@ class SVParser {
   }
 
   auto parseDelimitedBody(TK closeKind, std::string_view bodyRule = {},
-                          bool constructorBody = false) -> void {
+                          bool constructorBody = false,
+                          bool tfPortsInHeader = false) -> void {
     pushOpenFrame(closeKind);
     block_stack_.back().grammar_body = bodyRule;
     block_stack_.back().constructor_body = constructorBody;
+    block_stack_.back().tf_ports_in_header = tfPortsInHeader;
     ++indent_level_;
     parseLevel(closeKind);
     if (matchesBlockClose(closeKind, peek().kind)) {
@@ -1962,15 +1982,21 @@ class SVParser {
         }
         return block_stack_.back().statement_phase
                    ? std::vector<std::string_view>{"function_statement_or_null"}
-                   : std::vector<std::string_view>{
-                         "tf_item_declaration", "block_item_declaration",
-                         "function_statement_or_null"};
+                   : block_stack_.back().tf_ports_in_header
+                         ? std::vector<std::string_view>{
+                               "block_item_declaration",
+                               "function_statement_or_null"}
+                         : std::vector<std::string_view>{
+                               "tf_item_declaration",
+                               "function_statement_or_null"};
       case TK::EndTaskKeyword:
         return block_stack_.back().statement_phase
                    ? std::vector<std::string_view>{"statement_or_null"}
-                   : std::vector<std::string_view>{"tf_item_declaration",
-                                                   "block_item_declaration",
-                                                   "statement_or_null"};
+                   : block_stack_.back().tf_ports_in_header
+                         ? std::vector<std::string_view>{
+                               "block_item_declaration", "statement_or_null"}
+                         : std::vector<std::string_view>{
+                               "tf_item_declaration", "statement_or_null"};
       case TK::EndCaseKeyword:
         return {"case_item", "case_generate_item"};
       case TK::EndKeyword:
@@ -4584,6 +4610,7 @@ class SVParser {
   auto parseNamedBlock(TK closeKw) -> void {
     std::vector<std::string_view> roots;
     std::string_view body_rule;
+    bool tf_ports_in_header = false;
     switch (closeKw) {
       case TK::EndClassKeyword:
         roots = {"class_declaration", "interface_class_declaration"};
@@ -4621,9 +4648,15 @@ class SVParser {
         body_rule = header.hasViableRule("interface_class_declaration")
                         ? "interface_class_item"
                         : "class_item";
+      } else if (closeKw == TK::EndFunctionKeyword) {
+        tf_ports_in_header = header.hasActiveProductionContaining(
+            "function_body_declaration", TK::OpenParenthesis);
+      } else if (closeKw == TK::EndTaskKeyword) {
+        tf_ports_in_header = header.hasActiveProductionContaining(
+            "task_body_declaration", TK::OpenParenthesis);
       }
     }
-    parseDelimitedBody(closeKw, body_rule);
+    parseDelimitedBody(closeKw, body_rule, false, tf_ports_in_header);
   }
 
   // generate ... endgenerate
