@@ -3454,15 +3454,18 @@ class SVParser {
   auto parseLabeledStatement(std::string_view body_rule) -> void {
     consumeInto(line_);  // label identifier
     consumeInto(line_);  // colon
-    const auto checkpoint = grammar_scopes_.back().checkpoint();
-    const bool was_paused = grammar_paused_.back();
-    grammar_paused_.back() = true;
+    const auto checkpoint = grammar_scopes_.empty()
+                                ? std::optional<AnnexState::Checkpoint>{}
+                                : std::optional{grammar_scopes_.back().checkpoint()};
+    const bool was_paused = checkpoint && grammar_paused_.back();
+    if (checkpoint) grammar_paused_.back() = true;
     grammar_contexts_.push_back({block_stack_.size(), {body_rule}});
     parseStatement();
     grammar_contexts_.pop_back();
+    if (!checkpoint) return;
     grammar_paused_.back() = was_paused;
     if (!grammar_scopes_.back().skipOpaqueItem(
-            checkpoint, {static_cast<uint16_t>(annexRule(body_rule))})) {
+            *checkpoint, {static_cast<uint16_t>(annexRule(body_rule))})) {
       recordGrammarFallback("labeled Annex A statement cannot resume");
     }
   }
