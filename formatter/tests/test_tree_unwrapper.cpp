@@ -2481,6 +2481,34 @@ TEST_F(TreeUnwrapperTest, RandcaseUsesAnnexAItems) {
   EXPECT_TRUE(found_endcase);
 }
 
+TEST_F(TreeUnwrapperTest, EmptyCaseReportsAnnexARuleFailure) {
+  const auto result =
+      parseWithDiagnostics("module m; initial case (a) endcase endmodule");
+  EXPECT_TRUE(std::any_of(
+      result.warnings.begin(), result.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+            TK::EndCaseKeyword);
+}
+
+TEST_F(TreeUnwrapperTest, MalformedCaseItemRecoversAfterEndcase) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin case (a) 0 b = 1; endcase "
+      "y = 2; end endmodule");
+  EXPECT_TRUE(std::any_of(
+      result.warnings.begin(), result.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+  bool found_tail = false;
+  for (const auto& line : result.lines) {
+    found_tail |= !line.tokens.empty() && line.tokens.front().rawText() == "y";
+  }
+  EXPECT_TRUE(found_tail);
+  EXPECT_FALSE(std::any_of(
+      result.warnings.begin(), result.warnings.end(), [](const auto& warning) {
+        return warning.code == "token-conservation-fallback";
+      }));
+}
+
 TEST_F(TreeUnwrapperTest, GenerateRegionParsesRepeatedAnnexAItems) {
   std::string source = "module m; generate ";
   for (int i = 0; i < 120; ++i) {

@@ -3500,30 +3500,41 @@ class SVParser {
     pushOpenFrame(closeKw);
     block_stack_.back().grammar_body = body_rule;
     ++indent_level_;
+    size_t item_count = 0;
+    bool conditional_items = false;
     while (!at(closeKw) && !at(TK::EndOfFile)) {
       if (stop_at_conditional_boundary_ &&
           isConditionalBoundaryDirective(peek())) {
         return;
       }
       if (at(TK::Directive)) {
+        conditional_items |= isConditionalStartDirective(peek());
         parseStatement();
       } else {
         parseCaseItem();
+        ++item_count;
       }
     }
 
     if (at(closeKw)) {
+      if (item_count == 0 && !conditional_items) {
+        recordGrammarFallback("case statement requires an Annex A item");
+      }
       parseOpenFrameClose();
     }
   }
 
   auto parseCaseItem() -> void {
-    beginGrammar({block_stack_.back().grammar_body}, true);
-    summarizeChildInParent();
-    if (at(TK::DefaultKeyword)) {
+    const LeafCheckpoint saved = leafCheckpoint();
+    const std::string_view item_rule = block_stack_.back().grammar_body;
+    beginGrammar({item_rule});
+    const bool default_item = at(TK::DefaultKeyword);
+    bool colon_seen = false;
+    if (default_item) {
       consumeInto(line_);
       if (at(TK::Colon)) {
         consumeInto(line_);
+        colon_seen = true;
       }
     } else {
       while (!at(TK::Directive) && !at(TK::EndOfFile) &&
@@ -3535,12 +3546,22 @@ class SVParser {
       }
       if (at(TK::Colon)) {
         consumeInto(line_);
+        colon_seen = true;
       }
+    }
+    const AnnexState header = endGrammar(false);
+    if ((!default_item && !colon_seen) || header.failed || header.interrupted ||
+        !header.hasViableRule(item_rule)) {
+      recordGrammarFallback("invalid Annex A case item header");
+      recoverMalformedItem(saved);
+      return;
     }
     addLine();
 
-    parseIndentedStatement();
-    static_cast<void>(endGrammar());
+    parseIndentedStatement(
+        item_rule == "case_generate_item"
+            ? std::vector<std::string_view>{"generate_block"}
+            : std::vector<std::string_view>{"statement_or_null"});
   }
 
   // for / foreach / while / repeat / forever
