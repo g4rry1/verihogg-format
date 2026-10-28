@@ -3416,7 +3416,8 @@ class SVParser {
       parseIdentifierItem();
     } else if (const auto block = blockSpec(first);
                block && (block->layout == BlockLayout::Structural ||
-                         block->layout == BlockLayout::Named)) {
+                         block->layout == BlockLayout::Named ||
+                         !grammarAllows(first))) {
       recordGrammarFallback("block outside the current Annex A body rule");
       const auto after = findPairedEnd(pos_, block->close_kind);
       emitOpaque(pos_, after ? *after : findOuterBoundary(pos_));
