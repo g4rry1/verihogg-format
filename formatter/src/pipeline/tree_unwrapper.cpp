@@ -4439,6 +4439,14 @@ class SVParser {
     bool opened = false;
     while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
                                    isConditionalBoundaryDirective(peek()))) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_)) {
+          break;
+        }
+        continue;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
