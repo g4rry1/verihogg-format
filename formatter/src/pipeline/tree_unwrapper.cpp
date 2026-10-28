@@ -1439,7 +1439,8 @@ class SVParser {
 
   auto parseGrammarLeaf(bool recover_to_outer = false,
                         std::optional<LeafCheckpoint> checkpoint = {},
-                        bool stop_at_complete_semicolon = false) -> void {
+                        bool stop_at_complete_semicolon = false,
+                        bool keep_completed_line_open = false) -> void {
     const LeafCheckpoint saved = checkpoint.value_or(leafCheckpoint());
     const size_t start = saved.pos;
     bool aggregate_type = false;
@@ -1452,7 +1453,7 @@ class SVParser {
                                    isConditionalBoundaryDirective(peek()))) {
       if (!grammar_scopes_.empty() && grammar_scopes_.back().complete() &&
           !grammar_scopes_.back().accepts(peek().kind)) {
-        addLine();
+        if (!keep_completed_line_open) addLine();
         return;
       }
       if (at(TK::MacroUsage) ||
@@ -1534,7 +1535,7 @@ class SVParser {
       if (grammar_scopes_.back().failed) break;
     }
     if (!grammar_scopes_.empty() && grammar_scopes_.back().complete()) {
-      addLine();
+      if (!keep_completed_line_open) addLine();
       return;
     }
     if (!recover_to_outer) {
@@ -2111,7 +2112,13 @@ class SVParser {
   // module_item ::= port_declaration ';' | non_port_module_item. Enter the
   // distinct non_port_module_item productions here; shared-prefix ports,
   // declarations and instantiations retain their local item chart.
-  auto parseModuleItemRule() -> bool {
+  auto parseModuleItemRule(bool allow_port_declaration) -> bool {
+    if (allow_port_declaration &&
+        (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+         at(TK::InOutKeyword) || at(TK::RefKeyword))) {
+      parseAnnexSemicolonItem("port_declaration");
+      return true;
+    }
     switch (peek().kind) {
       case TK::GenerateKeyword:
         parseSimpleBlock(TK::EndGenerateKeyword);
@@ -2368,7 +2375,13 @@ class SVParser {
     }
   }
 
-  auto parseInterfaceItemRule() -> bool {
+  auto parseInterfaceItemRule(bool allow_port_declaration) -> bool {
+    if (allow_port_declaration &&
+        (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+         at(TK::InOutKeyword) || at(TK::RefKeyword))) {
+      parseAnnexSemicolonItem("port_declaration");
+      return true;
+    }
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
         parseNetDeclarationRule())
       return true;
@@ -2406,7 +2419,13 @@ class SVParser {
            parseGenerateConstructRule();
   }
 
-  auto parseProgramItemRule() -> bool {
+  auto parseProgramItemRule(bool allow_port_declaration) -> bool {
+    if (allow_port_declaration &&
+        (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+         at(TK::InOutKeyword) || at(TK::RefKeyword))) {
+      parseAnnexSemicolonItem("port_declaration");
+      return true;
+    }
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
         parseNetDeclarationRule())
       return true;
@@ -2464,7 +2483,13 @@ class SVParser {
            parsePackageOrGenerateDeclarationRule();
   }
 
-  auto parseBlockOrTfItemDeclarationRule() -> bool {
+  auto parseBlockOrTfItemDeclarationRule(bool allow_tf_port) -> bool {
+    if (allow_tf_port &&
+        (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+         at(TK::InOutKeyword) || at(TK::RefKeyword))) {
+      static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
+      return true;
+    }
     return parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule();
   }
 
@@ -2664,13 +2689,13 @@ class SVParser {
           return true;
       }
       if (root == "module_item" || root == "non_port_module_item") {
-        if (parseModuleItemRule()) return true;
+        if (parseModuleItemRule(root == "module_item")) return true;
       }
       if (root == "interface_item" || root == "non_port_interface_item") {
-        if (parseInterfaceItemRule()) return true;
+        if (parseInterfaceItemRule(root == "interface_item")) return true;
       }
       if (root == "program_item" || root == "non_port_program_item") {
-        if (parseProgramItemRule()) return true;
+        if (parseProgramItemRule(root == "program_item")) return true;
       }
       if (root == "generate_item") {
         if (parseGenerateItemRule()) return true;
@@ -2689,7 +2714,8 @@ class SVParser {
       }
       if (root == "tf_item_declaration" ||
           root == "block_item_declaration") {
-        if (parseBlockOrTfItemDeclarationRule()) return true;
+        if (parseBlockOrTfItemDeclarationRule(root == "tf_item_declaration"))
+          return true;
       }
     }
     return false;
@@ -3736,6 +3762,23 @@ class SVParser {
     return endGrammar();
   }
 
+  // Some parent productions append ';' to a child declaration. Keep the
+  // child's final line open, then consume the parent's required terminal.
+  auto parseAnnexSemicolonItem(std::string_view child_rule) -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({child_rule});
+    parseGrammarLeaf(false, {}, false, true);
+    const AnnexState child = endGrammar();
+    if (child.failed || child.interrupted || !child.complete()) return;
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A parent semicolon");
+      recoverMalformedItem(saved);
+      return;
+    }
+    consumeInto(line_);
+    addLine();
+  }
+
   auto parseConstraintBlock() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"constraint_declaration", "extern_constraint_declaration"});
@@ -4021,13 +4064,16 @@ class SVParser {
     }
     const AnnexState header = endGrammar();
     if (closeKw == TK::EndModuleKeyword &&
-        header.completed("module_ansi_header")) {
+        header.completed("module_ansi_header") &&
+        !header.completed("module_nonansi_header")) {
       body_rule = "non_port_module_item";
     } else if (closeKw == TK::EndInterfaceKeyword &&
-               header.completed("interface_ansi_header")) {
+               header.completed("interface_ansi_header") &&
+               !header.completed("interface_nonansi_header")) {
       body_rule = "non_port_interface_item";
     } else if (closeKw == TK::EndProgramKeyword &&
-               header.completed("program_ansi_header")) {
+               header.completed("program_ansi_header") &&
+               !header.completed("program_nonansi_header")) {
       body_rule = "non_port_program_item";
     }
     parseDelimitedBody(closeKw, body_rule);

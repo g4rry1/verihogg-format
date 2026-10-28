@@ -2625,6 +2625,85 @@ TEST_F(TreeUnwrapperTest, AnsiInterfaceAndProgramItemsCallTheirRules) {
   EXPECT_TRUE(found_program_close);
 }
 
+TEST_F(TreeUnwrapperTest, NonAnsiPortItemsUseChildAndParentRules) {
+  const auto result = parseWithDiagnostics(
+      "module m(a, b); input logic a; output logic b; endmodule "
+      "interface bus(clk); input logic clk; endinterface "
+      "program p(done); output logic done; endprogram");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t port_items = 0;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    if (line.tokens.front().kind == TK::InputKeyword ||
+        line.tokens.front().kind == TK::OutputKeyword) {
+      EXPECT_EQ(line.tokens.back().kind, TK::Semicolon);
+      ++port_items;
+    }
+  }
+  EXPECT_EQ(port_items, 4U);
+}
+
+TEST_F(TreeUnwrapperTest, AnsiHeaderDoesNotAdmitBodyPortDeclaration) {
+  const auto result = parseWithDiagnostics(
+      "module m(input logic a); input logic b; endmodule "
+      "module after; logic ready; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_following_module = false;
+  bool found_ready = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_following_module |=
+        line.tokens.front().kind == TK::ModuleKeyword &&
+        std::any_of(line.tokens.begin(), line.tokens.end(),
+                    [](const auto& token) { return token.rawText() == "after"; });
+    found_ready |= line.tokens.front().kind == TK::LogicKeyword;
+  }
+  EXPECT_TRUE(found_following_module);
+  EXPECT_TRUE(found_ready);
+}
+
+TEST_F(TreeUnwrapperTest, MissingNonAnsiPortSemicolonKeepsOuterClose) {
+  const auto result = parseWithDiagnostics(
+      "module m(a); input logic a endmodule "
+      "module after; logic ready; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_first_close = false;
+  bool found_following_module = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_first_close |= line.tokens.front().kind == TK::EndModuleKeyword;
+    found_following_module |=
+        line.tokens.front().kind == TK::ModuleKeyword &&
+        std::any_of(line.tokens.begin(), line.tokens.end(),
+                    [](const auto& token) { return token.rawText() == "after"; });
+  }
+  EXPECT_TRUE(found_first_close);
+  EXPECT_TRUE(found_following_module);
+}
+
+TEST_F(TreeUnwrapperTest, TaskPortDeclarationsUseTfRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; task write; input int value; output int result; "
+      "result = value; endtask logic ready; endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t port_items = 0;
+  bool found_ready = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    port_items += line.tokens.front().kind == TK::InputKeyword ||
+                  line.tokens.front().kind == TK::OutputKeyword;
+    found_ready |= line.tokens.front().kind == TK::LogicKeyword;
+  }
+  EXPECT_EQ(port_items, 2U);
+  EXPECT_TRUE(found_ready);
+}
+
 TEST_F(TreeUnwrapperTest, InterfaceModportAndClockingCallAnnexRules) {
   const auto result = parseWithDiagnostics(
       "interface bus(input logic clk); "
