@@ -2586,9 +2586,10 @@ class SVParser {
         return true;
       case TK::AssertKeyword:
       case TK::AssumeKeyword:
-        return parseAssertPropertyStatementRule();
+        return parseAssertPropertyStatementRule() ||
+               parseImmediateAssertionRule();
       case TK::CoverKeyword:
-        return parseCoverAssertionRule();
+        return parseCoverAssertionRule() || parseImmediateAssertionRule();
       case TK::ExpectKeyword:
         return parseExpectPropertyStatementRule();
       case TK::BeginKeyword:
@@ -3339,6 +3340,55 @@ class SVParser {
     grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
     parseStatement();
     grammar_contexts_.pop_back();
+    return true;
+  }
+
+  // immediate_assertion_statement ::= simple_immediate_assertion_statement
+  // | deferred_immediate_assertion_statement. The local chart handles the
+  // shared assert/assume/cover prefix and any #0/final modifier, then the
+  // selected Annex A body production parses its own tokens.
+  auto parseImmediateAssertionRule() -> bool {
+    if (!at(TK::AssertKeyword) && !at(TK::AssumeKeyword) &&
+        !at(TK::CoverKeyword)) {
+      return false;
+    }
+    if (at(TK::PropertyKeyword, 1) || at(TK::SequenceKeyword, 1))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"immediate_assertion_statement"});
+    while (!at(TK::EndOfFile) &&
+           !grammar_scopes_.back().hasActiveRule("action_block") &&
+           !grammar_scopes_.back().hasActiveRule("statement_or_null")) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_))
+          break;
+        continue;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      consumeInto(line_);
+    }
+    const AnnexState prefix = endGrammar(false);
+    if (prefix.failed || prefix.interrupted ||
+        (!prefix.hasActiveRule("action_block") &&
+         !prefix.hasActiveRule("statement_or_null"))) {
+      recordGrammarFallback("invalid Annex A immediate assertion header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (prefix.hasActiveRule("action_block")) {
+      parseActionBlockRule();
+    } else {
+      grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
+      parseStatement();
+      grammar_contexts_.pop_back();
+    }
     return true;
   }
 
