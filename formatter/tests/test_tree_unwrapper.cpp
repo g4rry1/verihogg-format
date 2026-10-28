@@ -2745,6 +2745,26 @@ TEST_F(TreeUnwrapperTest, PureVirtualMethodPrototypeKeepsItsSemicolon) {
   EXPECT_TRUE(found_module);
 }
 
+TEST_F(TreeUnwrapperTest, ExternClassMethodsUsePrototypeProduction) {
+  const auto result = parseWithDiagnostics(
+      "class c; extern function int read(input int x); "
+      "extern task write(input int x); "
+      "constraint positive { x > 0; } endclass");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t extern_methods = 0;
+  bool found_constraint = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    extern_methods += line.tokens.front().kind == TK::ExternKeyword &&
+                      line.tokens.back().kind == TK::Semicolon;
+    found_constraint |= line.tokens.front().kind == TK::ConstraintKeyword;
+  }
+  EXPECT_EQ(extern_methods, 2U);
+  EXPECT_TRUE(found_constraint);
+}
+
 TEST_F(TreeUnwrapperTest, BindRuleFailureRecoversAtModuleClose) {
   const auto result = parseWithDiagnostics(
       "module m; bind m child u(); endmodule "

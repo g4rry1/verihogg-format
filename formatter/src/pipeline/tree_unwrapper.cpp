@@ -2267,6 +2267,19 @@ class SVParser {
     if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
       return parsePackageOrGenerateDeclarationRule();
     }
+    if (at(TK::ExternKeyword)) {
+      AnnexState choice({"class_method", "class_constraint"});
+      for (size_t offset = 0; pos_ + offset < tokens_.size() &&
+                              choice.accepts(peek(offset).kind);
+           ++offset) {
+        choice.advance(peek(offset));
+        if (choice.hasViableRule("class_method") &&
+            !choice.hasViableRule("class_constraint")) {
+          static_cast<void>(parseAnnexItem({"class_method"}, true));
+          return true;
+        }
+      }
+    }
     if (at(TK::VirtualKeyword) || at(TK::StaticKeyword) ||
         at(TK::ProtectedKeyword) ||
         at(TK::LocalKeyword)) {
