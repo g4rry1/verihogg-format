@@ -2481,6 +2481,26 @@ TEST_F(TreeUnwrapperTest, ModuleCommonLeafRulesKeepTheirContexts) {
   EXPECT_TRUE(found_alias);
 }
 
+TEST_F(TreeUnwrapperTest, GenvarAndDefparamFinishBeforeNextModuleItem) {
+  const auto result = parseWithDiagnostics(
+      "module m; genvar i; defparam u.P = 1; logic a; endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  std::vector<TK> starts;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind != TK::EndOfFile) {
+      starts.push_back(line.tokens.front().kind);
+    }
+  }
+  EXPECT_NE(std::find(starts.begin(), starts.end(), TK::GenVarKeyword),
+            starts.end());
+  EXPECT_NE(std::find(starts.begin(), starts.end(), TK::DefParamKeyword),
+            starts.end());
+  EXPECT_NE(std::find(starts.begin(), starts.end(), TK::LogicKeyword),
+            starts.end());
+}
+
 TEST_F(TreeUnwrapperTest, ContinuousAssignmentResumesAcrossConditional) {
   const auto result = parseWithDiagnostics(
       "module m;\n"

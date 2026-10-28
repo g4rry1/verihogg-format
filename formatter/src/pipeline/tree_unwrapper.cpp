@@ -2136,6 +2136,12 @@ class SVParser {
     }
   }
 
+  auto parseParameterOverrideRule() -> bool {
+    if (!at(TK::DefParamKeyword)) return false;
+    static_cast<void>(parseAnnexItem({"parameter_override"}, true));
+    return true;
+  }
+
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
@@ -2262,6 +2268,10 @@ class SVParser {
   // productions. Program and checker items include continuous_assign, but
   // neither includes net_alias or bind_directive.
   auto parseModuleCommonLeafRule(bool continuous_only = false) -> bool {
+    if (at(TK::GenVarKeyword)) {
+      static_cast<void>(parseAnnexItem({"genvar_declaration"}, true));
+      return true;
+    }
     if (at(TK::AssignKeyword)) {
       static_cast<void>(parseAnnexItem({"continuous_assign"}, true));
       return true;
@@ -2437,7 +2447,8 @@ class SVParser {
           return true;
       }
       if (root == "module_item" || root == "non_port_module_item") {
-        if (parseModuleItemRule() || parseAssertPropertyStatementRule() ||
+        if (parseModuleItemRule() || parseParameterOverrideRule() ||
+            parseAssertPropertyStatementRule() ||
             parseModuleCommonLeafRule() ||
             parsePackageOrGenerateDeclarationRule() ||
             parseGenerateConstructRule()) return true;
@@ -2481,6 +2492,8 @@ class SVParser {
       if (root == "interface_item" || root == "non_port_interface_item" ||
           root == "program_item" || root == "non_port_program_item" ||
           root == "generate_item") {
+        if (root == "generate_item" && parseParameterOverrideRule())
+          return true;
         if (at(TK::ClockingKeyword)) {
           parseAnnexDelimitedBlock(TK::EndClockingKeyword,
                                    "clocking_declaration", "clocking_item");
