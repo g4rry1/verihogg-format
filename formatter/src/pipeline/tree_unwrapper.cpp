@@ -2159,7 +2159,7 @@ class SVParser {
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
         parseNettypeDeclarationRule() || parseNetDeclarationRule() ||
         parseParameterOverrideRule() ||
-        parseConcurrentAssertionRule() || parseModuleCommonLeafRule() ||
+        parseAssertionItemRule() || parseModuleCommonLeafRule() ||
         parsePackageOrGenerateDeclarationRule() ||
         parseGenerateConstructRule()) {
       return true;
@@ -2490,7 +2490,7 @@ class SVParser {
                                "clocking_declaration", "clocking_item");
       return true;
     }
-    return parseConcurrentAssertionRule() ||
+    return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
            parseGenerateConstructRule();
@@ -2541,7 +2541,7 @@ class SVParser {
                                "clocking_declaration", "clocking_item");
       return true;
     }
-    return parseConcurrentAssertionRule() ||
+    return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
            parseGenerateConstructRule();
@@ -2551,7 +2551,7 @@ class SVParser {
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseBuiltInDataDeclarationRule())
       return true;
-    return parseConcurrentAssertionRule() ||
+    return parseAssertionItemRule() ||
            parseModuleCommonLeafRule(true) ||
            parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
            parseProceduralConstructRule(true);
@@ -2677,6 +2677,8 @@ class SVParser {
                parseImmediateAssertionRule();
       case TK::CoverKeyword:
         return parseCoverAssertionRule() || parseImmediateAssertionRule();
+      case TK::RestrictKeyword:
+        return parseRestrictPropertyStatementRule();
       case TK::ExpectKeyword:
         return parseExpectPropertyStatementRule();
       case TK::BeginKeyword:
@@ -3361,7 +3363,28 @@ class SVParser {
   // assume_property_statement | cover_property_statement |
   // cover_sequence_statement | restrict_property_statement.
   auto parseConcurrentAssertionRule() -> bool {
-    return parseAssertPropertyStatementRule() || parseCoverAssertionRule();
+    return parseAssertPropertyStatementRule() || parseCoverAssertionRule() ||
+           parseRestrictPropertyStatementRule();
+  }
+
+  // assertion_item also admits deferred_immediate_assertion_item. Its #0 or
+  // final prefix is distinct from the simple immediate statement, and the
+  // assertion production validates the complete header.
+  auto parseAssertionItemRule() -> bool {
+    if (parseConcurrentAssertionRule()) return true;
+    if ((at(TK::AssertKeyword) || at(TK::AssumeKeyword) ||
+         at(TK::CoverKeyword)) &&
+        (at(TK::Hash, 1) || at(TK::FinalKeyword, 1))) {
+      return parseImmediateAssertionRule();
+    }
+    return false;
+  }
+
+  auto parseRestrictPropertyStatementRule() -> bool {
+    if (!at(TK::RestrictKeyword) || !at(TK::PropertyKeyword, 1))
+      return false;
+    static_cast<void>(parseAnnexItem({"restrict_property_statement"}, true));
+    return true;
   }
 
   auto parseAssertPropertyStatementRule() -> bool {
