@@ -2501,6 +2501,23 @@ TEST_F(TreeUnwrapperTest, GenvarAndDefparamFinishBeforeNextModuleItem) {
             starts.end());
 }
 
+TEST_F(TreeUnwrapperTest, TypedefUsesTypeRuleInModulePackageAndInterfaceClass) {
+  const auto result = parseWithDiagnostics(
+      "module m; typedef logic [3:0] word_t; word_t x; endmodule "
+      "package p; typedef int value_t; endpackage "
+      "interface class ic; typedef int item_t; endclass");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t typedefs = 0;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::TypedefKeyword) {
+      ++typedefs;
+    }
+  }
+  EXPECT_EQ(typedefs, 3U);
+}
+
 TEST_F(TreeUnwrapperTest, ContinuousAssignmentResumesAcrossConditional) {
   const auto result = parseWithDiagnostics(
       "module m;\n"

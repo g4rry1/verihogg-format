@@ -2142,6 +2142,12 @@ class SVParser {
     return true;
   }
 
+  auto parseTypeDeclarationRule() -> bool {
+    if (!at(TK::TypedefKeyword)) return false;
+    static_cast<void>(parseAnnexItem({"type_declaration"}, true));
+    return true;
+  }
+
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
@@ -2428,6 +2434,15 @@ class SVParser {
     if (!grammar_scopes_.empty()) return false;
     const auto roots = grammarRoots();
     for (const std::string_view root : roots) {
+      if (root == "module_item" || root == "non_port_module_item" ||
+          root == "interface_item" || root == "non_port_interface_item" ||
+          root == "program_item" || root == "non_port_program_item" ||
+          root == "generate_item" || root == "checker_or_generate_item" ||
+          root == "package_item" || root == "class_item" ||
+          root == "interface_class_item" || root == "tf_item_declaration" ||
+          root == "block_item_declaration") {
+        if (parseTypeDeclarationRule()) return true;
+      }
       if (root == "generate_block") {
         parseGenerateBlockRule();
         return true;
