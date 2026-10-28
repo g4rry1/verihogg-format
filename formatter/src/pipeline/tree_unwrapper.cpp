@@ -3062,6 +3062,20 @@ class SVParser {
     grammar_contexts_.pop_back();
   }
 
+  auto markStatementPhase() -> void {
+    if (block_stack_.empty()) return;
+    switch (block_stack_.back().close_kind) {
+      case TK::EndFunctionKeyword:
+      case TK::EndTaskKeyword:
+      case TK::EndKeyword:
+      case TK::JoinKeyword:
+        block_stack_.back().statement_phase = true;
+        break;
+      default:
+        break;
+    }
+  }
+
   // Enter the production selected by the enclosing rule. During a live
   // conditional continuation the enclosing chart stays active; the same
   // production functions still choose the construction to parse.
@@ -3101,15 +3115,19 @@ class SVParser {
           root == "function_statement_or_null" ||
           root == "function_statement") {
         if (parseStatementLabelRule(roots) ||
-            parseQualifiedStatementRule()) return true;
-        if (parseStatementItemRule()) return true;
+            parseQualifiedStatementRule() || parseStatementItemRule()) {
+          markStatementPhase();
+          return true;
+        }
       }
       if (root == "concurrent_assertion_statement") {
         if (parseConcurrentAssertionRule()) return true;
       }
       if (root == "statement_item") {
-        if (parseQualifiedStatementRule() || parseStatementItemRule())
+        if (parseQualifiedStatementRule() || parseStatementItemRule()) {
+          markStatementPhase();
           return true;
+        }
       }
       if (root == "module_item" || root == "non_port_module_item") {
         if (parseModuleItemRule(root == "module_item")) return true;
