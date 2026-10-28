@@ -3119,9 +3119,17 @@ class SVParser {
       grammar_checkpoints_.pop_back();
       grammar_paused_.pop_back();
       grammar_summary_owner_.pop_back();
-      // The current grammar root calls its child production directly. Keep
-      // the selector only for a shared prefix that has no direct rule yet.
-      if (!parseDirectGrammarRule(true)) parseStatementLayout(selector);
+      // The chart identifies a structural child that needs an item-sized
+      // scope. Its production function makes the syntactic choice. A missing
+      // function is an explicit fallback, never a second structural parser.
+      if (!parseDirectGrammarRule(true)) {
+        recordGrammarFallback("no direct Annex A production for structural item");
+        if (const auto block = blockSpec(peek().kind)) {
+          parseOpaqueBlock(block->close_kind);
+        } else {
+          parseUnsupportedConstruct();
+        }
+      }
       if (resume_parent && checkpoint) {
         grammar_paused_.back() = false;
         if (block_stack_.size() != outer_depth) {
@@ -3149,92 +3157,9 @@ class SVParser {
   }
 
   auto parseStatementLayout(const AnnexState& selector) -> void {
-    // Annex A puts unique / unique0 / priority before both if and case.
-    // Finish that grammar prefix before selecting the layout function.
-    std::optional<AnnexState> prefixed;
-    const AnnexState* selection = &selector;
-    if (annexCanStart("unique_priority", peek().kind) &&
-        selector.hasActiveRule("unique_priority")) {
-      prefixed = selector;
-      const size_t origin = prefixed->charts.size() - 1;
-      prefixed->advance(peek());
-      consumeInto(line_);
-      if (prefixed->failed ||
-          !prefixed->completedFrom("unique_priority", origin)) {
-        recordGrammarFallback("incomplete Annex A unique_priority");
-        if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
-        consumeUntilSemi();
-        return;
-      }
-      selection = &*prefixed;
-    }
     const TK first = peek().kind;
-    const auto can_begin = [&](std::string_view rule) {
-      return selection->hasActiveRule(rule) && annexCanStart(rule, first);
-    };
-    const auto continues_as = [&](std::string_view rule, size_t tokens) {
-      if (!can_begin(rule)) return false;
-      AnnexState continuation = *selection;
-      for (size_t offset = 0; offset < tokens; ++offset) {
-        if (!continuation.accepts(peek(offset).kind)) return false;
-        continuation.advance(peek(offset));
-        if (continuation.failed) return false;
-      }
-      return continuation.hasActiveRule(rule);
-    };
-
-    // These declarations use Annex A for their header and for each repeated
-    // body item. The chart advances in consume(), alongside line emission.
-    if (can_begin("constraint_declaration") ||
-        can_begin("extern_constraint_declaration")) {
-      parseConstraintBlock();
-      return;
-    }
-    if (can_begin("covergroup_declaration")) {
-      parseAnnexDelimitedBlock(TK::EndGroupKeyword, "covergroup_declaration",
-                               "coverage_spec_or_option");
-      return;
-    }
-    if (can_begin("checker_declaration")) {
-      parseAnnexDelimitedBlock(TK::EndCheckerKeyword, "checker_declaration",
-                               "checker_or_generate_item");
-      return;
-    }
-    if (can_begin("clocking_declaration")) {
-      parseAnnexDelimitedBlock(TK::EndClockingKeyword, "clocking_declaration",
-                               "clocking_item");
-      return;
-    }
-    if (can_begin("specify_block")) {
-      parseAnnexDelimitedBlock(TK::EndSpecifyKeyword, "specify_block",
-                               "specify_item", false);
-      return;
-    }
-    if (can_begin("property_declaration")) {
-      parseAnnexWholeBlock(TK::EndPropertyKeyword, "property_declaration");
-      return;
-    }
-    if (can_begin("sequence_declaration")) {
-      parseAnnexWholeBlock(TK::EndSequenceKeyword, "sequence_declaration");
-      return;
-    }
-    if (can_begin("config_declaration")) {
-      parseConfigBlock();
-      return;
-    }
-    if (can_begin("udp_declaration")) {
-      parsePrimitiveBlock();
-      return;
-    }
-    // A table only occurs inside udp_body. A standalone table has no Annex A
-    // production and retains the enclosing-close recovery path.
-    if (const auto block = blockSpec(first);
-        block && block->layout == BlockLayout::DelimitedRecovery) {
-      parseOpaqueBlock(block->close_kind);
-      return;
-    }
     if (first == TK::Identifier && at(TK::Colon, 1)) {
-      AnnexState labeled = *selection;
+      AnnexState labeled = selector;
       labeled.advance(peek());
       labeled.advance(peek(1));
       if (!labeled.failed) {
@@ -3257,55 +3182,7 @@ class SVParser {
       return;
     }
 
-    // Annex A FIRST sets select the construction family. These calls control
-    // only line layout; the active chart continues to decide membership and
-    // completion as each token is consumed.
-    if (can_begin("module_ansi_header") || can_begin("module_nonansi_header")) {
-      parseStructuralBlock(TK::EndModuleKeyword);
-    } else if (continues_as("interface_class_declaration", 2)) {
-      parseNamedBlock(TK::EndClassKeyword);
-    } else if (can_begin("interface_ansi_header") ||
-               can_begin("interface_nonansi_header")) {
-      parseStructuralBlock(TK::EndInterfaceKeyword);
-    } else if (can_begin("program_ansi_header") ||
-               can_begin("program_nonansi_header")) {
-      parseStructuralBlock(TK::EndProgramKeyword);
-    } else if (can_begin("package_declaration")) {
-      parseStructuralBlock(TK::EndPackageKeyword);
-    } else if (can_begin("class_declaration")) {
-      parseNamedBlock(TK::EndClassKeyword);
-    } else if (can_begin("function_declaration")) {
-      parseNamedBlock(TK::EndFunctionKeyword);
-    } else if (can_begin("task_declaration")) {
-      parseNamedBlock(TK::EndTaskKeyword);
-    } else if (can_begin("generate_region")) {
-      parseSimpleBlock(TK::EndGenerateKeyword);
-    } else if (can_begin("seq_block")) {
-      parseBeginEnd(TK::EndKeyword);
-    } else if (can_begin("par_block")) {
-      parseFork(TK::JoinKeyword);
-    } else if (can_begin("case_statement") ||
-               can_begin("case_generate_construct") ||
-               can_begin("randcase_statement")) {
-      parseCase(can_begin("case_generate_construct") &&
-                !can_begin("case_statement"));
-    } else if (can_begin("always_construct") ||
-               can_begin("initial_construct") || can_begin("final_construct")) {
-      parseProceduralBlock();
-    } else if (can_begin("conditional_statement") ||
-               can_begin("if_generate_construct")) {
-      parseIf(can_begin("if_generate_construct") &&
-              !can_begin("conditional_statement"));
-    } else if (can_begin("loop_statement") ||
-               can_begin("loop_generate_construct")) {
-      parseLoop(can_begin("loop_generate_construct") &&
-                !can_begin("loop_statement"));
-    } else if (continues_as("assert_property_statement", 2) ||
-               continues_as("assume_property_statement", 2) ||
-               continues_as("cover_property_statement", 2) ||
-               continues_as("cover_sequence_statement", 2)) {
-      static_cast<void>(parseConcurrentAssertionRule());
-    } else if (first == TK::Identifier) {
+    if (first == TK::Identifier) {
       parseIdentifierItem();
     } else if (const auto block = blockSpec(first);
                block && (block->layout == BlockLayout::Structural ||
