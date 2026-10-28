@@ -3252,6 +3252,58 @@ class SVParser {
     return false;
   }
 
+  // A parent production can be waiting for a complete item. Let that item's
+  // production function parse and emit it directly, then advance the parent
+  // over the completed nonterminal. If the function has no matching
+  // alternative, the caller retains the parent chart for an ambiguous leaf.
+  auto parseDirectChildRule() -> bool {
+    if (grammar_scopes_.empty() || grammar_paused_.back() ||
+        grammar_scopes_.back().failed ||
+        grammar_scopes_.back().interrupted) {
+      return false;
+    }
+    const auto roots = grammarRoots();
+    std::vector<uint16_t> candidates;
+    const auto& waiting = grammar_scopes_.back().charts.back().waiting;
+    for (const auto root : roots) {
+      if (!annexCanStart(root, peek().kind)) continue;
+      const int rule = annexRule(root);
+      if (rule < 0 || !waiting.contains(static_cast<uint16_t>(rule))) {
+        return false;
+      }
+      candidates.push_back(static_cast<uint16_t>(rule));
+    }
+    if (candidates.empty()) return false;
+    const AnnexState::Checkpoint checkpoint =
+        grammar_scopes_.back().checkpoint();
+    const size_t start = pos_;
+    const size_t output_size = lines_.size();
+    const size_t line_tokens = line_.tokens.size();
+    const size_t block_depth = block_stack_.size();
+    grammar_paused_.back() = true;
+    if (!parseDirectGrammarRule(true)) {
+      grammar_paused_.back() = false;
+      if (pos_ != start || lines_.size() != output_size ||
+          line_.tokens.size() != line_tokens) {
+        grammar_scopes_.back().interrupted = true;
+        recordGrammarFallback(
+            "direct Annex A child rejected after consuming tokens");
+        return true;
+      }
+      return false;
+    }
+    grammar_paused_.back() = false;
+    if (block_stack_.size() != block_depth) {
+      grammar_scopes_.back().interrupted = true;
+      recordGrammarFallback("direct Annex A child lost its closing boundary");
+      return true;
+    }
+    if (!grammar_scopes_.back().skipOpaqueItem(checkpoint, candidates)) {
+      recordGrammarFallback("Annex A parent cannot resume after child");
+    }
+    return true;
+  }
+
   auto parseStatement() -> void {
     const bool top_level = grammar_contexts_.empty() &&
                            block_stack_.empty() &&
@@ -3351,6 +3403,7 @@ class SVParser {
         parseDescriptionRule())
       return;
     if (parseDirectGrammarRule()) return;
+    if (parseDirectChildRule()) return;
 
     if (!block_stack_.empty() &&
         block_stack_.back().grammar_body == "udp_body") {
@@ -3368,82 +3421,7 @@ class SVParser {
     }
 
     // Shared-prefix leaves keep an item chart while their tokens are emitted.
-    // A structural child uses its production function and item-sized body
-    // scopes, so an enclosing chart never has to retain a whole large body.
     beginGrammar(grammarRoots(), true);
-    const auto structural_child = [&] {
-      constexpr std::string_view rules[] = {"module_ansi_header",
-                                            "module_nonansi_header",
-                                            "interface_ansi_header",
-                                            "interface_nonansi_header",
-                                            "program_ansi_header",
-                                            "program_nonansi_header",
-                                            "package_declaration",
-                                            "class_declaration",
-                                            "interface_class_declaration",
-                                            "function_declaration",
-                                            "task_declaration",
-                                            "constraint_declaration",
-                                            "extern_constraint_declaration",
-                                            "covergroup_declaration",
-                                            "checker_declaration",
-                                            "clocking_declaration",
-                                            "specify_block",
-                                            "property_declaration",
-                                            "sequence_declaration",
-                                            "config_declaration",
-                                            "udp_declaration",
-                                            "always_construct",
-                                            "initial_construct",
-                                            "final_construct",
-                                            "seq_block",
-                                            "par_block",
-                                            "case_statement",
-                                            "case_generate_construct",
-                                            "randcase_statement",
-                                            "generate_region",
-                                            "conditional_statement",
-                                            "if_generate_construct",
-                                            "loop_statement",
-                                            "loop_generate_construct"};
-      return std::ranges::any_of(rules, [&](std::string_view rule) {
-        return grammar_scopes_.back().hasActiveRule(rule) &&
-               annexCanStart(rule, peek().kind);
-      });
-    }();
-    if (structural_child) {
-      summarizeChildInParent();
-      const bool resume_parent = grammar_summary_owner_.back();
-      const auto checkpoint = grammar_checkpoints_.back();
-      const std::vector<uint16_t> roots = grammar_scopes_.back().roots;
-      const size_t outer_depth = block_stack_.size();
-      grammar_scopes_.pop_back();
-      grammar_checkpoints_.pop_back();
-      grammar_paused_.pop_back();
-      grammar_summary_owner_.pop_back();
-      // The chart identifies a structural child that needs an item-sized
-      // scope. Its production function makes the syntactic choice. A missing
-      // function is an explicit fallback, never a second structural parser.
-      if (!parseDirectGrammarRule(true)) {
-        recordGrammarFallback("no direct Annex A production for structural item");
-        if (const auto block = blockSpec(peek().kind)) {
-          parseOpaqueBlock(block->close_kind);
-        } else {
-          parseUnsupportedConstruct();
-        }
-      }
-      if (resume_parent && checkpoint) {
-        grammar_paused_.back() = false;
-        if (block_stack_.size() != outer_depth) {
-          grammar_scopes_.back().interrupted = true;
-          recordGrammarFallback("segmented Annex A block interrupted");
-        } else if (!grammar_scopes_.back().skipOpaqueItem(*checkpoint, roots)) {
-          recordGrammarFallback("Annex A parent cannot resume after block");
-        }
-      }
-      return;
-    }
-
     summarizeChildInParent();
     parseLeafLayout(grammar_scopes_.back());
     const AnnexState item = endGrammar();
