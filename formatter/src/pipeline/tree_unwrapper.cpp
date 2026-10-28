@@ -2074,6 +2074,10 @@ class SVParser {
       case TK::MacromoduleKeyword:
         parseStructuralBlock(TK::EndModuleKeyword);
         return true;
+      case TK::InterfaceKeyword:
+        if (at(TK::ClassKeyword, 1)) return false;
+        parseStructuralBlock(TK::EndInterfaceKeyword);
+        return true;
       case TK::ProgramKeyword:
         parseStructuralBlock(TK::EndProgramKeyword);
         return true;
@@ -2084,6 +2088,96 @@ class SVParser {
       default:
         return false;
     }
+  }
+
+  // package_or_generate_item_declaration alternatives whose first terminal
+  // identifies the declaration. Shared prefixes still use the local grammar.
+  auto parsePackageOrGenerateDeclarationRule() -> bool {
+    switch (peek().kind) {
+      case TK::TaskKeyword:
+        parseNamedBlock(TK::EndTaskKeyword);
+        return true;
+      case TK::FunctionKeyword:
+        parseNamedBlock(TK::EndFunctionKeyword);
+        return true;
+      case TK::CheckerKeyword:
+        parseAnnexDelimitedBlock(TK::EndCheckerKeyword, "checker_declaration",
+                                 "checker_or_generate_item");
+        return true;
+      case TK::ClassKeyword:
+        parseNamedBlock(TK::EndClassKeyword);
+        return true;
+      case TK::InterfaceKeyword:
+        if (!at(TK::ClassKeyword, 1)) return false;
+        parseNamedBlock(TK::EndClassKeyword);
+        return true;
+      case TK::CoverGroupKeyword:
+        parseAnnexDelimitedBlock(TK::EndGroupKeyword,
+                                 "covergroup_declaration",
+                                 "coverage_spec_or_option");
+        return true;
+      case TK::PropertyKeyword:
+        parseAnnexWholeBlock(TK::EndPropertyKeyword, "property_declaration");
+        return true;
+      case TK::SequenceKeyword:
+        parseAnnexWholeBlock(TK::EndSequenceKeyword, "sequence_declaration");
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // class_item contains class methods, nested classes, constraints and
+  // covergroups. These keyword alternatives call their declaration rules.
+  auto parseClassItemRule() -> bool {
+    if (at(TK::ConstraintKeyword)) {
+      parseConstraintBlock();
+      return true;
+    }
+    switch (peek().kind) {
+      case TK::TaskKeyword:
+      case TK::FunctionKeyword:
+      case TK::ClassKeyword:
+      case TK::CoverGroupKeyword:
+        return parsePackageOrGenerateDeclarationRule();
+      case TK::InterfaceKeyword:
+        return at(TK::ClassKeyword, 1) &&
+               parsePackageOrGenerateDeclarationRule();
+      default:
+        return false;
+    }
+  }
+
+  // checker_or_generate_item_declaration excludes task and class
+  // declarations, unlike package_or_generate_item_declaration.
+  auto parseCheckerDeclarationRule() -> bool {
+    switch (peek().kind) {
+      case TK::FunctionKeyword:
+      case TK::CheckerKeyword:
+      case TK::CoverGroupKeyword:
+      case TK::PropertyKeyword:
+      case TK::SequenceKeyword:
+        return parsePackageOrGenerateDeclarationRule();
+      case TK::ClockingKeyword:
+        parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                                 "clocking_declaration", "clocking_item");
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  auto parseProceduralConstructRule(bool allow_always) -> bool {
+    const TK kind = peek().kind;
+    if (kind != TK::InitialKeyword && kind != TK::FinalKeyword &&
+        !(allow_always && (kind == TK::AlwaysKeyword ||
+                           kind == TK::AlwaysCombKeyword ||
+                           kind == TK::AlwaysFFKeyword ||
+                           kind == TK::AlwaysLatchKeyword))) {
+      return false;
+    }
+    parseProceduralBlock();
+    return true;
   }
 
   // statement_item ::= ... | case_statement | conditional_statement |
@@ -2174,17 +2268,59 @@ class SVParser {
         if (parseStatementItemRule()) return true;
       }
       if (root == "module_item" || root == "non_port_module_item") {
-        if (parseModuleItemRule() || parseGenerateConstructRule()) return true;
-        if (at(TK::InitialKeyword) || at(TK::FinalKeyword) ||
-            at(TK::AlwaysKeyword) || at(TK::AlwaysCombKeyword) ||
-            at(TK::AlwaysFFKeyword) || at(TK::AlwaysLatchKeyword)) {
-          parseProceduralBlock();
+        if (parseModuleItemRule() ||
+            parsePackageOrGenerateDeclarationRule() ||
+            parseGenerateConstructRule()) return true;
+        if (at(TK::ClockingKeyword)) {
+          parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                                   "clocking_declaration", "clocking_item");
           return true;
         }
+        if (parseProceduralConstructRule(true)) return true;
+      }
+      if (root == "interface_item") {
+        if (at(TK::InterfaceKeyword) && !at(TK::ClassKeyword, 1)) {
+          parseStructuralBlock(TK::EndInterfaceKeyword);
+          return true;
+        }
+        if (at(TK::ProgramKeyword)) {
+          parseStructuralBlock(TK::EndProgramKeyword);
+          return true;
+        }
+        if (at(TK::GenerateKeyword)) {
+          parseSimpleBlock(TK::EndGenerateKeyword);
+          return true;
+        }
+        if (parseProceduralConstructRule(true)) return true;
+      }
+      if (root == "program_item") {
+        if (at(TK::GenerateKeyword)) {
+          parseSimpleBlock(TK::EndGenerateKeyword);
+          return true;
+        }
+        if (parseProceduralConstructRule(false)) return true;
+      }
+      if (root == "generate_item") {
+        if (at(TK::GenerateKeyword)) {
+          parseSimpleBlock(TK::EndGenerateKeyword);
+          return true;
+        }
+        if (parseProceduralConstructRule(true)) return true;
       }
       if (root == "interface_item" || root == "program_item" ||
-          root == "generate_item" || root == "checker_or_generate_item") {
-        if (parseGenerateConstructRule()) return true;
+          root == "generate_item") {
+        if (parsePackageOrGenerateDeclarationRule() ||
+            parseGenerateConstructRule()) return true;
+      }
+      if (root == "checker_or_generate_item") {
+        if (parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
+            parseProceduralConstructRule(true)) return true;
+      }
+      if (root == "package_item") {
+        if (parsePackageOrGenerateDeclarationRule()) return true;
+      }
+      if (root == "class_item") {
+        if (parseClassItemRule()) return true;
       }
     }
     return false;
@@ -3663,9 +3799,21 @@ class SVParser {
     const std::vector<std::string_view> body_roots = {
         generate ? "generate_block" : "statement_or_null"};
     while (at(TK::IfKeyword)) {
+      const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
+      if (!at(TK::OpenParenthesis)) {
+        recordGrammarFallback("if requires '(' in Annex A");
+        recoverMalformedItem(saved);
+        return;
+      }
       consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                             condition_rule, line_);
+      if (line_.tokens.empty() ||
+          line_.tokens.back().kind != TK::CloseParenthesis) {
+        recordGrammarFallback("incomplete Annex A if condition");
+        recoverMalformedItem(saved);
+        return;
+      }
       addLine();
 
       parseIndentedStatement(body_roots);
@@ -3683,15 +3831,27 @@ class SVParser {
 
   // case_statement, randcase_statement and case_generate_construct.
   auto parseCase(bool generate) -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
     const bool randcase = at(TK::RandCaseKeyword);
     consumeInto(line_);  // case / casex / casez / randcase
     std::string_view body_rule = randcase ? "randcase_item"
                                       : generate ? "case_generate_item"
                                                  : "case_item";
     if (!randcase) {
+      if (!at(TK::OpenParenthesis)) {
+        recordGrammarFallback("case requires '(' in Annex A");
+        recoverMalformedItem(saved);
+        return;
+      }
       consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                             generate ? "constant_expression" : "case_expression",
                             line_);
+      if (line_.tokens.empty() ||
+          line_.tokens.back().kind != TK::CloseParenthesis) {
+        recordGrammarFallback("incomplete Annex A case expression");
+        recoverMalformedItem(saved);
+        return;
+      }
     }
     if (!randcase && !generate &&
         (at(TK::InsideKeyword) || at(TK::MatchesKeyword))) {

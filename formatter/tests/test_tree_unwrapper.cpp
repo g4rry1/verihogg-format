@@ -2588,6 +2588,22 @@ TEST_F(TreeUnwrapperTest, GenerateBlockRuleCallsNestedItemRules) {
   EXPECT_EQ(end_count, 3U);
 }
 
+TEST_F(TreeUnwrapperTest, MissingConditionalDelimitersRecoverAtOuterBlock) {
+  for (const auto source : {
+           "module m; initial begin if x = 1; end logic y; endmodule",
+           "module m; initial begin case x 1: y = 1; endcase end "
+           "logic z; endmodule",
+       }) {
+    const auto result = parseWithDiagnostics(source);
+    EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(),
+                            [](const auto& warning) {
+                              return warning.code == "annex-a-fallback";
+                            }));
+    EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+              TK::EndModuleKeyword);
+  }
+}
+
 TEST_F(TreeUnwrapperTest, ForHeadersUseProceduralOrGenerateProduction) {
   const auto procedural =
       parseWithDiagnostics("module m; initial for (;;) x = 1; endmodule");
