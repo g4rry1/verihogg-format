@@ -3075,6 +3075,21 @@ class SVParser {
         return true;
       if (root == "timeunits_declaration" && parseTimeunitsRule())
         return true;
+      if (root == "local_parameter_declaration") {
+        parseAnnexSemicolonItem(root);
+        return true;
+      }
+      if (root == "design_statement") {
+        const AnnexState item = parseAnnexItem({root});
+        if (!block_stack_.empty() &&
+            block_stack_.back().grammar_body == "config_body")
+          block_stack_.back().statement_phase = item.complete();
+        return true;
+      }
+      if (root == "config_rule_statement") {
+        static_cast<void>(parseAnnexItem({root}));
+        return true;
+      }
       if (root == "description" && block_stack_.empty()) {
         if (parseDescriptionRule()) return true;
       }
@@ -3247,11 +3262,6 @@ class SVParser {
       return;
     if (parseDirectGrammarRule()) return;
 
-    if (!block_stack_.empty() &&
-        block_stack_.back().grammar_body == "config_body") {
-      parseConfigItem();
-      return;
-    }
     if (!block_stack_.empty() &&
         block_stack_.back().grammar_body == "udp_body") {
       parseUdpBodyItem();
@@ -4399,34 +4409,6 @@ class SVParser {
     } else {
       recordGrammarFallback("incomplete config declaration");
     }
-  }
-
-  auto parseConfigItem() -> void {
-    const bool before_design = !block_stack_.back().statement_phase;
-    if (before_design && at(TK::LocalParamKeyword)) {
-      beginGrammar({"local_parameter_declaration"});
-      while (!at(TK::EndOfFile) && !at(TK::Semicolon) &&
-             !matchingOpenFrame(peek().kind) &&
-             grammar_scopes_.back().accepts(peek().kind)) {
-        consumeInto(line_);
-      }
-      const bool complete = grammar_scopes_.back().complete();
-      static_cast<void>(endGrammar());
-      if (complete && at(TK::Semicolon)) {
-        consumeInto(line_);  // required by config_declaration
-        addLine();
-      } else {
-        recordGrammarFallback("malformed config local parameter");
-        consumeUntilSemi();
-      }
-      return;
-    }
-    if (before_design && at(TK::DesignKeyword)) {
-      const AnnexState item = parseAnnexItem({"design_statement"});
-      block_stack_.back().statement_phase = item.complete();
-      return;
-    }
-    static_cast<void>(parseAnnexItem(grammarRoots()));
   }
 
   auto parsePrimitiveBlock() -> void {
