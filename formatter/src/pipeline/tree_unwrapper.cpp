@@ -714,6 +714,7 @@ class SVParser {
     size_t extra_dedent_after_close = 0;
     std::string_view grammar_body;
     bool statement_phase = false;
+    bool constructor_body = false;
     bool udp_has_entry = false;
     bool udp_sequential = false;
     bool udp_combinational = false;
@@ -1819,10 +1820,11 @@ class SVParser {
                                       .grammar_body = {}});
   }
 
-  auto parseDelimitedBody(TK closeKind,
-                          std::string_view bodyRule = {}) -> void {
+  auto parseDelimitedBody(TK closeKind, std::string_view bodyRule = {},
+                          bool constructorBody = false) -> void {
     pushOpenFrame(closeKind);
     block_stack_.back().grammar_body = bodyRule;
+    block_stack_.back().constructor_body = constructorBody;
     ++indent_level_;
     parseLevel(closeKind);
     if (matchesBlockClose(closeKind, peek().kind)) {
@@ -1920,6 +1922,14 @@ class SVParser {
       case TK::EndGenerateKeyword:
         return {"generate_item"};
       case TK::EndFunctionKeyword:
+        if (block_stack_.back().constructor_body) {
+          return block_stack_.back().statement_phase
+                     ? std::vector<std::string_view>{
+                           "function_statement_or_null"}
+                     : std::vector<std::string_view>{
+                           "block_item_declaration",
+                           "function_statement_or_null"};
+        }
         return block_stack_.back().statement_phase
                    ? std::vector<std::string_view>{"function_statement_or_null"}
                    : std::vector<std::string_view>{
@@ -2316,7 +2326,7 @@ class SVParser {
         !header.hasViableRule("class_constructor_declaration")) {
       recordGrammarFallback("invalid Annex A class constructor header");
     }
-    parseDelimitedBody(TK::EndFunctionKeyword);
+    parseDelimitedBody(TK::EndFunctionKeyword, {}, true);
     return true;
   }
 
@@ -2555,6 +2565,19 @@ class SVParser {
            parseBuiltInDataDeclarationRule() ||
            parseNetDeclarationRule() ||
            parsePackageOrGenerateDeclarationRule();
+  }
+
+  // interface_class_item ::= type_declaration |
+  // { attribute_instance } interface_class_method |
+  // local_parameter_declaration ';' | parameter_declaration ';' | ';'.
+  auto parseInterfaceClassItemRule() -> bool {
+    if (parseParameterDeclarationRule() || parseTypeDeclarationRule())
+      return true;
+    if (at(TK::PureKeyword) && at(TK::VirtualKeyword, 1)) {
+      static_cast<void>(parseAnnexItem({"interface_class_method"}, true));
+      return true;
+    }
+    return false;
   }
 
   // anonymous_program ::= 'program' ';' { anonymous_program_item }
@@ -2925,8 +2948,7 @@ class SVParser {
         if (parseClassItemRule()) return true;
       }
       if (root == "interface_class_item") {
-        if (parseParameterDeclarationRule() || parseTypeDeclarationRule())
-          return true;
+        if (parseInterfaceClassItemRule()) return true;
       }
       if (root == "tf_item_declaration" ||
           root == "block_item_declaration") {
