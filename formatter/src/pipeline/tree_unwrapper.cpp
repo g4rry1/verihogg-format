@@ -2514,6 +2514,10 @@ class SVParser {
 
   auto parseBlockOrTfItemDeclarationRule(bool allow_tf_port) -> bool {
     if (parseParameterDeclarationRule()) return true;
+    if (at(TK::LetKeyword)) {
+      static_cast<void>(parseAnnexItem({"let_declaration"}, true));
+      return true;
+    }
     if (allow_tf_port &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {

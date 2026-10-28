@@ -2746,6 +2746,23 @@ TEST_F(TreeUnwrapperTest, NettypeDeclarationsUseAnnexRule) {
   EXPECT_EQ(nettypes, 3U);
 }
 
+TEST_F(TreeUnwrapperTest, LetDeclarationsUseBlockItemRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin let one = 1; int x; x = one; end "
+      "task t; let two = 2; int y; y = two; endtask endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t let_items = 0;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty() || line.tokens.front().kind != TK::LetKeyword)
+      continue;
+    EXPECT_EQ(line.tokens.back().kind, TK::Semicolon);
+    ++let_items;
+  }
+  EXPECT_EQ(let_items, 2U);
+}
+
 TEST_F(TreeUnwrapperTest, InterfaceModportAndClockingCallAnnexRules) {
   const auto result = parseWithDiagnostics(
       "interface bus(input logic clk); "
