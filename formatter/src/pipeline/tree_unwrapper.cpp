@@ -2160,6 +2160,13 @@ class SVParser {
   // state in parseStatement().
   auto parseDescriptionRule() -> bool {
     switch (peek().kind) {
+      case TK::ExternKeyword:
+        if (at(TK::PrimitiveKeyword, 1)) {
+          parsePrimitiveBlock();
+        } else {
+          static_cast<void>(parseAnnexItem({"description"}, true));
+        }
+        return true;
       case TK::ModuleKeyword:
       case TK::MacromoduleKeyword:
         parseStructuralBlock(TK::EndModuleKeyword);
@@ -3080,7 +3087,9 @@ class SVParser {
   // conditional continuation the enclosing chart stays active; the same
   // production functions still choose the construction to parse.
   auto parseDirectGrammarRule(bool active_continuation = false) -> bool {
-    if (!active_continuation && !grammar_scopes_.empty()) return false;
+    if (!active_continuation && !grammar_scopes_.empty() &&
+        !grammar_paused_.back())
+      return false;
     const auto roots = grammarRoots();
     for (const std::string_view root : roots) {
       if (!annexCanStart(root, peek().kind)) continue;
@@ -3122,6 +3131,9 @@ class SVParser {
       }
       if (root == "concurrent_assertion_statement") {
         if (parseConcurrentAssertionRule()) return true;
+      }
+      if (root == "deferred_immediate_assertion_statement") {
+        if (parseImmediateAssertionRule()) return true;
       }
       if (root == "statement_item") {
         if (parseQualifiedStatementRule() || parseStatementItemRule()) {
@@ -3442,9 +3454,17 @@ class SVParser {
   auto parseLabeledStatement(std::string_view body_rule) -> void {
     consumeInto(line_);  // label identifier
     consumeInto(line_);  // colon
+    const auto checkpoint = grammar_scopes_.back().checkpoint();
+    const bool was_paused = grammar_paused_.back();
+    grammar_paused_.back() = true;
     grammar_contexts_.push_back({block_stack_.size(), {body_rule}});
     parseStatement();
     grammar_contexts_.pop_back();
+    grammar_paused_.back() = was_paused;
+    if (!grammar_scopes_.back().skipOpaqueItem(
+            checkpoint, {static_cast<uint16_t>(annexRule(body_rule))})) {
+      recordGrammarFallback("labeled Annex A statement cannot resume");
+    }
   }
 
   // action_block ::= statement_or_null |
