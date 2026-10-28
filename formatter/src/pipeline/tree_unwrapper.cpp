@@ -599,6 +599,20 @@ struct AnnexState {
     });
   }
 
+  [[nodiscard]] auto allPathsHaveActiveRule(std::string_view name) const
+      -> bool {
+    const int rule = annexRule(name);
+    if (rule < 0 || failed || interrupted || charts.empty()) return false;
+    const bool current = std::ranges::any_of(
+        charts.back().items, [&](AnnexItem item) {
+          return kProductions[item.production].left == rule;
+        });
+    return current &&
+           std::ranges::all_of(alternatives, [&](const AnnexState& path) {
+             return path.allPathsHaveActiveRule(name);
+           });
+  }
+
   [[nodiscard]] auto hasViableProductionStartingWith(std::string_view name,
                                                      TK kind) const -> bool {
     const int rule = annexRule(name);
@@ -4846,6 +4860,20 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"always_construct", "initial_construct", "final_construct"});
     consumeInto(line_);  // keyword
+    while (isCompilerDirective(peek())) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_)) {
+          static_cast<void>(endGrammar(false));
+          recoverMalformedItem(saved);
+          return;
+        }
+      } else {
+        addLine();
+        parseDirectiveLine();
+      }
+    }
     bool has_delay_control = false;
     bool has_event_control = false;
     if (at(TK::Hash)) {
@@ -4869,8 +4897,20 @@ class SVParser {
       recoverMalformedItem(saved);
       return;
     }
+    if (header.complete()) {
+      addLine();
+      return;
+    }
+    if (header.completedFrom("always_construct", 0) ||
+        header.completedFrom("initial_construct", 0) ||
+        header.completedFrom("final_construct", 0)) {
+      recordGrammarFallback("conditional procedural branches end differently");
+      recoverMalformedItem(saved);
+      return;
+    }
     std::vector<std::string_view> body_roots;
     if (has_delay_control || has_event_control ||
+        header.allPathsHaveActiveRule("statement_or_null") ||
         header.hasViableRule("initial_construct")) {
       body_roots = {"statement_or_null"};
     } else if (header.hasViableRule("final_construct")) {
