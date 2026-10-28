@@ -2082,6 +2082,7 @@ class SVParser {
         parseStructuralBlock(TK::EndInterfaceKeyword);
         return true;
       case TK::ProgramKeyword:
+        if (at(TK::Semicolon, 1)) return parseAnonymousProgramRule();
         parseStructuralBlock(TK::EndProgramKeyword);
         return true;
       case TK::PackageKeyword:
@@ -2243,6 +2244,7 @@ class SVParser {
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
+    if (parseClassConstructorRule()) return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
       parseConstraintBlock({"extern_constraint_declaration"});
@@ -2284,6 +2286,22 @@ class SVParser {
       default:
         return false;
     }
+  }
+
+  // class_constructor_declaration has its own header and body production;
+  // 'function new' is distinct from function_declaration in Annex A.
+  auto parseClassConstructorRule() -> bool {
+    if (!at(TK::FunctionKeyword) || !at(TK::NewKeyword, 1)) return false;
+    beginGrammar({"class_constructor_declaration"});
+    consumeGrammarHeader(TK::EndFunctionKeyword,
+                         {"class_constructor_declaration"});
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted ||
+        !header.hasViableRule("class_constructor_declaration")) {
+      recordGrammarFallback("invalid Annex A class constructor header");
+    }
+    parseDelimitedBody(TK::EndFunctionKeyword);
+    return true;
   }
 
   // class_item contains class methods, nested classes, constraints and
@@ -2509,12 +2527,37 @@ class SVParser {
   }
 
   auto parsePackageItemRule() -> bool {
+    if (parseAnonymousProgramRule()) return true;
     return parseParameterDeclarationRule() ||
            parseTypeDeclarationRule() ||
            parseNettypeDeclarationRule() ||
            parseBuiltInDataDeclarationRule() ||
            parseNetDeclarationRule() ||
            parsePackageOrGenerateDeclarationRule();
+  }
+
+  // anonymous_program ::= 'program' ';' { anonymous_program_item }
+  // 'endprogram'. Its header and each body item use their Annex A rules.
+  auto parseAnonymousProgramRule() -> bool {
+    if (!at(TK::ProgramKeyword) || !at(TK::Semicolon, 1)) return false;
+    parseAnnexDelimitedBlock(TK::EndProgramKeyword, "anonymous_program",
+                             "anonymous_program_item");
+    return true;
+  }
+
+  auto parseAnonymousProgramItemRule() -> bool {
+    switch (peek().kind) {
+      case TK::TaskKeyword:
+      case TK::FunctionKeyword:
+      case TK::ClassKeyword:
+      case TK::CoverGroupKeyword:
+        return parsePackageOrGenerateDeclarationRule();
+      case TK::InterfaceKeyword:
+        return at(TK::ClassKeyword, 1) &&
+               parsePackageOrGenerateDeclarationRule();
+      default:
+        return false;
+    }
   }
 
   auto parseBlockOrTfItemDeclarationRule(bool allow_tf_port) -> bool {
@@ -2808,12 +2851,16 @@ class SVParser {
     grammar_contexts_.pop_back();
   }
 
-  // Enter the production selected by the enclosing rule. The Annex A table
-  // remains a local recognizer for shared-prefix leaves and expressions.
-  auto parseDirectGrammarRule() -> bool {
-    if (!grammar_scopes_.empty()) return false;
+  // Enter the production selected by the enclosing rule. During a live
+  // conditional continuation the enclosing chart stays active; the same
+  // production functions still choose the construction to parse.
+  auto parseDirectGrammarRule(bool active_continuation = false) -> bool {
+    if (!active_continuation && !grammar_scopes_.empty()) return false;
     const auto roots = grammarRoots();
     for (const std::string_view root : roots) {
+      if (root == "description" && block_stack_.empty()) {
+        if (parseDescriptionRule()) return true;
+      }
       if (root == "generate_block") {
         parseGenerateBlockRule();
         return true;
@@ -2849,6 +2896,9 @@ class SVParser {
       }
       if (root == "package_item") {
         if (parsePackageItemRule()) return true;
+      }
+      if (root == "anonymous_program_item") {
+        if (parseAnonymousProgramItemRule()) return true;
       }
       if (root == "class_item") {
         if (parseClassItemRule()) return true;
@@ -3024,7 +3074,9 @@ class SVParser {
       grammar_checkpoints_.pop_back();
       grammar_paused_.pop_back();
       grammar_summary_owner_.pop_back();
-      parseStatementLayout(selector);
+      // The current grammar root calls its child production directly. Keep
+      // the selector only for a shared prefix that has no direct rule yet.
+      if (!parseDirectGrammarRule(true)) parseStatementLayout(selector);
       if (resume_parent && checkpoint) {
         grammar_paused_.back() = false;
         if (block_stack_.size() != outer_depth) {
