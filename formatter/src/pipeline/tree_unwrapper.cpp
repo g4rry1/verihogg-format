@@ -2218,11 +2218,7 @@ class SVParser {
         parseGenerateConstructRule()) {
       return true;
     }
-    if (at(TK::ClockingKeyword)) {
-      parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                               "clocking_declaration", "clocking_item");
-      return true;
-    }
+    if (parseClockingDeclarationRule()) return true;
     return parseProceduralConstructRule(true);
   }
 
@@ -2375,10 +2371,35 @@ class SVParser {
     if (!at(TK::DefaultKeyword) ||
         (!at(TK::ClockingKeyword, 1) && !at(TK::DisableKeyword, 1)))
       return false;
-    static_cast<void>(parseAnnexItem(
-        {checker ? "checker_or_generate_item_declaration"
-                 : "module_or_generate_item_declaration"},
-        true));
+    const std::string_view declaration =
+        checker ? "checker_or_generate_item_declaration"
+                : "module_or_generate_item_declaration";
+    if (at(TK::ClockingKeyword, 1)) {
+      AnnexState choice({declaration, "clocking_declaration"});
+      for (size_t offset = 0; pos_ + offset < tokens_.size(); ++offset) {
+        const Token token = peek(offset);
+        if (isCompilerDirective(token)) continue;
+        if (token.kind == TK::Directive || !choice.accepts(token.kind)) break;
+        choice.advance(token);
+        if (choice.hasViableRule("clocking_declaration") &&
+            !choice.hasViableRule(declaration)) {
+          parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                                   "clocking_declaration", "clocking_item");
+          return true;
+        }
+        if (token.kind == TK::Semicolon) break;
+      }
+    }
+    static_cast<void>(parseAnnexItem({declaration}, true));
+    return true;
+  }
+
+  auto parseClockingDeclarationRule() -> bool {
+    if (!at(TK::ClockingKeyword) &&
+        !(at(TK::GlobalKeyword) && at(TK::ClockingKeyword, 1)))
+      return false;
+    parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                             "clocking_declaration", "clocking_item");
     return true;
   }
 
@@ -2527,9 +2548,8 @@ class SVParser {
       case TK::SequenceKeyword:
         return parsePackageOrGenerateDeclarationRule();
       case TK::ClockingKeyword:
-        parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                                 "clocking_declaration", "clocking_item");
-        return true;
+      case TK::GlobalKeyword:
+        return parseClockingDeclarationRule();
       default:
         return false;
     }
@@ -2571,11 +2591,7 @@ class SVParser {
       return true;
     }
     if (parseProceduralConstructRule(true)) return true;
-    if (at(TK::ClockingKeyword)) {
-      parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                               "clocking_declaration", "clocking_item");
-      return true;
-    }
+    if (parseClockingDeclarationRule()) return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
@@ -2600,11 +2616,7 @@ class SVParser {
       return true;
     }
     if (parseProceduralConstructRule(false)) return true;
-    if (at(TK::ClockingKeyword)) {
-      parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                               "clocking_declaration", "clocking_item");
-      return true;
-    }
+    if (parseClockingDeclarationRule()) return true;
     return parseConcurrentAssertionRule() ||
            parseModuleCommonLeafRule(true) ||
            parsePackageOrGenerateDeclarationRule() ||
@@ -2630,11 +2642,7 @@ class SVParser {
       return true;
     }
     if (parseProceduralConstructRule(true)) return true;
-    if (at(TK::ClockingKeyword)) {
-      parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                               "clocking_declaration", "clocking_item");
-      return true;
-    }
+    if (parseClockingDeclarationRule()) return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
@@ -3074,6 +3082,9 @@ class SVParser {
       if (root == "rs_production") {
         parseRsProductionRule();
         return true;
+      }
+      if (root == "clocking_item") {
+        if (parseClockingItemRule()) return true;
       }
       if (root == "tf_item_declaration" ||
           root == "block_item_declaration") {
@@ -4869,6 +4880,19 @@ class SVParser {
       return;
     }
     addLine();
+  }
+
+  // clocking_item delegates its assertion_item_declaration alternative to
+  // the property, sequence, or let declaration production. Its skew and
+  // clockvar alternatives remain leaf rules of the current item chart.
+  auto parseClockingItemRule() -> bool {
+    if (at(TK::PropertyKeyword) || at(TK::SequenceKeyword))
+      return parsePackageOrGenerateDeclarationRule();
+    if (at(TK::LetKeyword)) {
+      static_cast<void>(parseAnnexItem({"let_declaration"}, true));
+      return true;
+    }
+    return false;
   }
 
   auto parseCaseItem() -> void {
