@@ -3054,6 +3054,75 @@ TEST_F(TreeUnwrapperTest, RandcaseUsesAnnexAItems) {
   EXPECT_TRUE(found_endcase);
 }
 
+TEST_F(TreeUnwrapperTest, RandsequenceCallsProductionRulePerItem) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin logic done; "
+      "randsequence (root) root : leaf; leaf : root; endsequence "
+      "done = 1; end endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t production_items = 0;
+  bool found_close = false;
+  bool found_done = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    production_items += line.tokens.front().kind == TK::Identifier &&
+                        line.tokens.back().kind == TK::Semicolon &&
+                        std::any_of(line.tokens.begin(), line.tokens.end(),
+                                    [](const auto& token) {
+                                      return token.kind == TK::Colon;
+                                    });
+    found_close |= line.tokens.front().kind == TK::EndSequenceKeyword;
+    found_done |= line.tokens.front().kind == TK::LogicKeyword;
+  }
+  EXPECT_EQ(production_items, 2U);
+  EXPECT_TRUE(found_close);
+  EXPECT_TRUE(found_done);
+}
+
+TEST_F(TreeUnwrapperTest, RandsequenceResumesProductionsAcrossDirective) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin\n"
+      "randsequence (root)\n"
+      "root : leaf;\n"
+      "`ifdef EXTRA\n"
+      "extra : leaf;\n"
+      "`endif\n"
+      "leaf : root;\n"
+      "endsequence\n"
+      "end endmodule\n");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t productions = 0;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::Identifier &&
+        std::any_of(line.tokens.begin(), line.tokens.end(),
+                    [](const auto& token) { return token.kind == TK::Colon; })) {
+      ++productions;
+    }
+  }
+  EXPECT_EQ(productions, 3U);
+}
+
+TEST_F(TreeUnwrapperTest, MalformedRandsequenceKeepsOuterEnd) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin randsequence (root root : leaf; "
+      "endsequence end logic ready; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_end = false;
+  bool found_ready = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_end |= line.tokens.front().kind == TK::EndKeyword;
+    found_ready |= line.tokens.front().kind == TK::LogicKeyword;
+  }
+  EXPECT_TRUE(found_end);
+  EXPECT_TRUE(found_ready);
+}
+
 TEST_F(TreeUnwrapperTest, EmptyCaseReportsAnnexARuleFailure) {
   const auto result =
       parseWithDiagnostics("module m; initial case (a) endcase endmodule");

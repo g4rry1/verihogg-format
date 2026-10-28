@@ -2604,6 +2604,9 @@ class SVParser {
       case TK::DoKeyword:
         parseLoop(false);
         return true;
+      case TK::RandSequenceKeyword:
+        parseRandsequenceStatement();
+        return true;
       default:
         return false;
     }
@@ -4365,6 +4368,33 @@ class SVParser {
       }
       parseOpenFrameClose();
     }
+  }
+
+  // randsequence_statement ::= randsequence ( [ identifier ] )
+  // rs_production { rs_production } endsequence.
+  auto parseRandsequenceStatement() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"randsequence_statement"});
+    consumeInto(line_);
+    if (!at(TK::OpenParenthesis) ||
+        !consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_,
+                             block_stack_.empty()
+                                 ? TK::EndOfFile
+                                 : block_stack_.back().close_kind)) {
+      static_cast<void>(endGrammar(false));
+      recordGrammarFallback("invalid Annex A randsequence header");
+      recoverMalformedItem(saved);
+      return;
+    }
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted ||
+        !header.hasViableRule("randsequence_statement")) {
+      recordGrammarFallback("invalid Annex A randsequence header");
+      recoverMalformedItem(saved);
+      return;
+    }
+    addLine();
+    parseDelimitedBody(TK::EndSequenceKeyword, "rs_production");
   }
 
   auto parseCaseItem() -> void {
