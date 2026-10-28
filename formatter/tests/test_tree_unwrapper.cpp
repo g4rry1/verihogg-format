@@ -2903,6 +2903,25 @@ TEST_F(TreeUnwrapperTest, ExternClassMethodsUsePrototypeProduction) {
   EXPECT_TRUE(found_constraint);
 }
 
+TEST_F(TreeUnwrapperTest, ScopedConstraintUsesExternConstraintProduction) {
+  const auto result = parseWithDiagnostics(
+      "package p; class c; int x; endclass "
+      "constraint c::positive { x > 0; } "
+      "localparam int READY = 1; endpackage");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_constraint = false;
+  bool found_parameter = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_constraint |= line.tokens.front().kind == TK::ConstraintKeyword;
+    found_parameter |= line.tokens.front().kind == TK::LocalParamKeyword;
+  }
+  EXPECT_TRUE(found_constraint);
+  EXPECT_TRUE(found_parameter);
+}
+
 TEST_F(TreeUnwrapperTest, BindRuleFailureRecoversAtModuleClose) {
   const auto result = parseWithDiagnostics(
       "module m; bind m child u(); endmodule "

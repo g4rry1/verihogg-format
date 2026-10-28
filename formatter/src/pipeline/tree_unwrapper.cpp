@@ -2243,6 +2243,11 @@ class SVParser {
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
+    if (at(TK::ConstraintKeyword) ||
+        (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
+      parseConstraintBlock({"extern_constraint_declaration"});
+      return true;
+    }
     if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
       parseNamedBlock(TK::EndClassKeyword);
       return true;
@@ -2290,7 +2295,7 @@ class SVParser {
       return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
-      parseConstraintBlock();
+      parseConstraintBlock({"constraint_declaration"});
       return true;
     }
     if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
@@ -3815,9 +3820,11 @@ class SVParser {
     addLine();
   }
 
-  auto parseConstraintBlock() -> void {
+  auto parseConstraintBlock(std::vector<std::string_view> roots = {
+                                "constraint_declaration",
+                                "extern_constraint_declaration"}) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
-    beginGrammar({"constraint_declaration", "extern_constraint_declaration"});
+    beginGrammar(std::move(roots));
     bool opened = false;
     while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
                                    isConditionalBoundaryDirective(peek()))) {
