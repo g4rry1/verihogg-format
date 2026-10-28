@@ -2112,7 +2112,9 @@ class SVParser {
                                             "seq_block",
                                             "par_block",
                                             "case_statement",
-                                            "case_generate_construct"};
+                                            "case_generate_construct",
+                                            "randcase_statement",
+                                            "generate_region"};
       return std::ranges::any_of(rules, [&](std::string_view rule) {
         return grammar_scopes_.back().hasActiveRule(rule) &&
                annexCanStart(rule, peek().kind);
@@ -2293,7 +2295,8 @@ class SVParser {
     } else if (can_begin("par_block")) {
       parseFork(TK::JoinKeyword);
     } else if (can_begin("case_statement") ||
-               can_begin("case_generate_construct")) {
+               can_begin("case_generate_construct") ||
+               can_begin("randcase_statement")) {
       parseCase(TK::EndCaseKeyword);
     } else if (can_begin("always_construct") ||
                can_begin("initial_construct") || can_begin("final_construct")) {
@@ -3345,7 +3348,13 @@ class SVParser {
 
   // generate ... endgenerate
   auto parseSimpleBlock(TK closeKw) -> void {
+    beginGrammar({"generate_region"});
     consumeInto(line_);
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted ||
+        !header.hasViableRule("generate_region")) {
+      recordGrammarFallback("invalid Annex A generate region header");
+    }
     addLine();
 
     parseDelimitedBody(closeKw);
@@ -3464,12 +3473,16 @@ class SVParser {
 
   // case/casex/casez (...) ... endcase
   auto parseCase(TK closeKw) -> void {
-    beginGrammar({"case_statement", "case_generate_construct"});
-    consumeInto(line_);  // case / casex / casez
-    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                          "case_expression", line_);
-    std::string_view body_rule = "case_item";
-    if ((at(TK::InsideKeyword) || at(TK::MatchesKeyword)) &&
+    beginGrammar(
+        {"case_statement", "case_generate_construct", "randcase_statement"});
+    const bool randcase = at(TK::RandCaseKeyword);
+    consumeInto(line_);  // case / casex / casez / randcase
+    std::string_view body_rule = randcase ? "randcase_item" : "case_item";
+    if (!randcase) {
+      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                            "case_expression", line_);
+    }
+    if (!randcase && (at(TK::InsideKeyword) || at(TK::MatchesKeyword)) &&
         grammarAllows(peek().kind)) {
       body_rule =
           at(TK::InsideKeyword) ? "case_inside_item" : "case_pattern_item";
@@ -3478,7 +3491,7 @@ class SVParser {
     const AnnexState header = endGrammar(false);
     if (header.failed || header.interrupted) {
       recordGrammarFallback("invalid Annex A case header");
-    } else if (body_rule == "case_item" &&
+    } else if (!randcase && body_rule == "case_item" &&
                !header.hasViableRule("case_statement")) {
       body_rule = "case_generate_item";
     }

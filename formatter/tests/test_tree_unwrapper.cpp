@@ -2465,6 +2465,39 @@ TEST_F(TreeUnwrapperTest, NestedCaseBodyResumesAtNextAnnexAItem) {
   EXPECT_TRUE(found_next_item);
 }
 
+TEST_F(TreeUnwrapperTest, RandcaseUsesAnnexAItems) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial randcase 1: a = 0; "
+      "2: begin b = 1; end endcase endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_randcase = false;
+  bool found_endcase = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_randcase |= line.tokens.front().kind == TK::RandCaseKeyword;
+    found_endcase |= line.tokens.front().kind == TK::EndCaseKeyword;
+  }
+  EXPECT_TRUE(found_randcase);
+  EXPECT_TRUE(found_endcase);
+}
+
+TEST_F(TreeUnwrapperTest, GenerateRegionParsesRepeatedAnnexAItems) {
+  std::string source = "module m; generate ";
+  for (int i = 0; i < 120; ++i) {
+    source += "wire w" + std::to_string(i) + "; ";
+  }
+  source += "endgenerate endmodule";
+  const auto result = parseWithDiagnostics(source);
+  EXPECT_TRUE(result.warnings.empty());
+  size_t declarations = 0;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::WireKeyword) {
+      ++declarations;
+    }
+  }
+  EXPECT_EQ(declarations, 120U);
+}
+
 TEST_F(TreeUnwrapperTest, DoWhileCompletesAsOneAnnexALoop) {
   const auto result = parseWithDiagnostics(
       "module m; initial begin do a = a + 1; while (a < 3); end endmodule");
