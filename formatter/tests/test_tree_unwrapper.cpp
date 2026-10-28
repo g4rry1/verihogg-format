@@ -2690,6 +2690,61 @@ TEST_F(TreeUnwrapperTest, VirtualClassAndStaticConstraintUseDeclarationRules) {
   EXPECT_TRUE(found_method);
 }
 
+TEST_F(TreeUnwrapperTest, RandomAndConstClassPropertiesUseAnnexRule) {
+  const auto result = parseWithDiagnostics(
+      "class c; typedef int word_t; rand int x; randc bit [1:0] y; "
+      "const int z = 1; static int count; protected word_t value; "
+      "local int index; "
+      "static virtual function int read(); return value; endfunction "
+      "endclass");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t direct_properties = 0;
+  bool found_static = false;
+  bool found_protected = false;
+  bool found_local = false;
+  bool found_method = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    direct_properties +=
+        line.tokens.front().kind == TK::RandKeyword ||
+        line.tokens.front().kind == TK::RandCKeyword ||
+        line.tokens.front().kind == TK::ConstKeyword;
+    found_static |= line.tokens.front().kind == TK::StaticKeyword;
+    found_protected |= line.tokens.front().kind == TK::ProtectedKeyword;
+    found_local |= line.tokens.front().kind == TK::LocalKeyword;
+    found_method |= std::any_of(line.tokens.begin(), line.tokens.end(),
+                                [](const auto& token) {
+                                  return token.kind == TK::FunctionKeyword;
+                                });
+  }
+  EXPECT_EQ(direct_properties, 3U);
+  EXPECT_TRUE(found_static);
+  EXPECT_TRUE(found_protected);
+  EXPECT_TRUE(found_local);
+  EXPECT_TRUE(found_method);
+}
+
+TEST_F(TreeUnwrapperTest, PureVirtualMethodPrototypeKeepsItsSemicolon) {
+  const auto result = parseWithDiagnostics(
+      "virtual class c; pure virtual function int read(); endclass "
+      "module after; endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_prototype = false;
+  bool found_module = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_prototype |= line.tokens.front().kind == TK::PureKeyword &&
+                       line.tokens.back().kind == TK::Semicolon;
+    found_module |= line.tokens.front().kind == TK::ModuleKeyword;
+  }
+  EXPECT_TRUE(found_prototype);
+  EXPECT_TRUE(found_module);
+}
+
 TEST_F(TreeUnwrapperTest, BindRuleFailureRecoversAtModuleClose) {
   const auto result = parseWithDiagnostics(
       "module m; bind m child u(); endmodule "

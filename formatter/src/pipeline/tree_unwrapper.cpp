@@ -2267,23 +2267,60 @@ class SVParser {
     if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
       return parsePackageOrGenerateDeclarationRule();
     }
-    const TK method_kind = peek(1).kind;
-    if ((at(TK::VirtualKeyword) || at(TK::StaticKeyword) ||
-         at(TK::ProtectedKeyword) || at(TK::LocalKeyword)) &&
-        (method_kind == TK::FunctionKeyword || method_kind == TK::TaskKeyword)) {
-      beginGrammar({"method_qualifier"});
-      consumeInto(line_);
-      const AnnexState qualifier = endGrammar();
-      if (qualifier.failed || qualifier.interrupted ||
-          !qualifier.completed("method_qualifier")) {
-        recordGrammarFallback("invalid Annex A class method qualifier");
-        consumeUntilSemi();
-        return true;
+    if (at(TK::VirtualKeyword) || at(TK::StaticKeyword) ||
+        at(TK::ProtectedKeyword) ||
+        at(TK::LocalKeyword)) {
+      AnnexState method({"class_method"});
+      for (size_t prefix = 0; pos_ + prefix < tokens_.size(); ++prefix) {
+        const TK next = peek(prefix).kind;
+        // A pure virtual method can be a prototype ending in ';'. Its
+        // declaration/prototype choice remains with the full item grammar.
+        if (next == TK::PureKeyword) break;
+        if ((next == TK::FunctionKeyword || next == TK::TaskKeyword) &&
+            method.hasActiveRule(next == TK::FunctionKeyword
+                                     ? "function_declaration"
+                                     : "task_declaration")) {
+          beginGrammar({"class_method"});
+          for (size_t i = 0; i < prefix; ++i) consumeInto(line_);
+          const AnnexState qualifier = endGrammar(false);
+          if (qualifier.failed || qualifier.interrupted ||
+              !qualifier.hasViableRule("class_method")) {
+            recordGrammarFallback("invalid Annex A class method qualifier");
+            consumeUntilSemi();
+            return true;
+          }
+          parseNamedBlock(next == TK::FunctionKeyword
+                              ? TK::EndFunctionKeyword
+                              : TK::EndTaskKeyword);
+          return true;
+        }
+        if (!method.accepts(next)) break;
+        method.advance(peek(prefix));
       }
-      parseNamedBlock(method_kind == TK::FunctionKeyword
-                          ? TK::EndFunctionKeyword
-                          : TK::EndTaskKeyword);
+    }
+    if (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
+        at(TK::ConstKeyword)) {
+      static_cast<void>(parseAnnexItem({"class_property"}, true));
       return true;
+    }
+    if (at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
+        at(TK::LocalKeyword)) {
+      // A class_item_qualifier also starts a method or constraint. Advance a
+      // local Annex A choice only through the common prefix, then enter the
+      // property rule when the other alternatives have been ruled out.
+      AnnexState choice({"class_property", "class_method",
+                         "class_constraint"});
+      for (size_t offset = 0; pos_ + offset < tokens_.size() &&
+                              choice.accepts(peek(offset).kind);
+           ++offset) {
+        choice.advance(peek(offset));
+        if (choice.hasViableRule("class_property") &&
+            !choice.hasViableRule("class_method") &&
+            !choice.hasViableRule("class_constraint")) {
+          static_cast<void>(parseAnnexItem({"class_property"}, true));
+          return true;
+        }
+      }
     }
     switch (peek().kind) {
       case TK::TaskKeyword:
