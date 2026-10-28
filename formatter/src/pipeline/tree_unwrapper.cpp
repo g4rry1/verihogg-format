@@ -2067,7 +2067,8 @@ class SVParser {
         parseStructuralBlock(TK::EndModuleKeyword);
         return true;
       case TK::InterfaceKeyword:
-        if (at(TK::ClassKeyword, 1)) return false;
+        if (at(TK::ClassKeyword, 1))
+          return parsePackageOrGenerateDeclarationRule();
         parseStructuralBlock(TK::EndInterfaceKeyword);
         return true;
       case TK::ProgramKeyword:
@@ -2082,6 +2083,14 @@ class SVParser {
       case TK::ConfigKeyword:
         parseConfigBlock();
         return true;
+      case TK::ClassKeyword:
+      case TK::TaskKeyword:
+      case TK::FunctionKeyword:
+      case TK::CheckerKeyword:
+      case TK::CoverGroupKeyword:
+      case TK::PropertyKeyword:
+      case TK::SequenceKeyword:
+        return parsePackageOrGenerateDeclarationRule();
       default:
         return false;
     }
@@ -2398,7 +2407,7 @@ class SVParser {
         }
         if (parseProceduralConstructRule(true)) return true;
       }
-      if (root == "interface_item") {
+      if (root == "interface_item" || root == "non_port_interface_item") {
         if (at(TK::InterfaceKeyword) && !at(TK::ClassKeyword, 1)) {
           parseStructuralBlock(TK::EndInterfaceKeyword);
           return true;
@@ -2413,7 +2422,7 @@ class SVParser {
         }
         if (parseProceduralConstructRule(true)) return true;
       }
-      if (root == "program_item") {
+      if (root == "program_item" || root == "non_port_program_item") {
         if (at(TK::GenerateKeyword)) {
           parseSimpleBlock(TK::EndGenerateKeyword);
           return true;
@@ -2427,10 +2436,13 @@ class SVParser {
         }
         if (parseProceduralConstructRule(true)) return true;
       }
-      if (root == "interface_item" || root == "program_item" ||
+      if (root == "interface_item" || root == "non_port_interface_item" ||
+          root == "program_item" || root == "non_port_program_item" ||
           root == "generate_item") {
         if (parseAssertPropertyStatementRule()) return true;
-        if (parseModuleCommonLeafRule(root == "program_item")) return true;
+        if (parseModuleCommonLeafRule(root == "program_item" ||
+                                      root == "non_port_program_item"))
+          return true;
         if (parsePackageOrGenerateDeclarationRule() ||
             parseGenerateConstructRule()) return true;
       }

@@ -2481,6 +2481,28 @@ TEST_F(TreeUnwrapperTest, ModuleCommonLeafRulesKeepTheirContexts) {
   EXPECT_TRUE(found_alias);
 }
 
+TEST_F(TreeUnwrapperTest, AnsiInterfaceAndProgramItemsCallTheirRules) {
+  const auto result = parseWithDiagnostics(
+      "interface bus(input logic clk); assign ready = clk; "
+      "initial begin ready = 1; end endinterface "
+      "program p(input logic clk); assign done = clk; "
+      "initial begin done = 1; end endprogram");
+  EXPECT_TRUE(result.warnings.empty());
+  size_t assignments = 0;
+  bool found_interface_close = false;
+  bool found_program_close = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    assignments += line.tokens.front().kind == TK::AssignKeyword;
+    found_interface_close |=
+        line.tokens.front().kind == TK::EndInterfaceKeyword;
+    found_program_close |= line.tokens.front().kind == TK::EndProgramKeyword;
+  }
+  EXPECT_EQ(assignments, 2U);
+  EXPECT_TRUE(found_interface_close);
+  EXPECT_TRUE(found_program_close);
+}
+
 TEST_F(TreeUnwrapperTest, BindRuleFailureRecoversAtModuleClose) {
   const auto result = parseWithDiagnostics(
       "module m; bind m child u(); endmodule "
