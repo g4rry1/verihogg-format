@@ -1811,7 +1811,19 @@ class SVParser {
     }
     consumeInto(line_);
     if (at(TK::Colon)) {
-      if (closeAllowsLabel(frame.close_kind) && at(TK::Identifier, 1)) {
+      // anonymous_program and randsequence_statement end without a label.
+      // class_constructor_declaration permits only ': new'. Other labeled
+      // closers use the identifier terminal in their Annex A production.
+      const bool label_allowed =
+          closeAllowsLabel(frame.close_kind) &&
+          !(frame.close_kind == TK::EndProgramKeyword &&
+            frame.grammar_body == "anonymous_program_item") &&
+          !(frame.close_kind == TK::EndSequenceKeyword &&
+            frame.grammar_body == "rs_production");
+      const bool label_terminal =
+          frame.constructor_body ? at(TK::NewKeyword, 1)
+                                 : at(TK::Identifier, 1);
+      if (label_allowed && label_terminal) {
         consumeInto(line_);
         consumeInto(line_);
       } else {
