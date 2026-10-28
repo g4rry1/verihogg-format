@@ -2239,6 +2239,12 @@ class SVParser {
     }
   }
 
+  auto parseInterfaceItemRule() -> bool {
+    if (!at(TK::ModPortKeyword)) return false;
+    static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
+    return true;
+  }
+
   auto parseProceduralConstructRule(bool allow_always) -> bool {
     const TK kind = peek().kind;
     if (kind != TK::InitialKeyword && kind != TK::FinalKeyword &&
@@ -2443,6 +2449,7 @@ class SVParser {
         if (parseProceduralConstructRule(true)) return true;
       }
       if (root == "interface_item" || root == "non_port_interface_item") {
+        if (parseInterfaceItemRule()) return true;
         if (at(TK::InterfaceKeyword) && !at(TK::ClassKeyword, 1)) {
           parseStructuralBlock(TK::EndInterfaceKeyword);
           return true;
@@ -2474,6 +2481,11 @@ class SVParser {
       if (root == "interface_item" || root == "non_port_interface_item" ||
           root == "program_item" || root == "non_port_program_item" ||
           root == "generate_item") {
+        if (at(TK::ClockingKeyword)) {
+          parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                                   "clocking_declaration", "clocking_item");
+          return true;
+        }
         if (parseAssertPropertyStatementRule()) return true;
         if (parseModuleCommonLeafRule(root == "program_item" ||
                                       root == "non_port_program_item"))

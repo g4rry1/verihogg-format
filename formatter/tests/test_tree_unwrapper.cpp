@@ -2525,6 +2525,29 @@ TEST_F(TreeUnwrapperTest, AnsiInterfaceAndProgramItemsCallTheirRules) {
   EXPECT_TRUE(found_program_close);
 }
 
+TEST_F(TreeUnwrapperTest, InterfaceModportAndClockingCallAnnexRules) {
+  const auto result = parseWithDiagnostics(
+      "interface bus(input logic clk); "
+      "modport master (input clk); "
+      "clocking cb @(posedge clk); input data; endclocking "
+      "endinterface");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_modport = false;
+  bool found_clocking = false;
+  bool found_close = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_modport |= line.tokens.front().kind == TK::ModPortKeyword;
+    found_clocking |= line.tokens.front().kind == TK::ClockingKeyword;
+    found_close |= line.tokens.front().kind == TK::EndClockingKeyword;
+  }
+  EXPECT_TRUE(found_modport);
+  EXPECT_TRUE(found_clocking);
+  EXPECT_TRUE(found_close);
+}
+
 TEST_F(TreeUnwrapperTest, VirtualClassAndStaticConstraintUseDeclarationRules) {
   const auto result = parseWithDiagnostics(
       "package p; virtual class c; "
