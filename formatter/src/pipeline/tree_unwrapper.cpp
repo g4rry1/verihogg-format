@@ -4257,9 +4257,11 @@ class SVParser {
   }
 
   auto parseAnnexItem(std::vector<std::string_view> rules,
-                      bool stop_at_complete_semicolon = false) -> AnnexState {
+                      bool stop_at_complete_semicolon = false,
+                      bool keep_completed_line_open = false) -> AnnexState {
     beginGrammar(std::move(rules));
-    parseGrammarLeaf(false, {}, stop_at_complete_semicolon);
+    parseGrammarLeaf(false, {}, stop_at_complete_semicolon,
+                     keep_completed_line_open);
     return endGrammar();
   }
 
@@ -4928,10 +4930,9 @@ class SVParser {
                  !grammar_scopes_.back().interrupted &&
                  grammar_scopes_.back().hasActiveRule("rs_rule");
     if (valid) {
-      addLine();
       do {
         const size_t before = pos_;
-        const AnnexState rule = parseAnnexItem({"rs_rule"});
+        const AnnexState rule = parseAnnexItem({"rs_rule"}, false, true);
         valid = pos_ > before && !rule.failed && !rule.interrupted &&
                 rule.complete();
         if (!valid || !at(TK::Or)) break;
