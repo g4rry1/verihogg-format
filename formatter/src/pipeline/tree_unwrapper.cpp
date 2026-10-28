@@ -1,6 +1,5 @@
 #include "pipeline/tree_unwrapper.h"
 
-#include <slang/parsing/LexerFacts.h>
 #include <slang/parsing/Token.h>
 #include <slang/parsing/TokenKind.h>
 
@@ -1247,19 +1246,8 @@ class SVParser {
     return "unknown";
   }
 
-  enum class BlockLayout : std::uint8_t {
-    Structural,
-    Named,
-    Simple,
-    BeginEnd,
-    Fork,
-    Case,
-    DelimitedRecovery,
-  };
-
   struct BlockSpec {
     TK close_kind;
-    BlockLayout layout;
   };
 
   // Closing tokens are also used to find a safe recovery point. A recovery
@@ -1268,67 +1256,47 @@ class SVParser {
     switch (kind) {
       case TK::ModuleKeyword:
       case TK::MacromoduleKeyword:
-        return BlockSpec{.close_kind = TK::EndModuleKeyword,
-                         .layout = BlockLayout::Structural};
+        return BlockSpec{.close_kind = TK::EndModuleKeyword};
       case TK::InterfaceKeyword:
-        return BlockSpec{.close_kind = TK::EndInterfaceKeyword,
-                         .layout = BlockLayout::Structural};
+        return BlockSpec{.close_kind = TK::EndInterfaceKeyword};
       case TK::PackageKeyword:
-        return BlockSpec{.close_kind = TK::EndPackageKeyword,
-                         .layout = BlockLayout::Structural};
+        return BlockSpec{.close_kind = TK::EndPackageKeyword};
       case TK::ProgramKeyword:
-        return BlockSpec{.close_kind = TK::EndProgramKeyword,
-                         .layout = BlockLayout::Structural};
+        return BlockSpec{.close_kind = TK::EndProgramKeyword};
       case TK::ClassKeyword:
-        return BlockSpec{.close_kind = TK::EndClassKeyword,
-                         .layout = BlockLayout::Named};
+        return BlockSpec{.close_kind = TK::EndClassKeyword};
       case TK::FunctionKeyword:
-        return BlockSpec{.close_kind = TK::EndFunctionKeyword,
-                         .layout = BlockLayout::Named};
+        return BlockSpec{.close_kind = TK::EndFunctionKeyword};
       case TK::TaskKeyword:
-        return BlockSpec{.close_kind = TK::EndTaskKeyword,
-                         .layout = BlockLayout::Named};
+        return BlockSpec{.close_kind = TK::EndTaskKeyword};
       case TK::GenerateKeyword:
-        return BlockSpec{.close_kind = TK::EndGenerateKeyword,
-                         .layout = BlockLayout::Simple};
+        return BlockSpec{.close_kind = TK::EndGenerateKeyword};
       case TK::BeginKeyword:
-        return BlockSpec{.close_kind = TK::EndKeyword,
-                         .layout = BlockLayout::BeginEnd};
+        return BlockSpec{.close_kind = TK::EndKeyword};
       case TK::ForkKeyword:
-        return BlockSpec{.close_kind = TK::JoinKeyword,
-                         .layout = BlockLayout::Fork};
+        return BlockSpec{.close_kind = TK::JoinKeyword};
       case TK::CaseKeyword:
       case TK::CaseXKeyword:
       case TK::CaseZKeyword:
-        return BlockSpec{.close_kind = TK::EndCaseKeyword,
-                         .layout = BlockLayout::Case};
+        return BlockSpec{.close_kind = TK::EndCaseKeyword};
       case TK::CoverGroupKeyword:
-        return BlockSpec{.close_kind = TK::EndGroupKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndGroupKeyword};
       case TK::PropertyKeyword:
-        return BlockSpec{.close_kind = TK::EndPropertyKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndPropertyKeyword};
       case TK::SequenceKeyword:
-        return BlockSpec{.close_kind = TK::EndSequenceKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndSequenceKeyword};
       case TK::ClockingKeyword:
-        return BlockSpec{.close_kind = TK::EndClockingKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndClockingKeyword};
       case TK::CheckerKeyword:
-        return BlockSpec{.close_kind = TK::EndCheckerKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndCheckerKeyword};
       case TK::SpecifyKeyword:
-        return BlockSpec{.close_kind = TK::EndSpecifyKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndSpecifyKeyword};
       case TK::PrimitiveKeyword:
-        return BlockSpec{.close_kind = TK::EndPrimitiveKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndPrimitiveKeyword};
       case TK::ConfigKeyword:
-        return BlockSpec{.close_kind = TK::EndConfigKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndConfigKeyword};
       case TK::TableKeyword:
-        return BlockSpec{.close_kind = TK::EndTableKeyword,
-                         .layout = BlockLayout::DelimitedRecovery};
+        return BlockSpec{.close_kind = TK::EndTableKeyword};
       default:
         return std::nullopt;
     }
@@ -3507,39 +3475,39 @@ class SVParser {
         }
       }
     }
-    if (!block_stack_.empty() &&
-        (block_stack_.back().grammar_body == "coverage_spec_or_option" ||
-         block_stack_.back().grammar_body == "clocking_item" ||
-         block_stack_.back().grammar_body == "specify_item") &&
-        grammarAllows(first)) {
-      parseGrammarLeaf();
-      return;
-    }
-
-    if (first == TK::Identifier) {
+    if (first == TK::MacroUsage) {
+      recordGrammarFallback("macro expansion unavailable to Annex A");
+      grammar_scopes_.back().interrupted = true;
+      parseMacroItem();
+    } else if (first == TK::Identifier && grammarAllows(first)) {
       parseIdentifierItem();
     } else if (const auto block = blockSpec(first);
-               block && (block->layout == BlockLayout::Structural ||
-                         block->layout == BlockLayout::Named ||
-                         !grammarAllows(first))) {
+               block && !grammarAllows(first)) {
       recordGrammarFallback("block outside the current Annex A body rule");
       const auto after = findPairedEnd(pos_, block->close_kind);
       emitOpaque(pos_, after ? *after : findOuterBoundary(pos_));
-    } else if (grammarAllows(first) || first == TK::AssignKeyword ||
-               first == TK::InputKeyword || first == TK::OutputKeyword ||
-               first == TK::InOutKeyword || first == TK::RefKeyword ||
-               first == TK::WireKeyword || first == TK::RegKeyword ||
-               first == TK::LogicKeyword || first == TK::BitKeyword ||
-               first == TK::IntKeyword || first == TK::IntegerKeyword ||
-               first == TK::TypedefKeyword || first == TK::ParameterKeyword ||
-               first == TK::LocalParamKeyword) {
-      parseGrammarLeaf();
-    } else if (slang::parsing::LexerFacts::isKeyword(first) ||
-               first == TK::Unknown || first == TK::Question ||
-               first == TK::CloseParenthesis || first == TK::CloseBracket) {
-      parseUnsupportedConstruct();
+    } else if (!grammarAllows(first)) {
+      recordGrammarFallback("item is outside this Annex A body rule");
+      // A terminal that begins some Annex A production is a malformed item in
+      // this context. Its semicolon is a useful recovery point. Tokens that
+      // begin no production need the enclosing block's closing boundary.
+      constexpr std::string_view item_rules[] = {
+          "module_item", "interface_item", "program_item", "package_item",
+          "class_item", "statement_or_null", "generate_item",
+          "checker_or_generate_item", "clocking_item", "specify_item",
+          "coverage_spec_or_option", "constraint_expression"};
+      const bool annex_item_start = std::ranges::any_of(
+          item_rules, [first](std::string_view rule) {
+            return annexCanStart(rule, first);
+          });
+      if (annex_item_start) {
+        grammar_scopes_.back().interrupted = true;
+        consumeUntilSemi();
+      } else {
+        emitOpaque(pos_, findOuterBoundary(pos_));
+      }
     } else {
-      consumeUntilSemi();
+      parseGrammarLeaf();
     }
   }
 
