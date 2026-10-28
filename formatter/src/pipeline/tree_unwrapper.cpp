@@ -2131,6 +2131,9 @@ class SVParser {
         parseAnnexDelimitedBlock(TK::EndSpecifyKeyword, "specify_block",
                                  "specify_item", false);
         return true;
+      case TK::SpecParamKeyword:
+        static_cast<void>(parseAnnexItem({"specparam_declaration"}, true));
+        return true;
       default:
         break;
     }
@@ -2321,6 +2324,12 @@ class SVParser {
       return true;
     if (at(TK::ModPortKeyword)) {
       static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
+      return true;
+    }
+    if (at(TK::ExternKeyword) &&
+        (at(TK::FunctionKeyword, 1) || at(TK::TaskKeyword, 1) ||
+         at(TK::ForkJoinKeyword, 1))) {
+      static_cast<void>(parseAnnexItem({"extern_tf_declaration"}, true));
       return true;
     }
     if (at(TK::InterfaceKeyword) && !at(TK::ClassKeyword, 1)) {

@@ -2501,6 +2501,24 @@ TEST_F(TreeUnwrapperTest, GenvarAndDefparamFinishBeforeNextModuleItem) {
             starts.end());
 }
 
+TEST_F(TreeUnwrapperTest, SpecparamUsesAnnexRuleAndResumesModuleItems) {
+  const auto result = parseWithDiagnostics(
+      "module m; specparam SETUP = 2, HOLD = 3; logic ready; endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_specparam = false;
+  bool found_logic = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_specparam |= line.tokens.front().kind == TK::SpecParamKeyword &&
+                       line.tokens.back().kind == TK::Semicolon;
+    found_logic |= line.tokens.front().kind == TK::LogicKeyword;
+  }
+  EXPECT_TRUE(found_specparam);
+  EXPECT_TRUE(found_logic);
+}
+
 TEST_F(TreeUnwrapperTest, TypedefUsesTypeRuleInModulePackageAndInterfaceClass) {
   const auto result = parseWithDiagnostics(
       "module m; typedef logic [3:0] word_t; word_t x; endmodule "
@@ -2628,6 +2646,26 @@ TEST_F(TreeUnwrapperTest, InterfaceModportAndClockingCallAnnexRules) {
   EXPECT_TRUE(found_modport);
   EXPECT_TRUE(found_clocking);
   EXPECT_TRUE(found_close);
+}
+
+TEST_F(TreeUnwrapperTest, InterfaceExternMethodsUseAnnexRule) {
+  const auto result = parseWithDiagnostics(
+      "interface bus; extern function int read(input int index); "
+      "extern forkjoin task write(input int value); "
+      "logic ready; endinterface");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t extern_items = 0;
+  bool found_logic = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    extern_items += line.tokens.front().kind == TK::ExternKeyword &&
+                    line.tokens.back().kind == TK::Semicolon;
+    found_logic |= line.tokens.front().kind == TK::LogicKeyword;
+  }
+  EXPECT_EQ(extern_items, 2U);
+  EXPECT_TRUE(found_logic);
 }
 
 TEST_F(TreeUnwrapperTest, VirtualClassAndStaticConstraintUseDeclarationRules) {
