@@ -1934,6 +1934,11 @@ class SVParser {
     }
     ++indent_level_;
     grammar_contexts_.push_back({block_stack_.size(), std::move(roots)});
+    while (isCompilerDirective(peek()) &&
+           !isConditionalStartDirective(peek()) &&
+           !isConditionalBoundaryDirective(peek())) {
+      parseStatement();
+    }
     parseStatement();
     grammar_contexts_.pop_back();
     if (block_stack_.size() == stack_size_before) {
