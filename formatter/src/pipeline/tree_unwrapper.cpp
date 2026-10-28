@@ -2683,6 +2683,10 @@ class SVParser {
 
   auto parseBlockOrTfItemDeclarationRule(bool allow_tf_port) -> bool {
     if (parseParameterDeclarationRule()) return true;
+    if (at(TK::ImportKeyword)) {
+      static_cast<void>(parseAnnexItem({"data_declaration"}, true));
+      return true;
+    }
     if (at(TK::LetKeyword)) {
       static_cast<void>(parseAnnexItem({"let_declaration"}, true));
       return true;
@@ -3161,12 +3165,11 @@ class SVParser {
       return;
     }
 
-    // One live Annex A chart selects the current construction. Declarations
-    // with a repeated body transfer their header to a short-lived chart and
-    // parse body items separately; every other construction keeps this chart
-    // through the same token consumption that emits the output lines.
+    // Shared-prefix leaves keep an item chart while their tokens are emitted.
+    // A structural child uses its production function and item-sized body
+    // scopes, so an enclosing chart never has to retain a whole large body.
     beginGrammar(grammarRoots(), true);
-    const auto segmented_header = [&] {
+    const auto structural_child = [&] {
       constexpr std::string_view rules[] = {"module_ansi_header",
                                             "module_nonansi_header",
                                             "interface_ansi_header",
@@ -3206,13 +3209,12 @@ class SVParser {
                annexCanStart(rule, peek().kind);
       });
     }();
-    if (segmented_header) {
+    if (structural_child) {
       summarizeChildInParent();
       const bool resume_parent = grammar_summary_owner_.back();
       const auto checkpoint = grammar_checkpoints_.back();
       const std::vector<uint16_t> roots = grammar_scopes_.back().roots;
       const size_t outer_depth = block_stack_.size();
-      AnnexState selector = std::move(grammar_scopes_.back());
       grammar_scopes_.pop_back();
       grammar_checkpoints_.pop_back();
       grammar_paused_.pop_back();
@@ -3241,7 +3243,7 @@ class SVParser {
     }
 
     summarizeChildInParent();
-    parseStatementLayout(grammar_scopes_.back());
+    parseLeafLayout(grammar_scopes_.back());
     const AnnexState item = endGrammar();
     if (!block_stack_.empty() &&
         (block_stack_.back().close_kind == TK::EndFunctionKeyword ||
@@ -3254,7 +3256,7 @@ class SVParser {
     }
   }
 
-  auto parseStatementLayout(const AnnexState& selector) -> void {
+  auto parseLeafLayout(const AnnexState& selector) -> void {
     const TK first = peek().kind;
     if (first == TK::Identifier && at(TK::Colon, 1)) {
       AnnexState labeled = selector;
