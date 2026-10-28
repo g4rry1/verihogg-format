@@ -2568,6 +2568,26 @@ TEST_F(TreeUnwrapperTest, ProceduralAndGenerateIfCallDifferentBodyRules) {
   EXPECT_TRUE(found_generate_body);
 }
 
+TEST_F(TreeUnwrapperTest, GenerateBlockRuleCallsNestedItemRules) {
+  const auto result = parseWithDiagnostics(
+      "module m; if (1) g: begin : body "
+      "for (genvar i = 0; i < 2; i++) begin : item wire x; end : item "
+      "case (1) 1: begin : choice wire y; end : choice endcase "
+      "end : body endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  size_t begin_count = 0;
+  size_t end_count = 0;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    begin_count += line.tokens.front().kind == TK::BeginKeyword ||
+                   (line.tokens.front().kind == TK::Identifier &&
+                    line.tokens.front().rawText() == "g");
+    end_count += line.tokens.front().kind == TK::EndKeyword;
+  }
+  EXPECT_EQ(begin_count, 3U);
+  EXPECT_EQ(end_count, 3U);
+}
+
 TEST_F(TreeUnwrapperTest, ForHeadersUseProceduralOrGenerateProduction) {
   const auto procedural =
       parseWithDiagnostics("module m; initial for (;;) x = 1; endmodule");

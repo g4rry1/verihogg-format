@@ -2086,6 +2086,110 @@ class SVParser {
     }
   }
 
+  // statement_item ::= ... | case_statement | conditional_statement |
+  // loop_statement | par_block | seq_block | randcase_statement | ... .
+  // These alternatives have distinct leading terminals. Leaf alternatives
+  // continue through their local Annex A rule below.
+  auto parseStatementItemRule() -> bool {
+    switch (peek().kind) {
+      case TK::BeginKeyword:
+        parseBeginEnd(TK::EndKeyword);
+        return true;
+      case TK::ForkKeyword:
+        parseFork(TK::JoinKeyword);
+        return true;
+      case TK::IfKeyword:
+        parseIf(false);
+        return true;
+      case TK::CaseKeyword:
+      case TK::CaseXKeyword:
+      case TK::CaseZKeyword:
+      case TK::RandCaseKeyword:
+        parseCase(false);
+        return true;
+      case TK::ForKeyword:
+      case TK::ForeachKeyword:
+      case TK::WhileKeyword:
+      case TK::RepeatKeyword:
+      case TK::ForeverKeyword:
+      case TK::DoKeyword:
+        parseLoop(false);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // conditional_generate_construct and loop_generate_construct are shared by
+  // module, interface, program, checker and generate items in Annex A.
+  auto parseGenerateConstructRule() -> bool {
+    switch (peek().kind) {
+      case TK::IfKeyword:
+        parseIf(true);
+        return true;
+      case TK::CaseKeyword:
+        parseCase(true);
+        return true;
+      case TK::ForKeyword:
+        parseLoop(true);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // generate_block ::= generate_item | [ identifier ':' ] begin
+  // [ ':' identifier ] { generate_item } end [ ':' identifier ].
+  auto parseGenerateBlockRule() -> void {
+    if (at(TK::Identifier) && at(TK::Colon, 1) &&
+        at(TK::BeginKeyword, 2)) {
+      consumeInto(line_);
+      consumeInto(line_);
+    }
+    if (at(TK::BeginKeyword)) {
+      consumeInto(line_);
+      consumeLabel();
+      addLine();
+      parseDelimitedBody(TK::EndKeyword, "generate_item");
+      return;
+    }
+    grammar_contexts_.push_back({block_stack_.size(), {"generate_item"}});
+    parseStatement();
+    grammar_contexts_.pop_back();
+  }
+
+  // Enter the production selected by the enclosing rule. The Annex A table
+  // remains a local recognizer for shared-prefix leaves and expressions.
+  auto parseDirectGrammarRule() -> bool {
+    if (!grammar_scopes_.empty()) return false;
+    const auto roots = grammarRoots();
+    for (const std::string_view root : roots) {
+      if (root == "generate_block") {
+        parseGenerateBlockRule();
+        return true;
+      }
+      if (root == "statement_or_null" || root == "statement" ||
+          root == "function_statement_or_null" ||
+          root == "function_statement") {
+        if (parseStatementItemRule()) return true;
+      }
+      if (root == "module_item" || root == "non_port_module_item") {
+        if (parseModuleItemRule() || parseGenerateConstructRule()) return true;
+        if (at(TK::InitialKeyword) || at(TK::FinalKeyword) ||
+            at(TK::AlwaysKeyword) || at(TK::AlwaysCombKeyword) ||
+            at(TK::AlwaysFFKeyword) || at(TK::AlwaysLatchKeyword)) {
+          parseProceduralBlock();
+          return true;
+        }
+      }
+      if (root == "interface_item" || root == "program_item" ||
+          root == "generate_item" || root == "checker_or_generate_item") {
+        if (parseGenerateConstructRule()) return true;
+      }
+    }
+    return false;
+  }
+
   auto parseStatement() -> void {
     if (stop_at_conditional_boundary_ &&
         isConditionalBoundaryDirective(peek())) {
@@ -2146,15 +2250,9 @@ class SVParser {
       return;
     }
 
-    if (grammar_scopes_.empty()) {
-      if (block_stack_.empty() && parseDescriptionRule()) return;
-      if (!block_stack_.empty() &&
-          (block_stack_.back().grammar_body == "module_item" ||
-           block_stack_.back().grammar_body == "non_port_module_item") &&
-          parseModuleItemRule()) {
-        return;
-      }
-    }
+    if (grammar_scopes_.empty() && block_stack_.empty() &&
+        parseDescriptionRule()) return;
+    if (parseDirectGrammarRule()) return;
 
     if (!block_stack_.empty() &&
         block_stack_.back().grammar_body == "constraint_block_item") {
@@ -2403,7 +2501,8 @@ class SVParser {
     } else if (can_begin("case_statement") ||
                can_begin("case_generate_construct") ||
                can_begin("randcase_statement")) {
-      parseCase(TK::EndCaseKeyword);
+      parseCase(can_begin("case_generate_construct") &&
+                !can_begin("case_statement"));
     } else if (can_begin("always_construct") ||
                can_begin("initial_construct") || can_begin("final_construct")) {
       parseProceduralBlock();
@@ -3582,38 +3681,32 @@ class SVParser {
     }
   }
 
-  // case/casex/casez (...) ... endcase
-  auto parseCase(TK closeKw) -> void {
-    beginGrammar(
-        {"case_statement", "case_generate_construct", "randcase_statement"});
+  // case_statement, randcase_statement and case_generate_construct.
+  auto parseCase(bool generate) -> void {
     const bool randcase = at(TK::RandCaseKeyword);
     consumeInto(line_);  // case / casex / casez / randcase
-    std::string_view body_rule = randcase ? "randcase_item" : "case_item";
+    std::string_view body_rule = randcase ? "randcase_item"
+                                      : generate ? "case_generate_item"
+                                                 : "case_item";
     if (!randcase) {
       consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                            "case_expression", line_);
+                            generate ? "constant_expression" : "case_expression",
+                            line_);
     }
-    if (!randcase && (at(TK::InsideKeyword) || at(TK::MatchesKeyword)) &&
-        grammarAllows(peek().kind)) {
+    if (!randcase && !generate &&
+        (at(TK::InsideKeyword) || at(TK::MatchesKeyword))) {
       body_rule =
           at(TK::InsideKeyword) ? "case_inside_item" : "case_pattern_item";
       consumeInto(line_);
     }
-    const AnnexState header = endGrammar(false);
-    if (header.failed || header.interrupted) {
-      recordGrammarFallback("invalid Annex A case header");
-    } else if (!randcase && body_rule == "case_item" &&
-               !header.hasViableRule("case_statement")) {
-      body_rule = "case_generate_item";
-    }
     addLine();
 
-    pushOpenFrame(closeKw);
+    pushOpenFrame(TK::EndCaseKeyword);
     block_stack_.back().grammar_body = body_rule;
     ++indent_level_;
     size_t item_count = 0;
     bool conditional_items = false;
-    while (!at(closeKw) && !at(TK::EndOfFile)) {
+    while (!at(TK::EndCaseKeyword) && !at(TK::EndOfFile)) {
       if (stop_at_conditional_boundary_ &&
           isConditionalBoundaryDirective(peek())) {
         return;
@@ -3627,7 +3720,7 @@ class SVParser {
       }
     }
 
-    if (at(closeKw)) {
+    if (at(TK::EndCaseKeyword)) {
       if (item_count == 0 && !conditional_items) {
         recordGrammarFallback("case statement requires an Annex A item");
       }
