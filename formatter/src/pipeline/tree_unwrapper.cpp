@@ -2214,6 +2214,63 @@ class SVParser {
     }
   }
 
+  // conditional_statement and case_statement both start with the Annex A
+  // unique_priority production. Parse that prefix as a rule, then enter the
+  // selected statement production without a construction-wide selector.
+  auto parseQualifiedStatementRule() -> bool {
+    if (!at(TK::UniqueKeyword) && !at(TK::Unique0Keyword) &&
+        !at(TK::PriorityKeyword)) {
+      return false;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"unique_priority"});
+    consumeInto(line_);
+    const AnnexState prefix = endGrammar();
+    if (prefix.failed || prefix.interrupted ||
+        !prefix.completed("unique_priority")) {
+      recordGrammarFallback("invalid Annex A unique_priority");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    while (isCompilerDirective(peek()) &&
+           !isConditionalStartDirective(peek()) &&
+           !isConditionalBoundaryDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+    if (at(TK::IfKeyword)) {
+      parseIf(false);
+    } else if (at(TK::CaseKeyword) || at(TK::CaseXKeyword) ||
+               at(TK::CaseZKeyword)) {
+      parseCase(false);
+    } else {
+      recordGrammarFallback("unique_priority requires Annex A if or case");
+      recoverMalformedItem(saved);
+    }
+    return true;
+  }
+
+  // statement ::= [ block_identifier ':' ] { attribute_instance }
+  // statement_item. Use the local grammar state for the label's shared
+  // identifier prefix; the selected body rule is parsed by its own function.
+  auto parseStatementLabelRule(
+      const std::vector<std::string_view>& roots) -> bool {
+    if (!at(TK::Identifier) || !at(TK::Colon, 1)) return false;
+    AnnexState label(roots);
+    label.advance(peek());
+    label.advance(peek(1));
+    if (label.failed) return false;
+    for (const std::string_view body_rule :
+         {"statement_item", "concurrent_assertion_statement",
+          "deferred_immediate_assertion_statement"}) {
+      if (label.hasActiveRule(body_rule)) {
+        parseLabeledStatement(body_rule);
+        return true;
+      }
+    }
+    return false;
+  }
+
   // conditional_generate_construct and loop_generate_construct are shared by
   // module, interface, program, checker and generate items in Annex A.
   auto parseGenerateConstructRule() -> bool {
@@ -2265,7 +2322,13 @@ class SVParser {
       if (root == "statement_or_null" || root == "statement" ||
           root == "function_statement_or_null" ||
           root == "function_statement") {
+        if (parseStatementLabelRule(roots) ||
+            parseQualifiedStatementRule()) return true;
         if (parseStatementItemRule()) return true;
+      }
+      if (root == "statement_item") {
+        if (parseQualifiedStatementRule() || parseStatementItemRule())
+          return true;
       }
       if (root == "module_item" || root == "non_port_module_item") {
         if (parseModuleItemRule() ||

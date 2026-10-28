@@ -2428,6 +2428,42 @@ TEST_F(TreeUnwrapperTest, UniquePrefixSelectsAnnexAIfAndCase) {
   EXPECT_TRUE(found_case);
 }
 
+TEST_F(TreeUnwrapperTest, LabeledPriorityAndUnique0CallStatementRules) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin "
+      "check_a: priority if (a) begin b = 1; end else b = 2; "
+      "check_b: unique0 case (a) 0: b = 3; default: b = 4; endcase "
+      "end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+  bool found_priority_if = false;
+  bool found_unique0_case = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() < 4 || line.tokens[1].kind != TK::Colon) {
+      continue;
+    }
+    found_priority_if |= line.tokens[2].kind == TK::PriorityKeyword &&
+                         line.tokens[3].kind == TK::IfKeyword;
+    found_unique0_case |= line.tokens[2].kind == TK::Unique0Keyword &&
+                          line.tokens[3].kind == TK::CaseKeyword;
+  }
+  EXPECT_TRUE(found_priority_if);
+  EXPECT_TRUE(found_unique0_case);
+}
+
+TEST_F(TreeUnwrapperTest, MalformedUniquePrefixRecoversAtOuterBlock) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin unique b = 1; end logic after; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_after = false;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::LogicKeyword) {
+      found_after = true;
+    }
+  }
+  EXPECT_TRUE(found_after);
+}
+
 TEST_F(TreeUnwrapperTest, RepeatedCaseBlocksKeepAnnexAItemsIndependent) {
   std::string source = "module m; always_comb begin case (sel) ";
   for (int i = 0; i < 120; ++i) {
