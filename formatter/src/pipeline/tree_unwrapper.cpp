@@ -2119,6 +2119,7 @@ class SVParser {
       parseAnnexSemicolonItem("port_declaration");
       return true;
     }
+    if (parseParameterDeclarationRule()) return true;
     switch (peek().kind) {
       case TK::GenerateKeyword:
         parseSimpleBlock(TK::EndGenerateKeyword);
@@ -2169,6 +2170,18 @@ class SVParser {
     if (!at(TK::TypedefKeyword)) return false;
     static_cast<void>(parseAnnexItem({"type_declaration"}, true));
     return true;
+  }
+
+  auto parseParameterDeclarationRule() -> bool {
+    if (at(TK::ParameterKeyword)) {
+      parseAnnexSemicolonItem("parameter_declaration");
+      return true;
+    }
+    if (at(TK::LocalParamKeyword)) {
+      parseAnnexSemicolonItem("local_parameter_declaration");
+      return true;
+    }
+    return false;
   }
 
   auto parseBuiltInDataDeclarationRule() -> bool {
@@ -2264,6 +2277,7 @@ class SVParser {
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
+    if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule())
       return true;
     if (at(TK::ConstraintKeyword) ||
@@ -2382,6 +2396,7 @@ class SVParser {
       parseAnnexSemicolonItem("port_declaration");
       return true;
     }
+    if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
         parseNetDeclarationRule())
       return true;
@@ -2426,6 +2441,7 @@ class SVParser {
       parseAnnexSemicolonItem("port_declaration");
       return true;
     }
+    if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
         parseNetDeclarationRule())
       return true;
@@ -2448,6 +2464,7 @@ class SVParser {
   // generate_item ::= module_or_generate_item |
   // interface_or_generate_item | checker_or_generate_item.
   auto parseGenerateItemRule() -> bool {
+    if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
         parseNetDeclarationRule() || parseParameterOverrideRule())
       return true;
@@ -2477,13 +2494,15 @@ class SVParser {
   }
 
   auto parsePackageItemRule() -> bool {
-    return parseTypeDeclarationRule() ||
+    return parseParameterDeclarationRule() ||
+           parseTypeDeclarationRule() ||
            parseBuiltInDataDeclarationRule() ||
            parseNetDeclarationRule() ||
            parsePackageOrGenerateDeclarationRule();
   }
 
   auto parseBlockOrTfItemDeclarationRule(bool allow_tf_port) -> bool {
+    if (parseParameterDeclarationRule()) return true;
     if (allow_tf_port &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
@@ -2710,7 +2729,8 @@ class SVParser {
         if (parseClassItemRule()) return true;
       }
       if (root == "interface_class_item") {
-        if (parseTypeDeclarationRule()) return true;
+        if (parseParameterDeclarationRule() || parseTypeDeclarationRule())
+          return true;
       }
       if (root == "tf_item_declaration" ||
           root == "block_item_declaration") {

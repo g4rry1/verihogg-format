@@ -2704,6 +2704,29 @@ TEST_F(TreeUnwrapperTest, TaskPortDeclarationsUseTfRule) {
   EXPECT_TRUE(found_ready);
 }
 
+TEST_F(TreeUnwrapperTest, ParameterItemsUseChildAndParentRules) {
+  const auto result = parseWithDiagnostics(
+      "module m; parameter int WIDTH = 8; localparam int DEPTH = 2; "
+      "initial begin localparam int BASE = 1; int x; end "
+      "task t; parameter int ARG = 3; endtask endmodule "
+      "package p; parameter type word_t = int; endpackage "
+      "class c; localparam int SIZE = 4; endclass "
+      "interface class ic; parameter int N = 1; endclass");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t parameter_items = 0;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    if (line.tokens.front().kind == TK::ParameterKeyword ||
+        line.tokens.front().kind == TK::LocalParamKeyword) {
+      EXPECT_EQ(line.tokens.back().kind, TK::Semicolon);
+      ++parameter_items;
+    }
+  }
+  EXPECT_EQ(parameter_items, 7U);
+}
+
 TEST_F(TreeUnwrapperTest, InterfaceModportAndClockingCallAnnexRules) {
   const auto result = parseWithDiagnostics(
       "interface bus(input logic clk); "
