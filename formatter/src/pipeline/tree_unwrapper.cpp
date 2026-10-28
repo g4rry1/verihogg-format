@@ -3434,12 +3434,8 @@ class SVParser {
   }
 
   auto parseConfigItem() -> void {
-    const auto roots = grammarRoots();
-    const AnnexState selector(roots);
-    const auto predicted = [&](std::string_view rule) {
-      return selector.hasActiveRule(rule) && annexCanStart(rule, peek().kind);
-    };
-    if (predicted("local_parameter_declaration")) {
+    const bool before_design = !block_stack_.back().statement_phase;
+    if (before_design && at(TK::LocalParamKeyword)) {
       beginGrammar({"local_parameter_declaration"});
       while (!at(TK::EndOfFile) && !at(TK::Semicolon) &&
              !matchingOpenFrame(peek().kind) &&
@@ -3457,12 +3453,12 @@ class SVParser {
       }
       return;
     }
-    if (predicted("design_statement")) {
+    if (before_design && at(TK::DesignKeyword)) {
       const AnnexState item = parseAnnexItem({"design_statement"});
       block_stack_.back().statement_phase = item.complete();
       return;
     }
-    static_cast<void>(parseAnnexItem(roots));
+    static_cast<void>(parseAnnexItem(grammarRoots()));
   }
 
   auto parsePrimitiveBlock() -> void {
@@ -3502,12 +3498,11 @@ class SVParser {
   }
 
   auto parseUdpBodyItem() -> void {
-    const auto roots = grammarRoots();
-    const AnnexState selector(roots);
-    const auto predicted = [&](std::string_view rule) {
-      return selector.hasActiveRule(rule) && annexCanStart(rule, peek().kind);
-    };
-    if (predicted("udp_port_declaration")) {
+    const auto& body = block_stack_.back();
+    const bool before_table = !body.statement_phase;
+    if (before_table && !body.udp_ansi_header && !body.udp_initial_seen &&
+        (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+         at(TK::RegKeyword))) {
       const AnnexState item = parseAnnexItem({"udp_port_declaration"});
       if (item.complete()) {
         auto& udp = block_stack_.back();
@@ -3516,12 +3511,12 @@ class SVParser {
       }
       return;
     }
-    if (predicted("udp_initial_statement")) {
+    if (before_table && !body.udp_initial_seen && at(TK::InitialKeyword)) {
       const AnnexState item = parseAnnexItem({"udp_initial_statement"});
       block_stack_.back().udp_initial_seen = item.complete();
       return;
     }
-    if (predicted("combinational_body") || predicted("sequential_body")) {
+    if (before_table && at(TK::TableKeyword)) {
       consumeInto(line_);  // table
       addLine();
       const bool sequential = block_stack_.back().udp_initial_seen;
@@ -3549,7 +3544,7 @@ class SVParser {
       block_stack_.back().statement_phase = table_closed;
       return;
     }
-    static_cast<void>(parseAnnexItem(roots));
+    static_cast<void>(parseAnnexItem(grammarRoots()));
   }
 
   auto parseStructuralBlock(TK closeKw) -> void {
