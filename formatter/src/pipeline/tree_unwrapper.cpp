@@ -4996,33 +4996,50 @@ class SVParser {
   auto parseCase(bool generate) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool randcase = at(TK::RandCaseKeyword);
-    consumeInto(line_);  // case / casex / casez / randcase
-    std::string_view body_rule = randcase ? "randcase_item"
-                                      : generate ? "case_generate_item"
-                                                 : "case_item";
-    if (!randcase) {
-      if (!at(TK::OpenParenthesis)) {
-        recordGrammarFallback("case requires '(' in Annex A");
-        recoverMalformedItem(saved);
-        return;
+    const std::string_view rule =
+        randcase ? "randcase_statement"
+                 : generate ? "case_generate_construct" : "case_statement";
+    beginGrammar({rule});
+    const auto active_body = [&]() -> std::string_view {
+      if (!randcase && !generate &&
+          (at(TK::InsideKeyword) || at(TK::MatchesKeyword))) {
+        return {};
       }
-      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                            generate ? "constant_expression" : "case_expression",
-                            line_);
-      if (line_.tokens.empty() ||
-          line_.tokens.back().kind != TK::CloseParenthesis) {
-        recordGrammarFallback("incomplete Annex A case expression");
-        recoverMalformedItem(saved);
-        return;
+      for (const std::string_view child :
+           {"case_item", "case_pattern_item", "case_inside_item",
+            "randcase_item", "case_generate_item"}) {
+        if (grammar_scopes_.back().allPathsHaveActiveRule(child)) return child;
       }
-    }
-    if (!randcase && !generate &&
-        (at(TK::InsideKeyword) || at(TK::MatchesKeyword))) {
-      body_rule =
-          at(TK::InsideKeyword) ? "case_inside_item" : "case_pattern_item";
+      return {};
+    };
+    while (!at(TK::EndOfFile) && active_body().empty() &&
+           !grammar_scopes_.back().complete()) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_)) {
+          break;
+        }
+        continue;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!grammar_scopes_.back().accepts(peek().kind)) break;
       consumeInto(line_);
     }
+    const std::string_view body_rule = active_body();
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted ||
+        (body_rule.empty() && !header.complete())) {
+      recordGrammarFallback("invalid Annex A case header");
+      recoverMalformedItem(saved);
+      return;
+    }
     addLine();
+    if (header.complete()) return;
 
     pushOpenFrame(TK::EndCaseKeyword);
     block_stack_.back().grammar_body = body_rule;
