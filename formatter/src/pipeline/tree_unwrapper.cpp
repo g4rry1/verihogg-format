@@ -2189,7 +2189,11 @@ class SVParser {
       case TK::CoverGroupKeyword:
       case TK::PropertyKeyword:
       case TK::SequenceKeyword:
+      case TK::ConstraintKeyword:
         return parsePackageOrGenerateDeclarationRule();
+      case TK::StaticKeyword:
+        return at(TK::ConstraintKeyword, 1) &&
+               parsePackageOrGenerateDeclarationRule();
       case TK::VirtualKeyword:
         return at(TK::ClassKeyword, 1) &&
                parsePackageOrGenerateDeclarationRule();
@@ -3115,7 +3119,7 @@ class SVParser {
       }
       if (root == "constraint_block_item" ||
           root == "constraint_expression") {
-        if (parseConstraintConditionalRule()) return true;
+        if (parseConstraintExpressionRule()) return true;
       }
       if (root == "rs_production") {
         parseRsProductionRule();
@@ -4262,16 +4266,18 @@ class SVParser {
     parseIndentedStatement({"constraint_expression"});
   }
 
-  // The if and foreach alternatives of constraint_expression contain one or
-  // two constraint_set children. Keep their header chart live up to the
-  // child boundary, then call that production directly.
-  auto parseConstraintConditionalRule() -> bool {
-    if (!at(TK::IfKeyword) && !at(TK::ForeachKeyword)) return false;
+  // constraint_expression has leaf alternatives and three alternatives that
+  // enter constraint_set: expression '->', if, and foreach. Advance its
+  // chart only until a child starts, then call that production directly.
+  auto parseConstraintExpressionRule() -> bool {
+    if (!annexCanStart("constraint_expression", peek().kind)) return false;
     const LeafCheckpoint saved = leafCheckpoint();
     const bool has_else = at(TK::IfKeyword);
     beginGrammar({"constraint_expression"});
     while (!at(TK::EndOfFile) &&
-           !grammar_scopes_.back().hasActiveRule("constraint_set")) {
+           !grammar_scopes_.back().hasActiveRule("constraint_set") &&
+           !(grammar_scopes_.back().complete() &&
+             !grammar_scopes_.back().accepts(peek().kind))) {
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
         if (!parseAnnexConditional(TK::EndOfFile, header_ended,
@@ -4289,9 +4295,13 @@ class SVParser {
     }
     const AnnexState prefix = endGrammar(false);
     if (prefix.failed || prefix.interrupted ||
-        !prefix.hasActiveRule("constraint_set")) {
-      recordGrammarFallback("invalid Annex A constraint conditional header");
+        (!prefix.complete() && !prefix.hasActiveRule("constraint_set"))) {
+      recordGrammarFallback("invalid Annex A constraint expression");
       recoverMalformedItem(saved);
+      return true;
+    }
+    if (!prefix.hasActiveRule("constraint_set")) {
+      addLine();
       return true;
     }
     addLine();
