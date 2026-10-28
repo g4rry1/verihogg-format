@@ -2464,6 +2464,40 @@ TEST_F(TreeUnwrapperTest, MalformedUniquePrefixRecoversAtOuterBlock) {
   EXPECT_TRUE(found_after);
 }
 
+TEST_F(TreeUnwrapperTest, ModuleCommonLeafRulesKeepTheirContexts) {
+  const auto result = parseWithDiagnostics(
+      "module m; wire a, b; assign a = b; alias a = b; "
+      "initial begin assign a = b; end endmodule "
+      "program p; assign a = b; endprogram");
+  EXPECT_TRUE(result.warnings.empty());
+  size_t assignments = 0;
+  bool found_alias = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    assignments += line.tokens.front().kind == TK::AssignKeyword;
+    found_alias |= line.tokens.front().kind == TK::AliasKeyword;
+  }
+  EXPECT_EQ(assignments, 3U);
+  EXPECT_TRUE(found_alias);
+}
+
+TEST_F(TreeUnwrapperTest, BindRuleFailureRecoversAtModuleClose) {
+  const auto result = parseWithDiagnostics(
+      "module m; bind m child u(); endmodule "
+      "program p; assign a = b; endprogram");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  bool found_program = false;
+  bool found_assignment = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_program |= line.tokens.front().kind == TK::ProgramKeyword;
+    found_assignment |= line.tokens.front().kind == TK::AssignKeyword;
+  }
+  EXPECT_TRUE(found_program);
+  EXPECT_TRUE(found_assignment);
+}
+
 TEST_F(TreeUnwrapperTest, RepeatedCaseBlocksKeepAnnexAItemsIndependent) {
   std::string source = "module m; always_comb begin case (sel) ";
   for (int i = 0; i < 120; ++i) {

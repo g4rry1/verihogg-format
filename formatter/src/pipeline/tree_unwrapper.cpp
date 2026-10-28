@@ -1419,7 +1419,8 @@ class SVParser {
   }
 
   auto parseGrammarLeaf(bool recover_to_outer = false,
-                        std::optional<LeafCheckpoint> checkpoint = {}) -> void {
+                        std::optional<LeafCheckpoint> checkpoint = {},
+                        bool stop_at_complete_semicolon = false) -> void {
     const LeafCheckpoint saved = checkpoint.value_or(leafCheckpoint());
     const size_t start = saved.pos;
     bool aggregate_type = false;
@@ -1473,6 +1474,11 @@ class SVParser {
         if (indent_level_ > 0) --indent_level_;
       }
       consumeInto(line_);
+      if (stop_at_complete_semicolon && kind == TK::Semicolon &&
+          grammar_scopes_.back().complete()) {
+        addLine();
+        return;
+      }
       if (constraint_block && kind == TK::OpenBrace) {
         if (constraint_braces++ == 0) {
           addLine();
@@ -2180,6 +2186,32 @@ class SVParser {
     return true;
   }
 
+  // module_common_item has distinct leading terminals for these three leaf
+  // productions. Program and checker items include continuous_assign, but
+  // neither includes net_alias or bind_directive.
+  auto parseModuleCommonLeafRule(bool continuous_only = false) -> bool {
+    const auto parse_leaf = [&](std::string_view rule) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      const AnnexState item = parseAnnexItem({rule}, true);
+      if (item.failed || item.interrupted || !item.complete()) {
+        recoverMalformedItem(saved);
+      }
+    };
+    if (at(TK::AssignKeyword)) {
+      parse_leaf("continuous_assign");
+      return true;
+    }
+    if (!continuous_only && at(TK::AliasKeyword)) {
+      parse_leaf("net_alias");
+      return true;
+    }
+    if (!continuous_only && at(TK::BindKeyword)) {
+      parse_leaf("bind_directive");
+      return true;
+    }
+    return false;
+  }
+
   // statement_item ::= ... | case_statement | conditional_statement |
   // loop_statement | par_block | seq_block | randcase_statement | ... .
   // These alternatives have distinct leading terminals. Leaf alternatives
@@ -2331,7 +2363,7 @@ class SVParser {
           return true;
       }
       if (root == "module_item" || root == "non_port_module_item") {
-        if (parseModuleItemRule() ||
+        if (parseModuleItemRule() || parseModuleCommonLeafRule() ||
             parsePackageOrGenerateDeclarationRule() ||
             parseGenerateConstructRule()) return true;
         if (at(TK::ClockingKeyword)) {
@@ -2372,11 +2404,13 @@ class SVParser {
       }
       if (root == "interface_item" || root == "program_item" ||
           root == "generate_item") {
+        if (parseModuleCommonLeafRule(root == "program_item")) return true;
         if (parsePackageOrGenerateDeclarationRule() ||
             parseGenerateConstructRule()) return true;
       }
       if (root == "checker_or_generate_item") {
-        if (parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
+        if (parseModuleCommonLeafRule(true) ||
+            parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
             parseProceduralConstructRule(true)) return true;
       }
       if (root == "package_item") {
@@ -3411,9 +3445,10 @@ class SVParser {
     parseOpaqueBlock(closeKw);
   }
 
-  auto parseAnnexItem(std::vector<std::string_view> rules) -> AnnexState {
+  auto parseAnnexItem(std::vector<std::string_view> rules,
+                      bool stop_at_complete_semicolon = false) -> AnnexState {
     beginGrammar(std::move(rules));
-    parseGrammarLeaf();
+    parseGrammarLeaf(false, {}, stop_at_complete_semicolon);
     return endGrammar();
   }
 
