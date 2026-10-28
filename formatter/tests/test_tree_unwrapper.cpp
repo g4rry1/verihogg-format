@@ -2465,6 +2465,38 @@ TEST_F(TreeUnwrapperTest, NestedCaseBodyResumesAtNextAnnexAItem) {
   EXPECT_TRUE(found_next_item);
 }
 
+TEST_F(TreeUnwrapperTest, NestedCaseAcrossDirectiveKeepsItemBoundaries) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin case (a) 0: begin\n"
+      "`ifdef X\ncase (b)\n1: x = 1;\n2: x = 2;\nendcase\n`endif\n"
+      "end endcase end endmodule");
+  size_t case_headers = 0;
+  size_t case_items = 0;
+  size_t case_closes = 0;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    case_headers += line.tokens.front().kind == TK::CaseKeyword;
+    case_items += line.tokens.size() >= 2 &&
+                  line.tokens[0].kind == TK::IntegerLiteral &&
+                  line.tokens[1].kind == TK::Colon;
+    case_closes += line.tokens.front().kind == TK::EndCaseKeyword;
+  }
+  EXPECT_EQ(case_headers, 2U);
+  EXPECT_EQ(case_items, 3U);
+  EXPECT_EQ(case_closes, 2U);
+  EXPECT_TRUE(result.warnings.empty());
+}
+
+TEST_F(TreeUnwrapperTest, ConditionalCaseAlternativeWithNestedDirective) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin case (sel)\n"
+      "`ifdef A\n0: x = 0;\ndefault: begin\n"
+      "`ifdef B\ny = 1;\n`endif\nend\n"
+      "`else\ndefault: begin y = 2; end\n`endif\n"
+      "endcase end endmodule");
+  EXPECT_TRUE(result.warnings.empty());
+}
+
 TEST_F(TreeUnwrapperTest, RandcaseUsesAnnexAItems) {
   const auto result = parseWithDiagnostics(
       "module m; initial randcase 1: a = 0; "

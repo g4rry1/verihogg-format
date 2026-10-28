@@ -2352,6 +2352,19 @@ class SVParser {
       return;
     }
 
+    // parseBranch() enters through parseLevel(), even when a conditional
+    // directive is inside a case body. Keep each case item on its rule path
+    // instead of treating the entire item and its nested statement as a leaf.
+    if (!block_stack_.empty() &&
+        block_stack_.back().close_kind == TK::EndCaseKeyword) {
+      const auto roots = grammarRoots();
+      if (roots.size() == 1 &&
+          roots.front() == block_stack_.back().grammar_body) {
+        parseCaseItem();
+        return;
+      }
+    }
+
     // Consume complete Annex A attribute_instance prefixes before selecting
     // the construction they decorate. package_declaration stores these outside
     // package_item; other contexts validate them through their current root.
@@ -3875,7 +3888,7 @@ class SVParser {
         conditional_items |= isConditionalStartDirective(peek());
         parseStatement();
       } else {
-        parseCaseItem();
+        parseStatement();
         ++item_count;
       }
     }
