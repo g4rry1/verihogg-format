@@ -2481,6 +2481,28 @@ TEST_F(TreeUnwrapperTest, ModuleCommonLeafRulesKeepTheirContexts) {
   EXPECT_TRUE(found_alias);
 }
 
+TEST_F(TreeUnwrapperTest, ContinuousAssignmentResumesAcrossConditional) {
+  const auto result = parseWithDiagnostics(
+      "module m;\n"
+      "assign a = 1'b1\n"
+      "`ifdef USE_B\n"
+      "  & b\n"
+      "`endif\n"
+      ";\n"
+      "assign c = d;\n"
+      "endmodule\n");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t assignments = 0;
+  for (const auto& line : result.lines) {
+    if (!line.tokens.empty() && line.tokens.front().kind == TK::AssignKeyword) {
+      ++assignments;
+    }
+  }
+  EXPECT_EQ(assignments, 2U);
+}
+
 TEST_F(TreeUnwrapperTest, AnsiInterfaceAndProgramItemsCallTheirRules) {
   const auto result = parseWithDiagnostics(
       "interface bus(input logic clk); assign ready = clk; "
@@ -2501,6 +2523,28 @@ TEST_F(TreeUnwrapperTest, AnsiInterfaceAndProgramItemsCallTheirRules) {
   EXPECT_EQ(assignments, 2U);
   EXPECT_TRUE(found_interface_close);
   EXPECT_TRUE(found_program_close);
+}
+
+TEST_F(TreeUnwrapperTest, VirtualClassAndStaticConstraintUseDeclarationRules) {
+  const auto result = parseWithDiagnostics(
+      "package p; virtual class c; "
+      "static constraint valid { x > 0; } "
+      "virtual function int f(); return x; endfunction "
+      "endclass endpackage");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  bool found_constraint = false;
+  bool found_method = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() < 2) continue;
+    found_constraint |= line.tokens.front().kind == TK::StaticKeyword &&
+                        line.tokens[1].kind == TK::ConstraintKeyword;
+    found_method |= line.tokens.front().kind == TK::VirtualKeyword &&
+                    line.tokens[1].kind == TK::FunctionKeyword;
+  }
+  EXPECT_TRUE(found_constraint);
+  EXPECT_TRUE(found_method);
 }
 
 TEST_F(TreeUnwrapperTest, BindRuleFailureRecoversAtModuleClose) {

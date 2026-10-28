@@ -1461,6 +1461,15 @@ class SVParser {
         consumeUntilSemi();
         return;
       }
+      if (isConditionalStartDirective(peek()) && !grammar_scopes_.empty()) {
+        bool leaf_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, leaf_ended, indent_level_)) {
+          grammar_scopes_.back().interrupted = true;
+          consumeUntilSemi();
+          return;
+        }
+        continue;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -2091,6 +2100,9 @@ class SVParser {
       case TK::PropertyKeyword:
       case TK::SequenceKeyword:
         return parsePackageOrGenerateDeclarationRule();
+      case TK::VirtualKeyword:
+        return at(TK::ClassKeyword, 1) &&
+               parsePackageOrGenerateDeclarationRule();
       default:
         return false;
     }
@@ -2127,6 +2139,10 @@ class SVParser {
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
+    if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
+      parseNamedBlock(TK::EndClassKeyword);
+      return true;
+    }
     switch (peek().kind) {
       case TK::TaskKeyword:
         parseNamedBlock(TK::EndTaskKeyword);
@@ -2164,8 +2180,30 @@ class SVParser {
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
-    if (at(TK::ConstraintKeyword)) {
+    if (at(TK::ConstraintKeyword) ||
+        (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
       parseConstraintBlock();
+      return true;
+    }
+    if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
+      return parsePackageOrGenerateDeclarationRule();
+    }
+    const TK method_kind = peek(1).kind;
+    if ((at(TK::VirtualKeyword) || at(TK::StaticKeyword) ||
+         at(TK::ProtectedKeyword) || at(TK::LocalKeyword)) &&
+        (method_kind == TK::FunctionKeyword || method_kind == TK::TaskKeyword)) {
+      beginGrammar({"method_qualifier"});
+      consumeInto(line_);
+      const AnnexState qualifier = endGrammar();
+      if (qualifier.failed || qualifier.interrupted ||
+          !qualifier.completed("method_qualifier")) {
+        recordGrammarFallback("invalid Annex A class method qualifier");
+        consumeUntilSemi();
+        return true;
+      }
+      parseNamedBlock(method_kind == TK::FunctionKeyword
+                          ? TK::EndFunctionKeyword
+                          : TK::EndTaskKeyword);
       return true;
     }
     switch (peek().kind) {
@@ -2218,23 +2256,20 @@ class SVParser {
   // productions. Program and checker items include continuous_assign, but
   // neither includes net_alias or bind_directive.
   auto parseModuleCommonLeafRule(bool continuous_only = false) -> bool {
-    const auto parse_leaf = [&](std::string_view rule) {
-      const LeafCheckpoint saved = leafCheckpoint();
-      const AnnexState item = parseAnnexItem({rule}, true);
-      if (item.failed || item.interrupted || !item.complete()) {
-        recoverMalformedItem(saved);
-      }
-    };
     if (at(TK::AssignKeyword)) {
-      parse_leaf("continuous_assign");
+      static_cast<void>(parseAnnexItem({"continuous_assign"}, true));
       return true;
     }
     if (!continuous_only && at(TK::AliasKeyword)) {
-      parse_leaf("net_alias");
+      static_cast<void>(parseAnnexItem({"net_alias"}, true));
       return true;
     }
     if (!continuous_only && at(TK::BindKeyword)) {
-      parse_leaf("bind_directive");
+      const LeafCheckpoint saved = leafCheckpoint();
+      const AnnexState item = parseAnnexItem({"bind_directive"}, true);
+      if (item.failed || item.interrupted || !item.complete()) {
+        recoverMalformedItem(saved);
+      }
       return true;
     }
     return false;
