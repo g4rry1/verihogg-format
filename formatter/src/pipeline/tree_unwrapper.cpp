@@ -2148,7 +2148,7 @@ class SVParser {
     if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
         parseNettypeDeclarationRule() || parseNetDeclarationRule() ||
         parseParameterOverrideRule() ||
-        parseAssertPropertyStatementRule() || parseModuleCommonLeafRule() ||
+        parseConcurrentAssertionRule() || parseModuleCommonLeafRule() ||
         parsePackageOrGenerateDeclarationRule() ||
         parseGenerateConstructRule()) {
       return true;
@@ -2441,7 +2441,7 @@ class SVParser {
                                "clocking_declaration", "clocking_item");
       return true;
     }
-    return parseAssertPropertyStatementRule() ||
+    return parseConcurrentAssertionRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
            parseGenerateConstructRule();
@@ -2468,7 +2468,7 @@ class SVParser {
                                "clocking_declaration", "clocking_item");
       return true;
     }
-    return parseAssertPropertyStatementRule() ||
+    return parseConcurrentAssertionRule() ||
            parseModuleCommonLeafRule(true) ||
            parsePackageOrGenerateDeclarationRule() ||
            parseGenerateConstructRule();
@@ -2492,7 +2492,7 @@ class SVParser {
                                "clocking_declaration", "clocking_item");
       return true;
     }
-    return parseAssertPropertyStatementRule() ||
+    return parseConcurrentAssertionRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
            parseGenerateConstructRule();
@@ -2502,7 +2502,7 @@ class SVParser {
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseBuiltInDataDeclarationRule())
       return true;
-    return parseAssertPropertyStatementRule() ||
+    return parseConcurrentAssertionRule() ||
            parseModuleCommonLeafRule(true) ||
            parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
            parseProceduralConstructRule(true);
@@ -2579,8 +2579,18 @@ class SVParser {
   // continue through their local Annex A rule below.
   auto parseStatementItemRule() -> bool {
     switch (peek().kind) {
+      case TK::At:
+      case TK::Hash:
+      case TK::DoubleHash:
+        parseProceduralTimingControlStatementRule();
+        return true;
       case TK::AssertKeyword:
+      case TK::AssumeKeyword:
         return parseAssertPropertyStatementRule();
+      case TK::CoverKeyword:
+        return parseCoverAssertionRule();
+      case TK::ExpectKeyword:
+        return parseExpectPropertyStatementRule();
       case TK::BeginKeyword:
         parseBeginEnd(TK::EndKeyword);
         return true;
@@ -2607,9 +2617,99 @@ class SVParser {
       case TK::RandSequenceKeyword:
         parseRandsequenceStatement();
         return true;
+      case TK::WaitKeyword:
+      case TK::WaitOrderKeyword:
+        return parseWaitStatementRule();
       default:
         return false;
     }
+  }
+
+  // procedural_timing_control_statement ::= procedural_timing_control
+  // statement_or_null. The control is one Annex A child; the body calls the
+  // statement production while output lines are emitted from this pass.
+  auto parseProceduralTimingControlStatementRule() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"procedural_timing_control_statement"});
+    const bool control = consumeAnnexRule("procedural_timing_control", line_);
+    const AnnexState prefix = endGrammar(false);
+    if (!control || prefix.failed || prefix.interrupted ||
+        !prefix.hasActiveRule("statement_or_null")) {
+      recordGrammarFallback("invalid Annex A procedural timing control");
+      recoverMalformedItem(saved);
+      return;
+    }
+    const bool compound =
+        at(TK::BeginKeyword) || at(TK::ForkKeyword) || at(TK::IfKeyword) ||
+        at(TK::CaseKeyword) || at(TK::CaseXKeyword) ||
+        at(TK::CaseZKeyword) || at(TK::ForKeyword) ||
+        at(TK::ForeachKeyword) || at(TK::WhileKeyword) ||
+        at(TK::RepeatKeyword) || at(TK::ForeverKeyword) || at(TK::DoKeyword);
+    if (compound) {
+      addLine();
+      parseIndentedStatement({"statement_or_null"});
+    } else {
+      grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
+      parseStatement();
+      grammar_contexts_.pop_back();
+    }
+  }
+
+  // wait_statement ::= wait '(' expression ')' statement_or_null |
+  // wait fork ';' | wait_order '(' identifier-list ')' action_block.
+  auto parseWaitStatementRule() -> bool {
+    if (at(TK::WaitOrderKeyword)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      beginGrammar({"wait_statement"});
+      while (!at(TK::EndOfFile) &&
+             !grammar_scopes_.back().hasActiveRule("action_block")) {
+        if (isConditionalStartDirective(peek())) {
+          bool header_ended = true;
+          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                     indent_level_))
+            break;
+          continue;
+        }
+        if (isCompilerDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+          continue;
+        }
+        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        consumeInto(line_);
+      }
+      const AnnexState prefix = endGrammar(false);
+      if (prefix.failed || prefix.interrupted ||
+          !prefix.hasActiveRule("action_block")) {
+        recordGrammarFallback("invalid Annex A wait_order header");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      parseActionBlockRule();
+      return true;
+    }
+    if (!at(TK::WaitKeyword)) return false;
+    if (!at(TK::OpenParenthesis, 1)) {
+      static_cast<void>(parseAnnexItem({"wait_statement"}));
+      return true;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"wait_statement"});
+    consumeInto(line_);  // wait
+    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                          "expression", line_);
+    const AnnexState prefix = endGrammar(false);
+    if (prefix.failed || prefix.interrupted ||
+        !prefix.hasActiveRule("statement_or_null") ||
+        line_.tokens.empty() ||
+        line_.tokens.back().kind != TK::CloseParenthesis) {
+      recordGrammarFallback("invalid Annex A wait condition");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    addLine();
+    parseIndentedStatement({"statement_or_null"});
+    return true;
   }
 
   // conditional_statement and case_statement both start with the Annex A
@@ -2725,7 +2825,7 @@ class SVParser {
         if (parseStatementItemRule()) return true;
       }
       if (root == "concurrent_assertion_statement") {
-        if (parseAssertPropertyStatementRule()) return true;
+        if (parseConcurrentAssertionRule()) return true;
       }
       if (root == "statement_item") {
         if (parseQualifiedStatementRule() || parseStatementItemRule())
@@ -3102,8 +3202,11 @@ class SVParser {
                can_begin("loop_generate_construct")) {
       parseLoop(can_begin("loop_generate_construct") &&
                 !can_begin("loop_statement"));
-    } else if (continues_as("assert_property_statement", 2)) {
-      static_cast<void>(parseAssertPropertyStatementRule());
+    } else if (continues_as("assert_property_statement", 2) ||
+               continues_as("assume_property_statement", 2) ||
+               continues_as("cover_property_statement", 2) ||
+               continues_as("cover_sequence_statement", 2)) {
+      static_cast<void>(parseConcurrentAssertionRule());
     } else if (first == TK::Identifier) {
       parseIdentifierItem();
     } else if (const auto block = blockSpec(first);
@@ -3138,51 +3241,130 @@ class SVParser {
     grammar_contexts_.pop_back();
   }
 
+  // action_block ::= statement_or_null |
+  // [ statement ] 'else' statement_or_null. A recursive statement call owns
+  // any nested else before this production considers its own else.
+  auto parseActionBlockRule() -> void {
+    const bool null_before_else = at(TK::Semicolon);
+    if (!at(TK::ElseKeyword)) {
+      grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
+      parseStatement();
+      grammar_contexts_.pop_back();
+    }
+    if (!at(TK::ElseKeyword)) return;
+    if (null_before_else) {
+      recordGrammarFallback("Annex A action_block requires a statement before else");
+    }
+    consumeInto(line_);
+    grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
+    parseStatement();
+    grammar_contexts_.pop_back();
+  }
+
+  // concurrent_assertion_statement ::= assert_property_statement |
+  // assume_property_statement | cover_property_statement |
+  // cover_sequence_statement | restrict_property_statement.
+  auto parseConcurrentAssertionRule() -> bool {
+    return parseAssertPropertyStatementRule() || parseCoverAssertionRule();
+  }
+
   auto parseAssertPropertyStatementRule() -> bool {
-    if (!at(TK::AssertKeyword) || !at(TK::PropertyKeyword, 1)) return false;
+    if ((!at(TK::AssertKeyword) && !at(TK::AssumeKeyword)) ||
+        !at(TK::PropertyKeyword, 1))
+      return false;
     const LeafCheckpoint saved = leafCheckpoint();
-    beginGrammar({"assert_property_statement"});
-    consumeInto(line_);  // assert
+    const std::string_view rule = at(TK::AssertKeyword)
+                                      ? "assert_property_statement"
+                                      : "assume_property_statement";
+    beginGrammar({rule});
+    consumeInto(line_);  // assert / assume
     consumeInto(line_);  // property
     const AnnexState header = endGrammar(false);
     if (header.failed || header.interrupted ||
-        !header.hasViableRule("assert_property_statement") ||
+        !header.hasViableRule(rule) ||
         !at(TK::OpenParenthesis)) {
-      recordGrammarFallback("invalid Annex A assert property header");
+      recordGrammarFallback("invalid Annex A property assertion header");
       recoverMalformedItem(saved);
       return true;
     }
     consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                           "property_spec", line_);
-
-    if (at(TK::Semicolon)) {
-      consumeInto(line_);
-      addLine();
+    if (line_.tokens.empty() ||
+        line_.tokens.back().kind != TK::CloseParenthesis) {
+      recordGrammarFallback("incomplete Annex A property assertion");
+      recoverMalformedItem(saved);
       return true;
     }
+    parseActionBlockRule();
+    return true;
+  }
 
-    if (at(TK::EndOfFile) || (stop_at_conditional_boundary_ &&
-                              isConditionalBoundaryDirective(peek()))) {
-      addLine();
-      return true;
+  // The property_spec / sequence_expr alternatives may have long shared
+  // prefixes. Keep their local Annex A chart live until it expects the
+  // statement_or_null child, then call that child directly.
+  auto parseCoverAssertionRule() -> bool {
+    if (!at(TK::CoverKeyword) ||
+        (!at(TK::PropertyKeyword, 1) && !at(TK::SequenceKeyword, 1))) {
+      return false;
     }
-
-    if (!at(TK::ElseKeyword) && !at(TK::EndOfFile)) {
-      grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
-      parseStatement();
-      grammar_contexts_.pop_back();
-    }
-
-    if (at(TK::ElseKeyword) && grammarAllows(TK::ElseKeyword)) {
-      consumeInto(line_);
-      if (at(TK::EndOfFile)) {
-        addLine();
-        return true;
+    const LeafCheckpoint saved = leafCheckpoint();
+    const std::string_view rule = at(TK::PropertyKeyword, 1)
+                                      ? "cover_property_statement"
+                                      : "cover_sequence_statement";
+    beginGrammar({rule});
+    while (!at(TK::EndOfFile) &&
+           !grammar_scopes_.back().hasActiveRule("statement_or_null")) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_))
+          break;
+        continue;
       }
-      grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
-      parseStatement();
-      grammar_contexts_.pop_back();
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      consumeInto(line_);
     }
+    const AnnexState prefix = endGrammar(false);
+    if (prefix.failed || prefix.interrupted ||
+        !prefix.hasActiveRule("statement_or_null")) {
+      recordGrammarFallback("invalid Annex A cover assertion header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
+    parseStatement();
+    grammar_contexts_.pop_back();
+    return true;
+  }
+
+  // expect_property_statement ::= 'expect' '(' property_spec ')' action_block.
+  auto parseExpectPropertyStatementRule() -> bool {
+    if (!at(TK::ExpectKeyword)) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"expect_property_statement"});
+    consumeInto(line_);
+    if (!at(TK::OpenParenthesis)) {
+      static_cast<void>(endGrammar(false));
+      recordGrammarFallback("invalid Annex A expect header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                          "property_spec", line_);
+    const AnnexState prefix = endGrammar(false);
+    if (prefix.failed || prefix.interrupted ||
+        !prefix.hasActiveRule("action_block") || line_.tokens.empty() ||
+        line_.tokens.back().kind != TK::CloseParenthesis) {
+      recordGrammarFallback("incomplete Annex A expect property");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    parseActionBlockRule();
     return true;
   }
 
