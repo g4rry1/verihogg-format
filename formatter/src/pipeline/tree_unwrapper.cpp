@@ -110,6 +110,32 @@ struct Production {
          sets.terminals[static_cast<size_t>(rule)].contains(terminal);
 }
 
+// The importer gives the optional super.new part of the constructor its own
+// helper production. Find it through the parent production so this parser
+// does not duplicate the syntax of that part of Annex A.
+[[nodiscard]] auto annexConstructorSuperRule() -> std::string_view {
+  static const std::string_view rule = []() -> std::string_view {
+    const int constructor = annexRule("class_constructor_declaration");
+    const int super = annexTerminal(TK::SuperKeyword);
+    if (constructor < 0 || super < 0) return {};
+    for (const auto& parent : kProductions) {
+      if (parent.left != constructor) continue;
+      for (size_t i = 0; i < parent.count; ++i) {
+        const int child = kSymbols[parent.offset + i];
+        if (child < 0) continue;
+        for (const auto& production : kProductions) {
+          if (production.left == child && production.count > 0 &&
+              kSymbols[production.offset] == -super - 1) {
+            return kRuleNames[child];
+          }
+        }
+      }
+    }
+    return {};
+  }();
+  return rule;
+}
+
 struct AnnexItem {
   uint16_t production;
   uint16_t dot;
@@ -2486,7 +2512,8 @@ class SVParser {
   }
 
   // class_constructor_declaration places its optional super.new call after
-  // block_item_declaration and before function_statement_or_null.
+  // block_item_declaration and before function_statement_or_null. Parse the
+  // imported helper production for that call, including its argument form.
   auto parseConstructorSuperRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     if (block_stack_.back().statement_phase) {
@@ -2494,32 +2521,18 @@ class SVParser {
       recoverMalformedItem(saved);
       return;
     }
-    consumeInto(line_);  // super
-    consumeInto(line_);  // .
-    consumeInto(line_);  // new
-    bool valid = true;
-    if (at(TK::OpenParenthesis)) {
-      consumeInto(line_);
-      if (at(TK::DefaultKeyword)) {
-        consumeInto(line_);
-      } else if (!at(TK::CloseParenthesis)) {
-        valid = consumeAnnexUntil(TK::CloseParenthesis, TK::EndOfFile,
-                                  {"list_of_arguments"}, line_);
-      }
-      if (at(TK::CloseParenthesis)) {
-        consumeInto(line_);
-      } else {
-        valid = false;
-      }
-    }
-    if (valid && at(TK::Semicolon)) {
-      consumeInto(line_);
-      addLine();
-      block_stack_.back().statement_phase = true;
+    const std::string_view rule = annexConstructorSuperRule();
+    if (rule.empty()) {
+      recordGrammarFallback("constructor super production absent from Annex A");
+      recoverMalformedItem(saved);
       return;
     }
-    recordGrammarFallback("invalid Annex A constructor super.new call");
-    recoverMalformedItem(saved);
+    beginGrammar({rule});
+    parseGrammarLeaf(true, saved, true);
+    const AnnexState call = endGrammar();
+    if (!call.failed && !call.interrupted && call.complete()) {
+      block_stack_.back().statement_phase = true;
+    }
   }
 
   // class_item contains class methods, nested classes, constraints and
@@ -4588,17 +4601,24 @@ class SVParser {
   auto parseStructuralBlock(TK closeKw) -> void {
     std::vector<std::string_view> roots;
     std::string_view body_rule;
+    std::string_view declaration_rule;
     switch (closeKw) {
       case TK::EndModuleKeyword:
-        roots = {"module_ansi_header", "module_nonansi_header"};
+        roots = {"module_ansi_header", "module_nonansi_header",
+                 "module_declaration"};
+        declaration_rule = "module_declaration";
         body_rule = "module_item";
         break;
       case TK::EndInterfaceKeyword:
-        roots = {"interface_ansi_header", "interface_nonansi_header"};
+        roots = {"interface_ansi_header", "interface_nonansi_header",
+                 "interface_declaration"};
+        declaration_rule = "interface_declaration";
         body_rule = "interface_item";
         break;
       case TK::EndProgramKeyword:
-        roots = {"program_ansi_header", "program_nonansi_header"};
+        roots = {"program_ansi_header", "program_nonansi_header",
+                 "program_declaration"};
+        declaration_rule = "program_declaration";
         body_rule = "program_item";
         break;
       case TK::EndPackageKeyword:
@@ -4617,7 +4637,10 @@ class SVParser {
       // The header chart ends the header, including any package imports. A
       // semicolon inside an import cannot be mistaken for the body boundary.
       while (!at(closeKw) && !at(TK::EndOfFile) &&
-             !grammar_scopes_.back().complete()) {
+             !grammar_scopes_.back().complete() &&
+             (declaration_rule.empty() ||
+              !grammar_scopes_.back().consumedTerminalInRule(
+                  declaration_rule, TK::Semicolon))) {
         if (isConditionalStartDirective(peek())) {
           bool header_ended = true;
           if (!parseAnnexConditional(TK::EndOfFile, header_ended,
@@ -4675,7 +4698,13 @@ class SVParser {
       parseDelimitedBody(closeKw, body_rule);
       return;
     }
-    const AnnexState header = endGrammar();
+    const AnnexState header = endGrammar(false);
+    if (!header.complete() &&
+        (declaration_rule.empty() ||
+         !header.consumedTerminalInRule(declaration_rule, TK::Semicolon)) &&
+        !header.interrupted) {
+      recordGrammarFallback("header outside Annex A declaration");
+    }
     if (closeKw == TK::EndModuleKeyword &&
         header.completed("module_ansi_header") &&
         !header.completed("module_nonansi_header")) {
