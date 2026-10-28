@@ -2288,10 +2288,26 @@ class SVParser {
     }
   }
 
-  // class_constructor_declaration has its own header and body production;
-  // 'function new' is distinct from function_declaration in Annex A.
+  // class_constructor_declaration has its own header and body production.
+  // A local Annex A prefix distinguishes 'function new' and
+  // 'function class_scope new' from function_declaration.
   auto parseClassConstructorRule() -> bool {
-    if (!at(TK::FunctionKeyword) || !at(TK::NewKeyword, 1)) return false;
+    if (!at(TK::FunctionKeyword)) return false;
+    AnnexState candidate({"class_constructor_declaration"});
+    bool constructor_name = false;
+    for (size_t offset = 0; pos_ + offset < tokens_.size(); ++offset) {
+      const TK kind = peek(offset).kind;
+      if (isCompilerDirective(peek(offset)) ||
+          !candidate.accepts(kind)) break;
+      candidate.advance(peek(offset));
+      if (kind == TK::NewKeyword &&
+          candidate.hasViableRule("class_constructor_declaration")) {
+        constructor_name = true;
+        break;
+      }
+      if (kind == TK::Semicolon) break;
+    }
+    if (!constructor_name) return false;
     beginGrammar({"class_constructor_declaration"});
     consumeGrammarHeader(TK::EndFunctionKeyword,
                          {"class_constructor_declaration"});
@@ -2341,10 +2357,13 @@ class SVParser {
         // A pure virtual method can be a prototype ending in ';'. Its
         // declaration/prototype choice remains with the full item grammar.
         if (next == TK::PureKeyword) break;
-        if ((next == TK::FunctionKeyword || next == TK::TaskKeyword) &&
-            method.hasActiveRule(next == TK::FunctionKeyword
-                                     ? "function_declaration"
-                                     : "task_declaration")) {
+        const bool method_body =
+            (next == TK::FunctionKeyword &&
+             (method.hasActiveRule("function_declaration") ||
+              method.hasActiveRule("class_constructor_declaration"))) ||
+            (next == TK::TaskKeyword &&
+             method.hasActiveRule("task_declaration"));
+        if (method_body) {
           beginGrammar({"class_method"});
           for (size_t i = 0; i < prefix; ++i) consumeInto(line_);
           const AnnexState qualifier = endGrammar(false);
@@ -2354,9 +2373,11 @@ class SVParser {
             consumeUntilSemi();
             return true;
           }
-          parseNamedBlock(next == TK::FunctionKeyword
-                              ? TK::EndFunctionKeyword
-                              : TK::EndTaskKeyword);
+          if (!parseClassConstructorRule()) {
+            parseNamedBlock(next == TK::FunctionKeyword
+                                ? TK::EndFunctionKeyword
+                                : TK::EndTaskKeyword);
+          }
           return true;
         }
         if (!method.accepts(next)) break;
