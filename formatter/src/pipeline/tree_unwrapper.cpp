@@ -2608,6 +2608,51 @@ class SVParser {
       addLine();
       return true;
     }
+    // The second alternative is a nettype alias. A bare user type has the
+    // same two-identifier spelling and follows the same line boundary.
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (token.kind == TK::WithKeyword || token.kind == TK::Hash ||
+          isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    if (at(TK::Identifier, 1) &&
+        (at(TK::Identifier, 2) || at(TK::DoubleColon, 2))) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);  // nettype
+      bool valid = true;
+      if (at(TK::DoubleColon, 1)) {
+        beginGrammar({"package_scope", "class_scope"});
+        while (!at(TK::EndOfFile)) {
+          const auto& scope = grammar_scopes_.back();
+          if (scope.complete() && at(TK::Identifier) &&
+              at(TK::Identifier, 1) && at(TK::Semicolon, 2))
+            break;
+          if (scope.complete() && !scope.accepts(peek().kind)) break;
+          if (!scope.accepts(peek().kind)) break;
+          consumeInto(line_);
+        }
+        const AnnexState scope = endGrammar(false);
+        valid = !scope.failed && !scope.interrupted && scope.complete();
+      }
+      if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
+      if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
+      if (!valid || !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A nettype alias");
+        recoverMalformedLeaf(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
     return true;
   }
@@ -2943,15 +2988,58 @@ class SVParser {
     return true;
   }
 
+  auto parsePackageImportExportRule() -> bool {
+    if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
+        at(TK::StringLiteral, 1))
+      return false;
+    const bool import = at(TK::ImportKeyword);
+    const auto rule = import ? "package_import_declaration"
+                             : "package_export_declaration";
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({rule}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);
+    bool valid = true;
+    if (!import && at(TK::Star)) {
+      consumeInto(line_);
+      if (at(TK::DoubleColon)) consumeInto(line_);
+      else valid = false;
+      if (valid && at(TK::Star)) consumeInto(line_);
+      else valid = false;
+    } else {
+      do {
+        if (at(TK::Comma)) consumeInto(line_);
+        valid = consumeAnnexRule("package_import_item", line_,
+                                 TK::Comma);
+      } while (valid && at(TK::Comma));
+    }
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A package import or export");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
     if (parseClassConstructorRule()) return true;
     if (parseDpiDeclarationRule()) return true;
     if (at(TK::ImportKeyword)) {
-      static_cast<void>(
-          parseAnnexItem({"dpi_import_export", "data_declaration"}, true));
-      return true;
+      return parsePackageImportExportRule();
     }
     if (at(TK::ExportKeyword)) {
       static_cast<void>(parseAnnexItem({"dpi_import_export"}, true));
@@ -3572,9 +3660,7 @@ class SVParser {
     if (parseAnonymousProgramRule()) return true;
     if (at(TK::ExportKeyword)) {
       if (parseDpiDeclarationRule()) return true;
-      static_cast<void>(parseAnnexItem(
-          {"package_export_declaration", "dpi_import_export"}, true));
-      return true;
+      return parsePackageImportExportRule();
     }
     return parseParameterDeclarationRule() ||
            parseTypeDeclarationRule() ||
