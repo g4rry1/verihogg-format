@@ -2504,6 +2504,81 @@ class SVParser {
 
   auto parseNettypeDeclarationRule() -> bool {
     if (!at(TK::NetTypeKeyword)) return false;
+    const bool explicit_type =
+        at(TK::BitKeyword, 1) || at(TK::ByteKeyword, 1) ||
+        at(TK::CHandleKeyword, 1) || at(TK::EnumKeyword, 1) ||
+        at(TK::EventKeyword, 1) || at(TK::IntKeyword, 1) ||
+        at(TK::IntegerKeyword, 1) || at(TK::LogicKeyword, 1) ||
+        at(TK::LongIntKeyword, 1) || at(TK::RealKeyword, 1) ||
+        at(TK::RealTimeKeyword, 1) || at(TK::RegKeyword, 1) ||
+        at(TK::ShortIntKeyword, 1) || at(TK::ShortRealKeyword, 1) ||
+        at(TK::StringKeyword, 1) || at(TK::StructKeyword, 1) ||
+        at(TK::TimeKeyword, 1) || at(TK::UnionKeyword, 1);
+    if (explicit_type) {
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        const auto& token = tokens_[i];
+        if (isConditionalStartDirective(token) ||
+            token.kind == TK::MacroUsage ||
+            (token.kind == TK::Directive &&
+             !isCompilerDirective(token))) {
+          static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
+          return true;
+        }
+        if (token.kind == TK::Semicolon ||
+            token.kind == TK::EndOfFile)
+          break;
+      }
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);  // nettype
+      if (!consumeAnnexRule("data_type", line_) ||
+          !consumeAnnexRule("nettype_identifier", line_)) {
+        recordGrammarFallback("invalid Annex A nettype declaration");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      if (at(TK::WithKeyword)) {
+        consumeInto(line_);
+        if ((at(TK::Identifier) && at(TK::DoubleColon, 1)) ||
+            at(TK::UnitSystemName)) {
+          beginGrammar({"package_scope", "class_scope"});
+          while (!at(TK::EndOfFile)) {
+            const auto& grammar = grammar_scopes_.back();
+            // class_scope can also accept the resolver as another class name.
+            // The final identifier before ';' belongs to tf_identifier.
+            if (grammar.complete() && at(TK::Identifier) &&
+                at(TK::Semicolon, 1))
+              break;
+            if (isCompilerDirective(peek())) {
+              addLine();
+              parseDirectiveLine();
+              continue;
+            }
+            if (grammar.complete() && !grammar.accepts(peek().kind)) break;
+            if (!grammar.accepts(peek().kind)) break;
+            consumeInto(line_);
+          }
+          const AnnexState scope = endGrammar(false);
+          if (scope.failed || scope.interrupted || !scope.complete()) {
+            recordGrammarFallback("invalid Annex A nettype resolver scope");
+            recoverMalformedItem(saved);
+            return true;
+          }
+        }
+        if (!consumeAnnexRule("tf_identifier", line_)) {
+          recordGrammarFallback("invalid Annex A nettype resolver");
+          recoverMalformedItem(saved);
+          return true;
+        }
+      }
+      if (!at(TK::Semicolon)) {
+        recordGrammarFallback("missing Annex A nettype semicolon");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
     return true;
   }
