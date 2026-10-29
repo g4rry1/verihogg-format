@@ -3529,6 +3529,15 @@ class SVParser {
   // continue through their local Annex A rule below.
   auto parseStatementItemRule() -> bool {
     switch (peek().kind) {
+      case TK::ReturnKeyword:
+      case TK::BreakKeyword:
+      case TK::ContinueKeyword:
+        return parseJumpStatementRule();
+      case TK::DisableKeyword:
+        return parseDisableStatementRule();
+      case TK::MinusArrow:
+      case TK::MinusDoubleArrow:
+        return parseEventTriggerRule();
       case TK::At:
       case TK::Hash:
       case TK::DoubleHash:
@@ -3576,6 +3585,85 @@ class SVParser {
       default:
         return false;
     }
+  }
+
+  auto parseJumpStatementRule() -> bool {
+    if (!at(TK::ReturnKeyword) && !at(TK::BreakKeyword) &&
+        !at(TK::ContinueKeyword)) {
+      return false;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    const bool returns = at(TK::ReturnKeyword);
+    consumeInto(line_);
+    if (returns && !at(TK::Semicolon) &&
+        !consumeAnnexRule("expression", line_, TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A return expression");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A jump semicolon");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  auto parseDisableStatementRule() -> bool {
+    if (!at(TK::DisableKeyword)) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);
+    if (at(TK::ForkKeyword)) {
+      consumeInto(line_);
+    } else if (!consumeAnnexRule("hierarchical_task_identifier", line_)) {
+      recordGrammarFallback("invalid Annex A disable target");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A disable semicolon");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  auto parseEventTriggerRule() -> bool {
+    if (!at(TK::MinusArrow) && !at(TK::MinusDoubleArrow))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    const bool delayed = at(TK::MinusDoubleArrow);
+    consumeInto(line_);
+    if (delayed && (at(TK::Hash) || at(TK::At) ||
+                    at(TK::RepeatKeyword)) &&
+        !consumeAnnexRule("delay_or_event_control", line_)) {
+      recordGrammarFallback("invalid Annex A delayed event trigger");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (!consumeAnnexRule("hierarchical_event_identifier", line_)) {
+      recordGrammarFallback("invalid Annex A event trigger target");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if ((at(TK::Dot) || at(TK::OpenBracket)) &&
+        !consumeAnnexRule("nonrange_select", line_)) {
+      recordGrammarFallback("invalid Annex A event trigger select");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A event trigger semicolon");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   // procedural_timing_control_statement ::= procedural_timing_control
