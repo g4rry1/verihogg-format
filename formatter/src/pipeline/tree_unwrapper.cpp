@@ -3902,21 +3902,87 @@ class SVParser {
     }
   }
 
+  auto parseTfPortDeclarationRule() -> bool {
+    const bool direction = at(TK::InputKeyword) ||
+                           at(TK::OutputKeyword) ||
+                           at(TK::InOutKeyword) || at(TK::RefKeyword) ||
+                           (at(TK::ConstKeyword) &&
+                            at(TK::RefKeyword, 1));
+    if (!direction) return false;
+    size_t offset = at(TK::ConstKeyword) ? 2 : 1;
+    if (at(TK::StaticKeyword, offset) &&
+        (at(TK::RefKeyword) || at(TK::ConstKeyword)))
+      ++offset;
+    if (at(TK::VarKeyword, offset)) ++offset;
+    const auto explicit_type = [](TK kind) {
+      switch (kind) {
+        case TK::BitKeyword:
+        case TK::ByteKeyword:
+        case TK::CHandleKeyword:
+        case TK::EnumKeyword:
+        case TK::EventKeyword:
+        case TK::IntKeyword:
+        case TK::IntegerKeyword:
+        case TK::LogicKeyword:
+        case TK::LongIntKeyword:
+        case TK::RealKeyword:
+        case TK::RealTimeKeyword:
+        case TK::RegKeyword:
+        case TK::ShortIntKeyword:
+        case TK::ShortRealKeyword:
+        case TK::StringKeyword:
+        case TK::StructKeyword:
+        case TK::TimeKeyword:
+        case TK::UnionKeyword:
+          return true;
+        default:
+          return false;
+      }
+    };
+    if (!explicit_type(peek(offset).kind)) {
+      static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
+      return true;
+    }
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = consumeAnnexRule("tf_port_direction", line_);
+    if (valid && at(TK::VarKeyword)) consumeInto(line_);
+    if (valid) valid = consumeAnnexRule("data_type_or_implicit", line_);
+    if (valid)
+      valid = consumeAnnexRule("list_of_tf_variable_identifiers", line_,
+                               TK::Semicolon);
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A task or function port");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   auto parseBlockOrTfItemDeclarationRule(bool allow_tf_port) -> bool {
     if (parseParameterDeclarationRule()) return true;
     if (at(TK::ImportKeyword)) {
+      if (parsePackageImportExportRule()) return true;
       static_cast<void>(parseAnnexItem({"data_declaration"}, true));
       return true;
     }
     if (at(TK::LetKeyword)) {
       return parseLetDeclarationRule();
     }
-    if (allow_tf_port &&
-        (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
-         at(TK::InOutKeyword) || at(TK::RefKeyword))) {
-      static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
-      return true;
-    }
+    if (allow_tf_port && parseTfPortDeclarationRule()) return true;
     return parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
            parseBuiltInDataDeclarationRule();
   }
