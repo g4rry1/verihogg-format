@@ -1231,6 +1231,38 @@ class SVParser {
     addLine();
   }
 
+  // An unexpanded macro inside a struct or union member makes that member's
+  // expression unavailable. Keep the rest of the aggregate in the fallback
+  // item so its closing brace cannot be mistaken for a sibling declaration.
+  auto recoverAggregateAfterMacro(int brace_depth) -> void {
+    while (!at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek())) &&
+           !matchingOpenFrame(peek().kind)) {
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      const TK kind = peek().kind;
+      if (kind == TK::CloseBrace && brace_depth == 1) {
+        addLine();
+        if (indent_level_ > 0) --indent_level_;
+      }
+      consumeInto(line_);
+      if (kind == TK::OpenBrace || kind == TK::ApostropheOpenBrace) {
+        ++brace_depth;
+      } else if (kind == TK::CloseBrace) {
+        --brace_depth;
+      }
+      if (kind == TK::Semicolon) {
+        addLine();
+        if (brace_depth == 0) return;
+      }
+    }
+    addLine();
+  }
+
   auto warnUnsupported(Token tok, std::string_view construct) -> void {
     warnings_.push_back({
         .location = tok.location(),
@@ -1494,6 +1526,12 @@ class SVParser {
       }
       if (at(TK::MacroUsage) ||
           (at(TK::Directive) && !isCompilerDirective(peek()))) {
+        if (aggregate_braces > 0) {
+          recordGrammarFallback("macro expansion unavailable inside aggregate");
+          grammar_scopes_.back().interrupted = true;
+          recoverAggregateAfterMacro(aggregate_braces);
+          return;
+        }
         consumeInto(line_);
         consumeUntilSemi();
         return;
