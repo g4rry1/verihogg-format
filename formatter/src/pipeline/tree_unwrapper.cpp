@@ -2361,6 +2361,7 @@ class SVParser {
         parseGenerateConstructRule()) {
       return true;
     }
+    if (parseStructuralInstantiationRule()) return true;
     if (parseClockingDeclarationRule()) return true;
     return parseProceduralConstructRule(true);
   }
@@ -2621,8 +2622,58 @@ class SVParser {
     if (!at(TK::ClockingKeyword) &&
         !(at(TK::GlobalKeyword) && at(TK::ClockingKeyword, 1)))
       return false;
-    parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                             "clocking_declaration", "clocking_item");
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage) {
+        parseAnnexDelimitedBlock(TK::EndClockingKeyword,
+                                 "clocking_declaration", "clocking_item");
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    const bool global = at(TK::GlobalKeyword);
+    if (global) consumeInto(line_);
+    consumeInto(line_);  // clocking
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (at(TK::Identifier)) {
+      if (!consumeAnnexRule("clocking_identifier", line_)) {
+        recordGrammarFallback("invalid Annex A clocking identifier");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+    }
+    if (!consumeAnnexRule("clocking_event", line_) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A clocking header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    if (global) {
+      pushOpenFrame(TK::EndClockingKeyword);
+      ++indent_level_;
+      while (isCompilerDirective(peek())) parseDirectiveLine();
+      if (!at(TK::EndClockingKeyword)) {
+        recordGrammarFallback("global clocking has no clocking_item body");
+        emitOpaque(pos_, findOuterBoundary(pos_));
+      }
+      if (at(TK::EndClockingKeyword)) parseOpenFrameClose();
+    } else {
+      parseDelimitedBody(TK::EndClockingKeyword, "clocking_item");
+    }
     return true;
   }
 
@@ -2830,6 +2881,7 @@ class SVParser {
     }
     if (parseProceduralConstructRule(true)) return true;
     if (parseClockingDeclarationRule()) return true;
+    if (parseStructuralInstantiationRule()) return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
@@ -2881,6 +2933,7 @@ class SVParser {
     }
     if (parseProceduralConstructRule(true)) return true;
     if (parseClockingDeclarationRule()) return true;
+    if (parseStructuralInstantiationRule()) return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
@@ -4020,6 +4073,72 @@ class SVParser {
       return true;
     }
     parseActionBlockRule();
+    return true;
+  }
+
+  // module_instantiation / interface_instantiation /
+  // program_instantiation ::= structural_identifier
+  // [ parameter_value_assignment ] hierarchical_instance
+  // { ',' hierarchical_instance } ';'. Shared identifier prefixes that do
+  // not have the instance shape stay with their local declaration chart.
+  auto parseStructuralInstantiationRule() -> bool {
+    if (!at(TK::Identifier) ||
+        !(at(TK::Hash, 1) ||
+          (at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2)))) {
+      return false;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (!consumeAnnexRule("module_identifier", line_)) {
+      recordGrammarFallback("invalid Annex A module identifier");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (at(TK::Hash)) {
+      beginGrammar({"parameter_value_assignment"});
+      consumeInto(line_);
+      static_cast<void>(parseParenthesizedListInto(line_));
+      const AnnexState parameters = endGrammar();
+      if (parameters.failed || parameters.interrupted ||
+          !parameters.complete()) {
+        recordGrammarFallback("invalid Annex A parameter assignment");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+    }
+    do {
+      beginGrammar({"hierarchical_instance"});
+      const bool named = consumeAnnexRule("name_of_instance", line_);
+      if (named && at(TK::OpenParenthesis))
+        static_cast<void>(parseParenthesizedListInto(line_));
+      const AnnexState instance = endGrammar();
+      if (!named || instance.failed || instance.interrupted ||
+          !instance.complete()) {
+        recordGrammarFallback("invalid Annex A hierarchical instance");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+      addLine();
+      skip_directives();
+    } while (true);
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A module instantiation semicolon");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
     return true;
   }
 
