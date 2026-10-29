@@ -2516,11 +2516,36 @@ class SVParser {
       case TK::StructKeyword:
       case TK::TimeKeyword:
       case TK::UnionKeyword:
-        static_cast<void>(parseAnnexItem({"data_declaration"}, true));
-        return true;
+        break;
       default:
         return false;
     }
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"data_declaration"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (!consumeAnnexRule("data_type_or_implicit", line_) ||
+        !consumeAnnexRule("list_of_variable_decl_assignments", line_,
+                          TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A built-in data declaration");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   auto parseNetDeclarationRule() -> bool {
