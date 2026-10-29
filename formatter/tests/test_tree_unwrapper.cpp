@@ -2272,6 +2272,14 @@ TEST_F(TreeUnwrapperTest, ClassConstraintHeaderResumesAfterConditional) {
   expectTokenConservation(result.lines);
 }
 
+TEST_F(TreeUnwrapperTest, ExternConstraintHeaderKeepsFinalIdentifier) {
+  const auto result = parseWithDiagnostics(
+      "class outer; class inner; rand int x; endclass endclass "
+      "constraint outer::inner::positive { x > 0; }");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
 TEST_F(TreeUnwrapperTest, ConstraintIfConditionResumesAfterDirective) {
   const auto result = parseWithDiagnostics(
       "class c; constraint r { if (\n"

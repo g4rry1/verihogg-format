@@ -4710,6 +4710,66 @@ class SVParser {
     return true;
   }
 
+  // extern_constraint_declaration ::= [static] constraint
+  //   [dynamic_override_specifiers] class_scope constraint_identifier
+  //   constraint_block. A class_scope can extend through another '::'; the
+  // identifier followed by the block brace belongs to constraint_identifier.
+  [[nodiscard]] auto parseExternConstraintHeaderRule() -> bool {
+    if (at(TK::StaticKeyword)) consumeInto(line_);
+    if (!at(TK::ConstraintKeyword)) return false;
+    consumeInto(line_);
+    while (isCompilerDirective(peek()) &&
+           !isConditionalStartDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+    if (at(TK::Colon) &&
+        !consumeAnnexRule("dynamic_override_specifiers", line_,
+                          TK::Identifier)) {
+      return false;
+    }
+    beginGrammar({"class_scope"});
+    while (!at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      const auto& scope = grammar_scopes_.back();
+      if (scope.complete() && at(TK::Identifier)) {
+        size_t next = pos_ + 1;
+        while (next < tokens_.size() &&
+               isCompilerDirective(tokens_[next]) &&
+               !isConditionalStartDirective(tokens_[next])) {
+          ++next;
+        }
+        if (next < tokens_.size() &&
+            tokens_[next].kind == TK::OpenBrace) {
+          break;
+        }
+      }
+      if (scope.complete() && !scope.accepts(peek().kind)) break;
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!scope.accepts(peek().kind)) break;
+      consumeInto(line_);
+    }
+    const AnnexState scope = endGrammar(false);
+    if (scope.failed || scope.interrupted || !scope.complete() ||
+        !consumeAnnexRule("constraint_identifier", line_)) {
+      return false;
+    }
+    while (isCompilerDirective(peek()) &&
+           !isConditionalStartDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+    if (!at(TK::OpenBrace)) return false;
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   [[nodiscard]] auto conditionalInConstraintHeader() const -> bool {
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const Token token = tokens_[i];
@@ -4738,6 +4798,11 @@ class SVParser {
       } else {
         opened = true;
       }
+    } else if (roots.size() == 1 &&
+               roots.front() == "extern_constraint_declaration" &&
+               !conditionalInConstraintHeader()) {
+      opened = parseExternConstraintHeaderRule();
+      invalid = !opened;
     } else {
       beginGrammar(std::move(roots));
       while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
