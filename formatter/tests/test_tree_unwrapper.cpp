@@ -2242,6 +2242,15 @@ TEST_F(TreeUnwrapperTest, ConstraintForeachCallsArrayAndLoopRules) {
   EXPECT_TRUE(found_foreach);
 }
 
+TEST_F(TreeUnwrapperTest, ConstraintExpressionCallsDistAndSetRules) {
+  const auto result = parseWithDiagnostics(
+      "class c; rand int x; constraint r { "
+      "soft x > 0; x dist {[0:3] := 1, 4 :/ 2}; "
+      "(x > 0) -> x < 10; } endclass");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
 TEST_F(TreeUnwrapperTest, ConstraintIfConditionResumesAfterDirective) {
   const auto result = parseWithDiagnostics(
       "class c; constraint r { if (\n"

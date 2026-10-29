@@ -4468,10 +4468,55 @@ class SVParser {
     return true;
   }
 
-  // constraint_expression has leaf alternatives and three alternatives that
-  // enter constraint_set. Parse the distinct keyword alternatives by their
-  // productions; the chart still handles expression-led alternatives.
+  // Conditional compilation can split a keyword from the rest of its
+  // production. Retain the live grammar continuation for that case.
+  auto parseConditionalConstraintExpressionRule() -> bool {
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"constraint_expression"});
+    while (!at(TK::EndOfFile) &&
+           !grammar_scopes_.back().hasActiveRule("constraint_set") &&
+           !(grammar_scopes_.back().complete() &&
+             !grammar_scopes_.back().accepts(peek().kind))) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_))
+          break;
+        continue;
+      }
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      consumeInto(line_);
+    }
+    const AnnexState prefix = endGrammar(false);
+    if (prefix.failed || prefix.interrupted ||
+        (!prefix.complete() && !prefix.hasActiveRule("constraint_set"))) {
+      recordGrammarFallback("invalid Annex A constraint expression");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (!prefix.hasActiveRule("constraint_set")) {
+      addLine();
+      return true;
+    }
+    addLine();
+    if (!parseConstraintSetRule()) recoverMalformedItem(saved);
+    return true;
+  }
+
+  // constraint_expression chooses its Annex A alternative while reading the
+  // source, then calls the corresponding child production.
   auto parseConstraintExpressionRule() -> bool {
+    if ((at(TK::IfKeyword) || at(TK::ForeachKeyword) ||
+         at(TK::UniqueKeyword) || at(TK::SoftKeyword) ||
+         at(TK::DisableKeyword)) &&
+        isConditionalStartDirective(peek(1))) {
+      return parseConditionalConstraintExpressionRule();
+    }
     if (at(TK::ForeachKeyword) &&
         !isConditionalStartDirective(peek(1))) {
       const LeafCheckpoint saved = leafCheckpoint();
@@ -4594,39 +4639,35 @@ class SVParser {
     }
     if (!annexCanStart("constraint_expression", peek().kind)) return false;
     const LeafCheckpoint saved = leafCheckpoint();
-    beginGrammar({"constraint_expression"});
-    while (!at(TK::EndOfFile) &&
-           !grammar_scopes_.back().hasActiveRule("constraint_set") &&
-           !(grammar_scopes_.back().complete() &&
-             !grammar_scopes_.back().accepts(peek().kind))) {
-      if (isConditionalStartDirective(peek())) {
-        bool header_ended = true;
-        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_))
-          break;
-        continue;
-      }
-      if (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-        continue;
-      }
-      if (!grammar_scopes_.back().accepts(peek().kind)) break;
-      consumeInto(line_);
-    }
-    const AnnexState prefix = endGrammar(false);
-    if (prefix.failed || prefix.interrupted ||
-        (!prefix.complete() && !prefix.hasActiveRule("constraint_set"))) {
+    const bool soft = at(TK::SoftKeyword);
+    if (soft) consumeInto(line_);
+    if (!consumeAnnexRule("expression", line_, TK::MinusArrow)) {
       recordGrammarFallback("invalid Annex A constraint expression");
       recoverMalformedItem(saved);
       return true;
     }
-    if (!prefix.hasActiveRule("constraint_set")) {
+    if (!soft && at(TK::MinusArrow)) {
+      consumeInto(line_);
       addLine();
+      if (!parseConstraintSetRule()) recoverMalformedItem(saved);
       return true;
     }
+    if (at(TK::DistKeyword)) {
+      consumeInto(line_);
+      if (!at(TK::OpenBrace)) {
+        recordGrammarFallback("invalid Annex A distribution constraint");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace, "dist_list", line_);
+    }
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A constraint semicolon");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
     addLine();
-    if (!parseConstraintSetRule()) recoverMalformedItem(saved);
     return true;
   }
 
