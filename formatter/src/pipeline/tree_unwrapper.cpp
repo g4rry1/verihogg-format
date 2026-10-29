@@ -3544,6 +3544,41 @@ class SVParser {
     return true;
   }
 
+  auto parseExternTfDeclarationRule() -> bool {
+    if (!at(TK::ExternKeyword) ||
+        (!at(TK::FunctionKeyword, 1) &&
+         !at(TK::TaskKeyword, 1) &&
+         !at(TK::ForkJoinKeyword, 1)))
+      return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"extern_tf_declaration"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // extern
+    const bool forkjoin = at(TK::ForkJoinKeyword);
+    if (forkjoin) consumeInto(line_);
+    const bool valid = consumeAnnexRule(
+        forkjoin ? "task_prototype" : "method_prototype", line_,
+        TK::Semicolon);
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A extern task or function");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   auto parseInterfaceItemRule(bool allow_port_declaration) -> bool {
     if (parseTimeunitsRule()) return true;
     if (parseDefaultClockingOrDisableRule(false)) return true;
@@ -3560,12 +3595,7 @@ class SVParser {
     if (at(TK::ModPortKeyword)) {
       return parseModportDeclarationRule();
     }
-    if (at(TK::ExternKeyword) &&
-        (at(TK::FunctionKeyword, 1) || at(TK::TaskKeyword, 1) ||
-         at(TK::ForkJoinKeyword, 1))) {
-      static_cast<void>(parseAnnexItem({"extern_tf_declaration"}, true));
-      return true;
-    }
+    if (parseExternTfDeclarationRule()) return true;
     if (at(TK::InterfaceKeyword) && !at(TK::ClassKeyword, 1)) {
       parseStructuralBlock(TK::EndInterfaceKeyword);
       return true;
@@ -3677,7 +3707,29 @@ class SVParser {
     if (parseParameterDeclarationRule() || parseTypeDeclarationRule())
       return true;
     if (at(TK::PureKeyword) && at(TK::VirtualKeyword, 1)) {
-      static_cast<void>(parseAnnexItem({"interface_class_method"}, true));
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        const auto& token = tokens_[i];
+        if (isConditionalStartDirective(token) ||
+            token.kind == TK::MacroUsage ||
+            (token.kind == TK::Directive &&
+             !isCompilerDirective(token))) {
+          static_cast<void>(parseAnnexItem({"interface_class_method"}, true));
+          return true;
+        }
+        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+          break;
+      }
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);  // pure
+      consumeInto(line_);  // virtual
+      if (!consumeAnnexRule("method_prototype", line_, TK::Semicolon) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A interface class method");
+        recoverMalformedLeaf(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
       return true;
     }
     return false;
