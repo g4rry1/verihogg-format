@@ -5264,6 +5264,179 @@ class SVParser {
     return false;
   }
 
+  // The ANSI header may omit list_of_port_declarations entirely. For that
+  // production, parse each child directly and enter non_port_*_item.
+  [[nodiscard]] auto parsePortlessStructuralHeaderRule(TK closeKw) -> bool {
+    size_t identifier_offset = 1;
+    if (at(TK::StaticKeyword, identifier_offset) ||
+        at(TK::AutomaticKeyword, identifier_offset)) {
+      ++identifier_offset;
+    }
+    if (!at(TK::Identifier, identifier_offset) ||
+        !at(TK::Semicolon, identifier_offset + 1)) {
+      return false;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    std::string_view identifier_rule;
+    switch (closeKw) {
+      case TK::EndModuleKeyword:
+        identifier_rule = "module_identifier";
+        break;
+      case TK::EndInterfaceKeyword:
+        identifier_rule = "interface_identifier";
+        break;
+      case TK::EndProgramKeyword:
+        identifier_rule = "program_identifier";
+        break;
+      default:
+        return false;
+    }
+    consumeInto(line_);
+    bool valid = true;
+    if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword))
+      valid = consumeAnnexRule("lifetime", line_);
+    valid = valid && consumeAnnexRule(identifier_rule, line_);
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A structural header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    const std::string_view body_rule =
+        closeKw == TK::EndModuleKeyword
+            ? "non_port_module_item"
+            : closeKw == TK::EndInterfaceKeyword
+                  ? "non_port_interface_item"
+                  : "non_port_program_item";
+    parseDelimitedBody(closeKw, body_rule);
+    return true;
+  }
+
+  [[nodiscard]] auto parseStructuralHeaderRule(TK closeKw) -> bool {
+    // Conditional branches and unavailable macro expansions can change the
+    // header production. They keep the existing interrupted chart path.
+    int parens = 0;
+    bool import_segment = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          isConditionalBoundaryDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
+        return false;
+      }
+      if (token.kind == TK::OpenParenthesis) ++parens;
+      if (token.kind == TK::CloseParenthesis) --parens;
+      if (token.kind == TK::OpenParenthesis &&
+          i + 2 < tokens_.size() && tokens_[i + 1].kind == TK::Dot &&
+          tokens_[i + 2].kind == TK::Star) {
+        return false;
+      }
+      if (parens == 0 && token.kind == TK::ImportKeyword)
+        import_segment = true;
+      if (parens == 0 && token.kind == TK::Semicolon) {
+        if (!import_segment) break;
+        import_segment = false;
+      }
+      if (token.kind == closeKw || token.kind == TK::EndOfFile)
+        return false;
+    }
+
+    const LeafCheckpoint saved = leafCheckpoint();
+    std::string_view identifier_rule;
+    std::string_view body_rule;
+    std::string_view non_port_body_rule;
+    switch (closeKw) {
+      case TK::EndModuleKeyword:
+        identifier_rule = "module_identifier";
+        body_rule = "module_item";
+        non_port_body_rule = "non_port_module_item";
+        break;
+      case TK::EndInterfaceKeyword:
+        identifier_rule = "interface_identifier";
+        body_rule = "interface_item";
+        non_port_body_rule = "non_port_interface_item";
+        break;
+      case TK::EndProgramKeyword:
+        identifier_rule = "program_identifier";
+        body_rule = "program_item";
+        non_port_body_rule = "non_port_program_item";
+        break;
+      default:
+        return false;
+    }
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    consumeInto(line_);  // module_keyword / interface / program
+    skip_directives();
+    if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) {
+      if (!consumeAnnexRule("lifetime", line_)) {
+        recordGrammarFallback("invalid Annex A structural lifetime");
+        recoverMalformedItem(saved);
+        return true;
+      }
+    }
+    skip_directives();
+    if (!consumeAnnexRule(identifier_rule, line_)) {
+      recordGrammarFallback("invalid Annex A structural identifier");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    skip_directives();
+    while (at(TK::ImportKeyword)) {
+      if (!consumeAnnexRule("package_import_declaration", line_)) {
+        recordGrammarFallback("invalid Annex A header package import");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+    }
+    if (at(TK::Hash)) {
+      beginGrammar({"parameter_port_list"});
+      consumeInto(line_);
+      static_cast<void>(parseParenthesizedListInto(line_, closeKw));
+      const AnnexState parameters = endGrammar();
+      if (parameters.failed || parameters.interrupted ||
+          !parameters.complete()) {
+        recordGrammarFallback("invalid Annex A parameter port list");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+    }
+    if (at(TK::OpenParenthesis)) {
+      beginGrammar({"list_of_ports", "list_of_port_declarations"});
+      static_cast<void>(parseParenthesizedListInto(line_, closeKw));
+      const AnnexState ports = endGrammar();
+      if (ports.failed || ports.interrupted || !ports.complete()) {
+        recordGrammarFallback("invalid Annex A structural port list");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      if (ports.completed("list_of_port_declarations") &&
+          !ports.completed("list_of_ports")) {
+        body_rule = non_port_body_rule;
+      }
+      skip_directives();
+    } else {
+      body_rule = non_port_body_rule;
+    }
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A structural header semicolon");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    parseDelimitedBody(closeKw, body_rule);
+    return true;
+  }
+
   auto parseStructuralBlock(TK closeKw) -> void {
     if (closeKw == TK::EndPackageKeyword &&
         !conditionalInPackageHeader()) {
@@ -5282,6 +5455,8 @@ class SVParser {
       parseDelimitedBody(closeKw, "package_item");
       return;
     }
+    if (parsePortlessStructuralHeaderRule(closeKw)) return;
+    if (parseStructuralHeaderRule(closeKw)) return;
     std::vector<std::string_view> roots;
     std::string_view body_rule;
     std::string_view declaration_rule;
