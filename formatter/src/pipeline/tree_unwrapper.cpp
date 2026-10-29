@@ -3792,19 +3792,13 @@ class SVParser {
       if (root == "timeunits_declaration" && parseTimeunitsRule())
         return true;
       if (root == "local_parameter_declaration") {
-        parseAnnexSemicolonItem(root);
-        return true;
+        if (parseParameterDeclarationRule()) return true;
       }
       if (root == "design_statement") {
-        const AnnexState item = parseAnnexItem({root});
-        if (!block_stack_.empty() &&
-            block_stack_.back().grammar_body == "config_body")
-          block_stack_.back().statement_phase = item.complete();
-        return true;
+        if (parseDesignStatementRule()) return true;
       }
       if (root == "config_rule_statement") {
-        static_cast<void>(parseAnnexItem({root}));
-        return true;
+        if (parseConfigRuleStatementRule()) return true;
       }
       if (root == "description" && block_stack_.empty()) {
         if (parseDescriptionRule()) return true;
@@ -5671,10 +5665,130 @@ class SVParser {
     }
   }
 
+  auto parseDesignStatementRule() -> bool {
+    if (!at(TK::DesignKeyword)) return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        const AnnexState item = parseAnnexItem({"design_statement"});
+        if (item.complete()) block_stack_.back().statement_phase = true;
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // design
+    bool valid = true;
+    while (valid && at(TK::Identifier)) {
+      if (at(TK::Dot, 1)) {
+        valid = consumeAnnexRule("library_identifier", line_);
+        if (!valid) break;
+        consumeInto(line_);
+      }
+      valid = consumeAnnexRule("cell_identifier", line_);
+    }
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A design statement");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    block_stack_.back().statement_phase = true;
+    return true;
+  }
+
+  auto parseConfigRuleStatementRule() -> bool {
+    std::string_view clause;
+    switch (peek().kind) {
+      case TK::DefaultKeyword:
+        clause = "default_clause";
+        break;
+      case TK::InstanceKeyword:
+        clause = "inst_clause";
+        break;
+      case TK::CellKeyword:
+        clause = "cell_clause";
+        break;
+      default:
+        return false;
+    }
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"config_rule_statement"}));
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (!consumeAnnexRule(clause, line_)) {
+      recordGrammarFallback("invalid Annex A config selector");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    const bool liblist = at(TK::LibListKeyword);
+    if (!liblist && !at(TK::UseKeyword)) {
+      recordGrammarFallback("missing Annex A config rule clause");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (!consumeAnnexRule(liblist ? "liblist_clause" : "use_clause",
+                          line_) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A config rule clause");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   auto parseConfigBlock() -> void {
-    beginGrammar({"config_declaration"});
-    consumeGrammarHeader(TK::EndConfigKeyword, {"config_declaration"});
-    static_cast<void>(endGrammar(false));
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool interrupted_header = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        interrupted_header = true;
+        break;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    if (interrupted_header) {
+      beginGrammar({"config_declaration"});
+      consumeGrammarHeader(TK::EndConfigKeyword, {"config_declaration"});
+      static_cast<void>(endGrammar(false));
+    } else {
+      consumeInto(line_);  // config
+      if (!consumeAnnexRule("config_identifier", line_) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A config header");
+        recoverMalformedItem(saved);
+        return;
+      }
+      consumeInto(line_);
+      addLine();
+    }
     pushOpenFrame(TK::EndConfigKeyword);
     block_stack_.back().grammar_body = "config_body";
     ++indent_level_;
