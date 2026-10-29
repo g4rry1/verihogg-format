@@ -2188,6 +2188,88 @@ TEST_F(TreeUnwrapperTest, ConstraintItemsAndDirectivesResumeAtOuterClose) {
   EXPECT_TRUE(resumed);
 }
 
+TEST_F(TreeUnwrapperTest, NestedConstraintIfAndUniqueUseChildRules) {
+  const auto result = parseWithDiagnostics(
+      "class c; rand int x; constraint r { "
+      "if (x > 0) { x < 10; } else if (x < 0) x > -10; "
+      "unique {x, [0:3]}; } endclass");
+  EXPECT_TRUE(result.warnings.empty());
+  expectTokenConservation(result.lines);
+  bool found_if = false;
+  bool found_else = false;
+  bool found_unique = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_if |= line.tokens.front().kind == TK::IfKeyword;
+    found_else |= line.tokens.front().kind == TK::ElseKeyword;
+    found_unique |= line.tokens.front().kind == TK::UniqueKeyword;
+  }
+  EXPECT_TRUE(found_if);
+  EXPECT_TRUE(found_else);
+  EXPECT_TRUE(found_unique);
+}
+
+TEST_F(TreeUnwrapperTest, SolveBeforeUsesConstraintPrimaryLists) {
+  const auto result = parseWithDiagnostics(
+      "class c; rand int a, b, c; constraint order { "
+      "solve a, b before c; disable soft c; c > 0; } endclass");
+  EXPECT_TRUE(result.warnings.empty());
+  expectTokenConservation(result.lines);
+  bool found_solve = false;
+  bool found_disable = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_solve |= line.tokens.front().kind == TK::SolveKeyword &&
+                   line.tokens.back().kind == TK::Semicolon;
+    found_disable |= line.tokens.front().kind == TK::DisableKeyword &&
+                     line.tokens.back().kind == TK::Semicolon;
+  }
+  EXPECT_TRUE(found_solve);
+  EXPECT_TRUE(found_disable);
+}
+
+TEST_F(TreeUnwrapperTest, ConstraintForeachCallsArrayAndLoopRules) {
+  const auto result = parseWithDiagnostics(
+      "class c; rand int a[4]; constraint r { "
+      "foreach (a[i]) { a[i] > 0; } } endclass");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+  bool found_foreach = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_foreach |= line.tokens.front().kind == TK::ForeachKeyword;
+  }
+  EXPECT_TRUE(found_foreach);
+}
+
+TEST_F(TreeUnwrapperTest, ConstraintIfConditionResumesAfterDirective) {
+  const auto result = parseWithDiagnostics(
+      "class c; constraint r { if (\n"
+      "`ifdef USE_X\n"
+      "x\n"
+      "`else\n"
+      "y\n"
+      "`endif\n"
+      ") x > 0; } endclass");
+  EXPECT_TRUE(result.warnings.empty());
+  expectTokenConservation(result.lines);
+}
+
+TEST_F(TreeUnwrapperTest, MissingConstraintSetRecoversAtOuterBrace) {
+  const auto result = parseWithDiagnostics(
+      "class c; constraint r { if (x > 0) { x < 10; } else } "
+      "endclass module next; endmodule");
+  ASSERT_EQ(result.warnings.size(), 1U);
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  expectTokenConservation(result.lines);
+  bool found_module = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    found_module |= line.tokens.front().kind == TK::ModuleKeyword;
+  }
+  EXPECT_TRUE(found_module);
+}
+
 TEST_F(TreeUnwrapperTest, UnknownTextSkipsNestedBeginBeforeOuterEnd) {
   auto result = parseWithDiagnostics(
       "module m;\n"

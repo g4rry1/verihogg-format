@@ -1049,12 +1049,15 @@ class SVParser {
   }
 
   [[nodiscard]] auto consumeAnnexRule(std::string_view rule,
-                                      Line& line) -> bool {
+                                      Line& line,
+                                      std::optional<TK> stop = std::nullopt)
+      -> bool {
     beginGrammar({rule});
     while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
                                    isConditionalBoundaryDirective(peek()))) {
       const auto& grammar = grammar_scopes_.back();
-      if (grammar.complete() && !grammar.accepts(peek().kind)) {
+      if (grammar.complete() &&
+          ((stop && at(*stop)) || !grammar.accepts(peek().kind))) {
         static_cast<void>(endGrammar());
         return true;
       }
@@ -1435,6 +1438,10 @@ class SVParser {
           isConditionalBoundaryDirective(tokens_[i]) &&
           cleanLineStart(i, start)) {
         return i;
+      }
+      if (kind == TK::OpenBrace || kind == TK::ApostropheOpenBrace) {
+        nested.push_back(TK::CloseBrace);
+        continue;
       }
       if (auto block = recoveryBlockSpec(i)) {
         nested.push_back(block->close_kind);
@@ -3280,8 +3287,10 @@ class SVParser {
       if (root == "interface_class_item") {
         if (parseInterfaceClassItemRule()) return true;
       }
-      if (root == "constraint_block_item" ||
-          root == "constraint_expression") {
+      if (root == "constraint_block_item" &&
+          parseConstraintBlockItemRule())
+        return true;
+      if (root == "constraint_expression") {
         if (parseConstraintExpressionRule()) return true;
       }
       if (root == "rs_production") {
@@ -4415,29 +4424,176 @@ class SVParser {
   //                    '{' { constraint_expression } '}'. The braced form
   // enters the child production for each member, without holding a chart
   // across an arbitrarily large constraint body.
-  auto parseConstraintSetRule() -> void {
+  auto parseConstraintSetRule() -> bool {
+    if (at(TK::EndOfFile) ||
+        (stop_at_conditional_boundary_ &&
+         isConditionalBoundaryDirective(peek())) ||
+        std::ranges::any_of(block_stack_, [&](const BlockFrame& frame) {
+          return matchesBlockClose(frame.close_kind, peek().kind);
+        })) {
+      recordGrammarFallback("missing Annex A constraint set");
+      return false;
+    }
     if (at(TK::OpenBrace)) {
-      beginGrammar({"constraint_set"});
       consumeInto(line_);
-      const AnnexState prefix = endGrammar(false);
-      if (prefix.failed || prefix.interrupted ||
-          !prefix.hasViableRule("constraint_set")) {
-        recordGrammarFallback("invalid Annex A braced constraint set");
-      }
       addLine();
       parseDelimitedBody(TK::CloseBrace, "constraint_expression");
-      return;
+      return true;
     }
     parseIndentedStatement({"constraint_expression"});
+    return true;
+  }
+
+  // constraint_block_item ::= solve solve_before_list before
+  //                           solve_before_list ';' | constraint_expression.
+  auto parseConstraintBlockItemRule() -> bool {
+    if (!at(TK::SolveKeyword)) return parseConstraintExpressionRule();
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);
+    if (!consumeAnnexRule("solve_before_list", line_) ||
+        !at(TK::BeforeKeyword)) {
+      recordGrammarFallback("invalid Annex A solve before constraint");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    if (!consumeAnnexRule("solve_before_list", line_) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("incomplete Annex A solve before constraint");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   // constraint_expression has leaf alternatives and three alternatives that
-  // enter constraint_set: expression '->', if, and foreach. Advance its
-  // chart only until a child starts, then call that production directly.
+  // enter constraint_set. Parse the distinct keyword alternatives by their
+  // productions; the chart still handles expression-led alternatives.
   auto parseConstraintExpressionRule() -> bool {
+    if (at(TK::ForeachKeyword) &&
+        !isConditionalStartDirective(peek(1))) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+      if (!at(TK::OpenParenthesis)) {
+        recordGrammarFallback("invalid Annex A constraint foreach header");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      if (!consumeAnnexRule("ps_or_hierarchical_array_identifier", line_,
+                            TK::OpenBracket) ||
+          !at(TK::OpenBracket)) {
+        recordGrammarFallback("invalid Annex A constraint foreach array");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      if (!consumeAnnexRule("loop_variables", line_, TK::CloseBracket) ||
+          !at(TK::CloseBracket)) {
+        recordGrammarFallback("invalid Annex A constraint foreach variables");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+      if (!at(TK::CloseParenthesis)) {
+        recordGrammarFallback("incomplete Annex A constraint foreach header");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      if (!parseConstraintSetRule()) recoverMalformedItem(saved);
+      return true;
+    }
+    if (at(TK::DisableKeyword) && at(TK::SoftKeyword, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);
+      consumeInto(line_);
+      if (!consumeAnnexRule("constraint_primary", line_) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A disable soft constraint");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
+    if (at(TK::UniqueKeyword) &&
+        !isConditionalStartDirective(peek(1))) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+      if (!at(TK::OpenBrace)) {
+        recordGrammarFallback("invalid Annex A uniqueness constraint");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace, "range_list",
+                            line_);
+      if (line_.tokens.empty() ||
+          line_.tokens.back().kind != TK::CloseBrace ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("incomplete Annex A uniqueness constraint");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
+    if (at(TK::IfKeyword) &&
+        !isConditionalStartDirective(peek(1))) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+      if (!at(TK::OpenParenthesis)) {
+        recordGrammarFallback("invalid Annex A constraint if condition");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                            "expression", line_);
+      if (line_.tokens.empty() ||
+          line_.tokens.back().kind != TK::CloseParenthesis) {
+        recordGrammarFallback("incomplete Annex A constraint if condition");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      addLine();
+      if (!parseConstraintSetRule()) {
+        recoverMalformedItem(saved);
+        return true;
+      }
+      if (at(TK::ElseKeyword)) {
+        consumeInto(line_);
+        addLine();
+        if (!parseConstraintSetRule()) recoverMalformedItem(saved);
+      }
+      return true;
+    }
     if (!annexCanStart("constraint_expression", peek().kind)) return false;
     const LeafCheckpoint saved = leafCheckpoint();
-    const bool has_else = at(TK::IfKeyword);
     beginGrammar({"constraint_expression"});
     while (!at(TK::EndOfFile) &&
            !grammar_scopes_.back().hasActiveRule("constraint_set") &&
@@ -4470,12 +4626,7 @@ class SVParser {
       return true;
     }
     addLine();
-    parseConstraintSetRule();
-    if (has_else && at(TK::ElseKeyword)) {
-      consumeInto(line_);
-      addLine();
-      parseConstraintSetRule();
-    }
+    if (!parseConstraintSetRule()) recoverMalformedItem(saved);
     return true;
   }
 
