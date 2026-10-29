@@ -1533,6 +1533,35 @@ class SVParser {
     emitOpaque(saved.pos, findOuterBoundary(saved.pos));
   }
 
+  // A semicolon-terminated declaration can resume at its next sibling.
+  // Restore the checkpoint before emitting so every source token appears once.
+  auto recoverMalformedLeaf(const LeafCheckpoint& saved) -> void {
+    lines_.resize(saved.output_size);
+    line_ = saved.line;
+    preserved_source_end_ = saved.preserved_source_end;
+    indent_level_ = saved.indent_level;
+    pos_ = saved.pos;
+    ListDepth depth;
+    while (!at(TK::EndOfFile)) {
+      if (depth.topLevel() && at(TK::Semicolon)) {
+        consumeInto(line_);
+        break;
+      }
+      if (matchingOpenFrame(peek().kind) ||
+          (stop_at_conditional_boundary_ &&
+           isConditionalBoundaryDirective(peek())))
+        break;
+      if (depth.topLevel() && isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      advanceListDepth(depth, peek().kind);
+      consumeInto(line_);
+    }
+    addLine();
+  }
+
   auto parseGrammarLeaf(bool recover_to_outer = false,
                         std::optional<LeafCheckpoint> checkpoint = {},
                         bool stop_at_complete_semicolon = false,
@@ -2600,6 +2629,46 @@ class SVParser {
       addLine();
       return true;
     }
+    const bool explicit_type =
+        at(TK::BitKeyword, 1) || at(TK::ByteKeyword, 1) ||
+        at(TK::CHandleKeyword, 1) || at(TK::EnumKeyword, 1) ||
+        at(TK::EventKeyword, 1) || at(TK::IntKeyword, 1) ||
+        at(TK::IntegerKeyword, 1) || at(TK::LogicKeyword, 1) ||
+        at(TK::LongIntKeyword, 1) || at(TK::RealKeyword, 1) ||
+        at(TK::RealTimeKeyword, 1) || at(TK::RegKeyword, 1) ||
+        at(TK::ShortIntKeyword, 1) || at(TK::ShortRealKeyword, 1) ||
+        at(TK::StringKeyword, 1) || at(TK::StructKeyword, 1) ||
+        at(TK::TimeKeyword, 1) || at(TK::UnionKeyword, 1);
+    if (explicit_type) {
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        const auto& token = tokens_[i];
+        if (isConditionalStartDirective(token) ||
+            token.kind == TK::MacroUsage ||
+            (token.kind == TK::Directive &&
+             !isCompilerDirective(token))) {
+          parseAnnexSemicolonItem(at(TK::ParameterKeyword)
+                                      ? "parameter_declaration"
+                                      : "local_parameter_declaration");
+          return true;
+        }
+        if (token.kind == TK::Semicolon ||
+            token.kind == TK::EndOfFile)
+          break;
+      }
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);  // parameter / localparam
+      if (!consumeAnnexRule("data_type_or_implicit", line_) ||
+          !consumeAnnexRule("list_of_param_assignments", line_,
+                            TK::Semicolon) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A parameter declaration");
+        recoverMalformedLeaf(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     parseAnnexSemicolonItem(at(TK::ParameterKeyword)
                                 ? "parameter_declaration"
                                 : "local_parameter_declaration");
@@ -2796,10 +2865,89 @@ class SVParser {
     return true;
   }
 
+  // dpi_import_export has a string after import/export. Package imports and
+  // exports instead begin with a package identifier or '*'.
+  auto parseDpiDeclarationRule() -> bool {
+    if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
+        !at(TK::StringLiteral, 1))
+      return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"dpi_import_export"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    const bool import = at(TK::ImportKeyword);
+    consumeInto(line_);
+    const auto spec = peek().rawText();
+    bool valid = (spec == "\"DPI-C\"" || spec == "\"DPI\"") &&
+                 consumeAnnexRule("dpi_spec_string", line_);
+    const bool pure = at(TK::PureKeyword);
+    if (valid && import &&
+        (at(TK::ContextKeyword) || at(TK::PureKeyword))) {
+      valid = consumeAnnexRule(at(TK::ContextKeyword)
+                                   ? "dpi_task_import_property"
+                                   : "dpi_function_import_property", line_);
+    }
+    if (valid && at(TK::Identifier) && at(TK::Equals, 1)) {
+      // c_identifier is a character-level Annex A lexical production. slang
+      // has already combined it into a token, so check that token's lexeme.
+      const auto name = peek().rawText();
+      const auto letter = [](char ch) {
+        return (ch >= 'a' && ch <= 'z') ||
+               (ch >= 'A' && ch <= 'Z') || ch == '_';
+      };
+      valid = !name.empty() && letter(name.front());
+      for (size_t i = 1; valid && i < name.size(); ++i)
+        valid = letter(name[i]) ||
+                (name[i] >= '0' && name[i] <= '9');
+      if (valid) {
+        consumeInto(line_);
+        consumeInto(line_);  // '='
+      }
+    }
+    if (valid && import) {
+      if (at(TK::FunctionKeyword))
+        valid = consumeAnnexRule("dpi_function_proto", line_,
+                                 TK::Semicolon);
+      else if (at(TK::TaskKeyword))
+        valid = !pure && consumeAnnexRule("dpi_task_proto", line_,
+                                          TK::Semicolon);
+      else
+        valid = false;
+    } else if (valid) {
+      if (at(TK::FunctionKeyword)) {
+        consumeInto(line_);
+        valid = consumeAnnexRule("function_identifier", line_);
+      } else if (at(TK::TaskKeyword)) {
+        consumeInto(line_);
+        valid = consumeAnnexRule("task_identifier", line_);
+      } else {
+        valid = false;
+      }
+    }
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A DPI declaration");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
     if (parseClassConstructorRule()) return true;
+    if (parseDpiDeclarationRule()) return true;
     if (at(TK::ImportKeyword)) {
       static_cast<void>(
           parseAnnexItem({"dpi_import_export", "data_declaration"}, true));
@@ -3423,6 +3571,7 @@ class SVParser {
     if (parseTimeunitsRule()) return true;
     if (parseAnonymousProgramRule()) return true;
     if (at(TK::ExportKeyword)) {
+      if (parseDpiDeclarationRule()) return true;
       static_cast<void>(parseAnnexItem(
           {"package_export_declaration", "dpi_import_export"}, true));
       return true;
