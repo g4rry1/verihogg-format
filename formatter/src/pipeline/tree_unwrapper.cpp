@@ -2694,6 +2694,8 @@ class SVParser {
       case TK::SequenceKeyword:
         parseAnnexWholeBlock(TK::EndSequenceKeyword, "sequence_declaration");
         return true;
+      case TK::LetKeyword:
+        return parseLetDeclarationRule();
       default:
         return false;
     }
@@ -3298,8 +3300,7 @@ class SVParser {
       return true;
     }
     if (at(TK::LetKeyword)) {
-      static_cast<void>(parseAnnexItem({"let_declaration"}, true));
-      return true;
+      return parseLetDeclarationRule();
     }
     if (allow_tf_port &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
@@ -6734,10 +6735,62 @@ class SVParser {
     if (at(TK::PropertyKeyword) || at(TK::SequenceKeyword))
       return parsePackageOrGenerateDeclarationRule();
     if (at(TK::LetKeyword)) {
-      static_cast<void>(parseAnnexItem({"let_declaration"}, true));
-      return true;
+      return parseLetDeclarationRule();
     }
     return false;
+  }
+
+  // let_declaration ::= let let_identifier
+  // [ '(' [ let_port_list ] ')' ] '=' expression ';'.
+  auto parseLetDeclarationRule() -> bool {
+    if (!at(TK::LetKeyword)) return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"let_declaration"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);
+    if (!consumeAnnexRule("let_identifier", line_)) {
+      recordGrammarFallback("invalid Annex A let identifier");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (at(TK::OpenParenthesis)) {
+      if (at(TK::CloseParenthesis, 1)) {
+        consumeInto(line_);
+        consumeInto(line_);
+      } else if (!consumeAnnexDelimited(
+                     TK::OpenParenthesis, TK::CloseParenthesis,
+                     "let_port_list", line_)) {
+        recoverMalformedItem(saved);
+        return true;
+      }
+    }
+    if (!at(TK::Equals)) {
+      recordGrammarFallback("invalid Annex A let assignment");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    if (!consumeAnnexRule("expression", line_, TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A let expression");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   // coverage_option ::= option '.' member_identifier '=' expression |
