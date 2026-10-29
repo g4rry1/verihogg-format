@@ -2474,6 +2474,30 @@ class SVParser {
 
   auto parseTypeDeclarationRule() -> bool {
     if (!at(TK::TypedefKeyword)) return false;
+    size_t identifier_offset = 1;
+    const bool interface_class = at(TK::InterfaceKeyword, 1) &&
+                                 at(TK::ClassKeyword, 2);
+    const bool forward = interface_class || at(TK::EnumKeyword, 1) ||
+                         at(TK::StructKeyword, 1) ||
+                         at(TK::UnionKeyword, 1) ||
+                         at(TK::ClassKeyword, 1);
+    if (forward) identifier_offset += interface_class ? 2 : 1;
+    if (at(TK::Identifier, identifier_offset) &&
+        at(TK::Semicolon, identifier_offset + 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);  // typedef
+      const bool valid =
+          (!forward || consumeAnnexRule("forward_type", line_)) &&
+          consumeAnnexRule("type_identifier", line_);
+      if (!valid || !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A forward type declaration");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     static_cast<void>(parseAnnexItem({"type_declaration"}, true));
     return true;
   }
@@ -2675,9 +2699,8 @@ class SVParser {
     }
   }
 
-  // The two 'default' alternatives belong to different Annex A item rules
-  // in checker and module-like bodies. Their shared keyword is resolved by
-  // the local declaration chart while tokens are emitted.
+  // The two 'default clocking' productions differ after the identifier:
+  // a declaration has clocking_event, while the selection ends at ';'.
   auto parseDefaultClockingOrDisableRule(bool checker) -> bool {
     if (!at(TK::DefaultKeyword) ||
         (!at(TK::ClockingKeyword, 1) && !at(TK::DisableKeyword, 1)))
@@ -2685,23 +2708,74 @@ class SVParser {
     const std::string_view declaration =
         checker ? "checker_or_generate_item_declaration"
                 : "module_or_generate_item_declaration";
-    if (at(TK::ClockingKeyword, 1)) {
-      AnnexState choice({declaration, "clocking_declaration"});
-      for (size_t offset = 0; pos_ + offset < tokens_.size(); ++offset) {
-        const Token token = peek(offset);
-        if (isCompilerDirective(token)) continue;
-        if (token.kind == TK::Directive || !choice.accepts(token.kind)) break;
-        choice.advance(token);
-        if (choice.hasViableRule("clocking_declaration") &&
-            !choice.hasViableRule(declaration)) {
-          parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                                   "clocking_declaration", "clocking_item");
-          return true;
-        }
-        if (token.kind == TK::Semicolon) break;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({declaration}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
       }
     }
-    static_cast<void>(parseAnnexItem({declaration}, true));
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // default
+    const bool clocking = at(TK::ClockingKeyword);
+    consumeInto(line_);  // clocking / disable
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (!clocking) {
+      if (!at(TK::IffKeyword)) {
+        recordGrammarFallback("invalid Annex A default disable iff");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      if (!consumeAnnexRule("expression_or_dist", line_, TK::Semicolon) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A default disable condition");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
+    const bool has_identifier = at(TK::Identifier);
+    if (has_identifier) {
+      if (!consumeAnnexRule("clocking_identifier", line_)) {
+        recordGrammarFallback("invalid Annex A default clocking identifier");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+    }
+    const bool declaration_header = at(TK::At);
+    if (declaration_header &&
+        !consumeAnnexRule("clocking_event", line_)) {
+      recordGrammarFallback("invalid Annex A default clocking event");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (!at(TK::Semicolon) ||
+        (!declaration_header && !has_identifier)) {
+      recordGrammarFallback("invalid Annex A default clocking header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    if (declaration_header)
+      parseDelimitedBody(TK::EndClockingKeyword, "clocking_item");
     return true;
   }
 
@@ -3269,7 +3343,39 @@ class SVParser {
       return true;
     }
     if (at(TK::AssignKeyword)) {
-      static_cast<void>(parseAnnexItem({"continuous_assign"}, true));
+      bool interrupted_header = false;
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        const auto& token = tokens_[i];
+        if (isConditionalStartDirective(token) ||
+            token.kind == TK::MacroUsage ||
+            (token.kind == TK::Directive &&
+             !isCompilerDirective(token))) {
+          interrupted_header = true;
+          break;
+        }
+        if (token.kind == TK::Semicolon ||
+            token.kind == TK::EndOfFile) {
+          break;
+        }
+      }
+      if (interrupted_header || at(TK::OpenParenthesis, 1) ||
+          at(TK::Hash, 1)) {
+        static_cast<void>(parseAnnexItem({"continuous_assign"}, true));
+        return true;
+      }
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);  // assign
+      const AnnexState assignments = parseAnnexItem(
+          {"list_of_net_assignments", "list_of_variable_assignments"},
+          false, true);
+      if (assignments.failed || assignments.interrupted ||
+          !assignments.complete() || !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A continuous assignment");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
       return true;
     }
     if (!continuous_only && at(TK::AliasKeyword)) {
