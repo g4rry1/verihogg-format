@@ -2933,11 +2933,14 @@ class SVParser {
   }
 
   // anonymous_program ::= 'program' ';' { anonymous_program_item }
-  // 'endprogram'. Its header and each body item use their Annex A rules.
+  // 'endprogram'. Its header terminals are consumed here; body items call
+  // their productions through parseDelimitedBody().
   auto parseAnonymousProgramRule() -> bool {
     if (!at(TK::ProgramKeyword) || !at(TK::Semicolon, 1)) return false;
-    parseAnnexDelimitedBlock(TK::EndProgramKeyword, "anonymous_program",
-                             "anonymous_program_item");
+    consumeInto(line_);
+    consumeInto(line_);
+    addLine();
+    parseDelimitedBody(TK::EndProgramKeyword, "anonymous_program_item");
     return true;
   }
 
@@ -5322,29 +5325,26 @@ class SVParser {
 
   // generate ... endgenerate
   auto parseSimpleBlock(TK closeKw) -> void {
-    beginGrammar({"generate_region"});
-    consumeInto(line_);
-    const AnnexState header = endGrammar(false);
-    if (header.failed || header.interrupted ||
-        !header.hasViableRule("generate_region")) {
-      recordGrammarFallback("invalid Annex A generate region header");
-    }
+    consumeInto(line_);  // generate_region ::= generate {generate_item} endgenerate
     addLine();
-
-    parseDelimitedBody(closeKw);
+    parseDelimitedBody(closeKw, "generate_item");
   }
 
   // begin [:label] ... end [:label]
+  auto parseOpeningBlockLabelRule() -> void {
+    if (!at(TK::Colon)) return;
+    consumeInto(line_);
+    if (at(TK::Identifier)) {
+      consumeInto(line_);
+    } else {
+      recordGrammarFallback("incomplete Annex A block identifier");
+    }
+  }
+
   auto parseBeginEnd(TK closeKw) -> void {
     const bool if_statement_body = std::exchange(pending_if_begin_, false);
-    beginGrammar({"seq_block"});
     consumeInto(line_);  // begin
-    consumeLabel();
-    const AnnexState header = endGrammar(false);
-    if (header.failed || header.interrupted ||
-        !header.hasViableRule("seq_block")) {
-      recordGrammarFallback("invalid Annex A sequential block header");
-    }
+    parseOpeningBlockLabelRule();
     addLine();
 
     parseDelimitedBody(closeKw, {}, false, false, if_statement_body);
@@ -5352,14 +5352,8 @@ class SVParser {
 
   // fork ... join / join_any / join_none
   auto parseFork(TK closeKw) -> void {
-    beginGrammar({"par_block"});
-    consumeInto(line_);
-    consumeLabel();
-    const AnnexState header = endGrammar(false);
-    if (header.failed || header.interrupted ||
-        !header.hasViableRule("par_block")) {
-      recordGrammarFallback("invalid Annex A parallel block header");
-    }
+    consumeInto(line_);  // fork
+    parseOpeningBlockLabelRule();
     addLine();
     parseDelimitedBody(closeKw);
   }
@@ -5458,37 +5452,84 @@ class SVParser {
         generate ? "generate_block" : "statement_or_null"};
     while (at(TK::IfKeyword)) {
       const LeafCheckpoint saved = leafCheckpoint();
-      beginGrammar({rule});
-      while (!at(TK::EndOfFile) &&
-             !grammar_scopes_.back().allPathsHaveActiveRule(
-                 body_roots.front()) &&
-             !grammar_scopes_.back().complete()) {
-        if (isConditionalStartDirective(peek())) {
-          bool header_ended = true;
-          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                     indent_level_)) {
-            break;
-          }
-          continue;
+      bool conditional_before_condition = false;
+      for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
+        if (tokens_[i].kind == TK::OpenParenthesis ||
+            tokens_[i].kind == TK::Semicolon ||
+            tokens_[i].kind == TK::EndOfFile) {
+          break;
         }
-        if (isCompilerDirective(peek())) {
+        if (isConditionalStartDirective(tokens_[i])) {
+          conditional_before_condition = true;
+          break;
+        }
+      }
+      bool header_complete = false;
+      if (conditional_before_condition) {
+        beginGrammar({rule});
+        while (!at(TK::EndOfFile) &&
+               !grammar_scopes_.back().allPathsHaveActiveRule(
+                   body_roots.front()) &&
+               !grammar_scopes_.back().complete()) {
+          if (isConditionalStartDirective(peek())) {
+            bool header_ended = true;
+            if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                       indent_level_)) {
+              break;
+            }
+            continue;
+          }
+          if (isCompilerDirective(peek())) {
+            addLine();
+            parseDirectiveLine();
+            continue;
+          }
+          if (!grammar_scopes_.back().accepts(peek().kind)) break;
+          consumeInto(line_);
+        }
+        const AnnexState header = endGrammar(false);
+        if (header.failed || header.interrupted ||
+            (!header.allPathsHaveActiveRule(body_roots.front()) &&
+             !header.complete())) {
+          recordGrammarFallback("invalid Annex A if header");
+          recoverMalformedItem(saved);
+          return;
+        }
+        header_complete = header.complete();
+      } else {
+        consumeInto(line_);
+        while (isCompilerDirective(peek()) &&
+               !isConditionalStartDirective(peek())) {
           addLine();
           parseDirectiveLine();
-          continue;
         }
-        if (!grammar_scopes_.back().accepts(peek().kind)) break;
-        consumeInto(line_);
-      }
-      const AnnexState header = endGrammar(false);
-      if (header.failed || header.interrupted ||
-          (!header.allPathsHaveActiveRule(body_roots.front()) &&
-           !header.complete())) {
-        recordGrammarFallback("invalid Annex A if header");
-        recoverMalformedItem(saved);
-        return;
+        if (!at(TK::OpenParenthesis)) {
+          recordGrammarFallback("invalid Annex A if condition");
+          recoverMalformedItem(saved);
+          return;
+        }
+        consumeAnnexDelimited(
+            TK::OpenParenthesis, TK::CloseParenthesis,
+            generate ? "constant_expression" : "cond_predicate", line_);
+        if (pos_ == 0 ||
+            tokens_[pos_ - 1].kind != TK::CloseParenthesis) {
+          recordGrammarFallback("incomplete Annex A if condition");
+          recoverMalformedItem(saved);
+          return;
+        }
       }
       addLine();
-      if (!header.complete()) {
+      if (!header_complete) {
+        if (at(TK::EndOfFile) ||
+            (stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek())) ||
+            std::ranges::any_of(block_stack_, [&](const BlockFrame& frame) {
+              return matchesBlockClose(frame.close_kind, peek().kind);
+            })) {
+          recordGrammarFallback("missing Annex A if body");
+          recoverMalformedItem(saved);
+          return;
+        }
         const bool prior_if_begin =
             std::exchange(pending_if_begin_, !generate);
         parseIndentedStatement(body_roots);

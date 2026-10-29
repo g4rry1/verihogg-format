@@ -3751,6 +3751,30 @@ TEST_F(TreeUnwrapperTest, PackageHeaderResumesAfterConditionalLifetime) {
   expectTokenConservation(result.lines);
 }
 
+TEST_F(TreeUnwrapperTest, AnonymousProgramCallsBodyItemRules) {
+  const auto result = parseWithDiagnostics(
+      "program; function int f(); return 1; endfunction "
+      "endprogram module after; endmodule");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
+TEST_F(TreeUnwrapperTest, ForkBlockUsesAnnexOpeningAndClosingLabels) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial fork : workers a = 1; "
+      "join_none : workers endmodule");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
+TEST_F(TreeUnwrapperTest, IfConditionCallsCondPredicateRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial if (a &&& b) x = 1; "
+      "else if (c) x = 2; else x = 3; endmodule");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
 TEST_F(TreeUnwrapperTest, MalformedPackageHeaderResumesAfterEndpackage) {
   const auto result = parseWithDiagnostics(
       "package automatic; int x; endpackage module after; endmodule");
