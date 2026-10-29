@@ -770,6 +770,8 @@ class SVParser {
     std::string_view grammar_body;
     bool statement_phase = false;
     bool constructor_body = false;
+    bool if_statement_body = false;
+    bool conditional_entry_frame = false;
     bool tf_ports_in_header = false;
     bool udp_has_entry = false;
     bool udp_sequential = false;
@@ -801,6 +803,7 @@ class SVParser {
     std::vector<bool> grammar_summary_owner;
     std::vector<GrammarContext> grammar_contexts;
     uint8_t source_modes = 0;
+    bool pending_if_begin = false;
   };
 
   struct BranchResult {
@@ -852,6 +855,7 @@ class SVParser {
   size_t last_grammar_warning_pos_ = std::numeric_limits<size_t>::max();
   bool grammar_suspended_ = false;
   bool stop_at_conditional_boundary_ = false;
+  bool pending_if_begin_ = false;
   bool recovery_enabled_ = true;
 
   // ---- token access ----
@@ -1667,6 +1671,7 @@ class SVParser {
         .grammar_summary_owner = grammar_summary_owner_,
         .grammar_contexts = grammar_contexts_,
         .source_modes = source_modes_,
+        .pending_if_begin = pending_if_begin_,
     };
   }
 
@@ -1681,6 +1686,7 @@ class SVParser {
     grammar_summary_owner_ = state.grammar_summary_owner;
     grammar_contexts_ = state.grammar_contexts;
     source_modes_ = state.source_modes;
+    pending_if_begin_ = state.pending_if_begin;
   }
 
   [[nodiscard]] auto structuralStateCompatible(
@@ -1691,7 +1697,8 @@ class SVParser {
         lhs.grammar_scopes.size() != rhs.grammar_scopes.size() ||
         lhs.grammar_checkpoints.size() != rhs.grammar_checkpoints.size() ||
         lhs.grammar_paused != rhs.grammar_paused ||
-        lhs.grammar_summary_owner != rhs.grammar_summary_owner) {
+        lhs.grammar_summary_owner != rhs.grammar_summary_owner ||
+        lhs.pending_if_begin != rhs.pending_if_begin) {
       return false;
     }
     for (size_t i = 0; i < lhs.block_stack.size(); ++i) {
@@ -1701,6 +1708,7 @@ class SVParser {
           left.extra_dedent_after_close != right.extra_dedent_after_close ||
           left.grammar_body != right.grammar_body ||
           left.constructor_body != right.constructor_body ||
+          left.if_statement_body != right.if_statement_body ||
           left.tf_ports_in_header != right.tf_ports_in_header ||
           ((left.close_kind == TK::EndConfigKeyword ||
             left.close_kind == TK::EndPrimitiveKeyword) &&
@@ -1766,6 +1774,7 @@ class SVParser {
     const bool outer_suspension = grammar_suspended_;
 
     restoreState(state);
+    for (auto& frame : block_stack_) frame.conditional_entry_frame = true;
     lines_.clear();
     warnings_.clear();
     stop_at_conditional_boundary_ = true;
@@ -1861,6 +1870,21 @@ class SVParser {
     indent_level_ = (indent_level_ >= frame.extra_dedent_after_close)
                         ? indent_level_ - frame.extra_dedent_after_close
                         : 0;
+    // A conditional compilation branch can close the begin body of an if
+    // before the recursive parseIf() call regains control. Continue that
+    // Annex A conditional_statement inside the branch.
+    if (stop_at_conditional_boundary_ && frame.conditional_entry_frame &&
+        frame.if_statement_body &&
+        at(TK::ElseKeyword)) {
+      if (indent_level_ > 0) --indent_level_;
+      consumeInto(line_);
+      if (at(TK::IfKeyword)) {
+        parseIf(false);
+      } else {
+        addLine();
+        parseIndentedStatement({"statement_or_null"});
+      }
+    }
   }
 
   auto pushOpenFrame(TK closeKind) -> void {
@@ -1871,11 +1895,13 @@ class SVParser {
 
   auto parseDelimitedBody(TK closeKind, std::string_view bodyRule = {},
                           bool constructorBody = false,
-                          bool tfPortsInHeader = false) -> void {
+                          bool tfPortsInHeader = false,
+                          bool ifStatementBody = false) -> void {
     pushOpenFrame(closeKind);
     block_stack_.back().grammar_body = bodyRule;
     block_stack_.back().constructor_body = constructorBody;
     block_stack_.back().tf_ports_in_header = tfPortsInHeader;
+    block_stack_.back().if_statement_body = ifStatementBody;
     ++indent_level_;
     parseLevel(closeKind);
     if (matchesBlockClose(closeKind, peek().kind)) {
@@ -3390,6 +3416,8 @@ class SVParser {
       return;
     }
 
+    if (!at(TK::BeginKeyword)) pending_if_begin_ = false;
+
     if (!block_stack_.empty() && block_stack_.back().constructor_body &&
         at(TK::SuperKeyword) && at(TK::Dot, 1) &&
         at(TK::NewKeyword, 2)) {
@@ -3925,6 +3953,12 @@ class SVParser {
         }
         joined->pos = pos_;
         joined->line = Line{};
+        for (size_t i = 0; i < joined->block_stack.size(); ++i) {
+          joined->block_stack[i].conditional_entry_frame =
+              i < branch_entry.block_stack.size()
+                  ? branch_entry.block_stack[i].conditional_entry_frame
+                  : false;
+        }
         restoreState(*joined);
         return;
       }
@@ -4779,6 +4813,7 @@ class SVParser {
 
   // begin [:label] ... end [:label]
   auto parseBeginEnd(TK closeKw) -> void {
+    const bool if_statement_body = std::exchange(pending_if_begin_, false);
     beginGrammar({"seq_block"});
     consumeInto(line_);  // begin
     consumeLabel();
@@ -4789,7 +4824,7 @@ class SVParser {
     }
     addLine();
 
-    parseDelimitedBody(closeKw);
+    parseDelimitedBody(closeKw, {}, false, false, if_statement_body);
   }
 
   // fork ... join / join_any / join_none
@@ -4930,7 +4965,13 @@ class SVParser {
         return;
       }
       addLine();
-      if (!header.complete()) parseIndentedStatement(body_roots);
+      if (!header.complete()) {
+        const bool prior_if_begin =
+            std::exchange(pending_if_begin_, !generate);
+        parseIndentedStatement(body_roots);
+        pending_if_begin_ = prior_if_begin;
+      }
+      if (at(TK::ElseKeyword)) indent_level_ = saved.indent_level;
       if (!at(TK::ElseKeyword)) return;
       consumeInto(line_);
       if (generate || !at(TK::IfKeyword)) {
