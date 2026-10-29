@@ -3400,6 +3400,87 @@ class SVParser {
     }
   }
 
+  auto parseExplicitClassPropertyRule() -> bool {
+    size_t offset = 0;
+    while (at(TK::RandKeyword, offset) || at(TK::RandCKeyword, offset) ||
+           at(TK::StaticKeyword, offset) ||
+           at(TK::ProtectedKeyword, offset) ||
+           at(TK::LocalKeyword, offset))
+      ++offset;
+    if (at(TK::ConstKeyword, offset)) ++offset;
+    if (at(TK::VarKeyword, offset)) ++offset;
+    if (at(TK::StaticKeyword, offset) ||
+        at(TK::AutomaticKeyword, offset))
+      ++offset;
+    const auto built_in_type = [](TK kind) {
+      switch (kind) {
+        case TK::BitKeyword:
+        case TK::ByteKeyword:
+        case TK::CHandleKeyword:
+        case TK::EnumKeyword:
+        case TK::EventKeyword:
+        case TK::IntKeyword:
+        case TK::IntegerKeyword:
+        case TK::LogicKeyword:
+        case TK::LongIntKeyword:
+        case TK::RealKeyword:
+        case TK::RealTimeKeyword:
+        case TK::RegKeyword:
+        case TK::ShortIntKeyword:
+        case TK::ShortRealKeyword:
+        case TK::StringKeyword:
+        case TK::StructKeyword:
+        case TK::TimeKeyword:
+        case TK::UnionKeyword:
+          return true;
+        default:
+          return false;
+      }
+    };
+    if (offset == 0 || !built_in_type(peek(offset).kind)) return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"class_property"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    while (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
+           at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
+           at(TK::LocalKeyword)) {
+      if (!consumeAnnexRule("property_qualifier", line_)) {
+        recordGrammarFallback("invalid Annex A class property qualifier");
+        recoverMalformedLeaf(saved);
+        return true;
+      }
+    }
+    if (at(TK::ConstKeyword)) consumeInto(line_);
+    if (at(TK::VarKeyword)) consumeInto(line_);
+    if ((at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) &&
+        !consumeAnnexRule("lifetime", line_)) {
+      recordGrammarFallback("invalid Annex A class property lifetime");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    if (!consumeAnnexRule("data_type_or_implicit", line_) ||
+        !consumeAnnexRule("list_of_variable_decl_assignments", line_,
+                          TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A class property declaration");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
@@ -3407,6 +3488,7 @@ class SVParser {
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseBuiltInDataDeclarationRule())
       return true;
+    if (parseExplicitClassPropertyRule()) return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
       parseConstraintBlock({"class_constraint"});
