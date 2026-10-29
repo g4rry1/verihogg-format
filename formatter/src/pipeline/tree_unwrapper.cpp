@@ -4444,9 +4444,27 @@ class SVParser {
   // { ',' hierarchical_instance } ';'. Shared identifier prefixes that do
   // not have the instance shape stay with their local declaration chart.
   auto parseStructuralInstantiationRule() -> bool {
-    if (!at(TK::Identifier) ||
-        !(at(TK::Hash, 1) ||
-          (at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2)))) {
+    if (!at(TK::Identifier)) return false;
+    bool instance_shape = at(TK::Identifier, 1) &&
+                          at(TK::OpenParenthesis, 2);
+    if (at(TK::Hash, 1) && at(TK::OpenParenthesis, 2)) {
+      int depth = 0;
+      for (size_t i = pos_ + 2; i < tokens_.size(); ++i) {
+        if (tokens_[i].kind == TK::OpenParenthesis) ++depth;
+        if (tokens_[i].kind == TK::CloseParenthesis) --depth;
+        if (depth == 0) {
+          instance_shape = i + 2 < tokens_.size() &&
+                           tokens_[i + 1].kind == TK::Identifier &&
+                           tokens_[i + 2].kind == TK::OpenParenthesis;
+          break;
+        }
+        if (tokens_[i].kind == TK::EndOfFile ||
+            tokens_[i].kind == TK::EndModuleKeyword) {
+          break;
+        }
+      }
+    }
+    if (!instance_shape) {
       return false;
     }
     const LeafCheckpoint saved = leafCheckpoint();
@@ -6403,9 +6421,130 @@ class SVParser {
     return true;
   }
 
+  [[nodiscard]] auto parseClassBlockRule(TK closeKw) -> bool {
+    if (closeKw != TK::EndClassKeyword) return false;
+    const bool interface_class =
+        at(TK::InterfaceKeyword) && at(TK::ClassKeyword, 1);
+    if (!interface_class && !at(TK::ClassKeyword) &&
+        !(at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1))) {
+      return false;
+    }
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        return false;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (interface_class || at(TK::VirtualKeyword))
+      consumeInto(line_);
+    consumeInto(line_);  // class
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (!interface_class && at(TK::Colon)) {
+      if (!consumeAnnexRule("final_specifier", line_)) {
+        recordGrammarFallback("invalid Annex A class final specifier");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+    }
+    if (!consumeAnnexRule("class_identifier", line_)) {
+      recordGrammarFallback("invalid Annex A class identifier");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    skip_directives();
+    if (at(TK::Hash)) {
+      if (!consumeAnnexRule("parameter_port_list", line_)) {
+        recordGrammarFallback("invalid Annex A class parameter list");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+    }
+    if (at(TK::ExtendsKeyword)) {
+      consumeInto(line_);
+      skip_directives();
+      const std::string_view parent_rule =
+          interface_class ? "interface_class_type" : "class_type";
+      if (!consumeAnnexRule(parent_rule, line_, TK::Comma)) {
+        recordGrammarFallback("invalid Annex A class extends type");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      if (interface_class) {
+        while (at(TK::Comma)) {
+          consumeInto(line_);
+          if (!consumeAnnexRule("interface_class_type", line_,
+                                TK::Comma)) {
+            recordGrammarFallback("invalid Annex A interface class parent");
+            recoverMalformedItem(saved);
+            return true;
+          }
+        }
+      } else if (at(TK::OpenParenthesis)) {
+        if (at(TK::CloseParenthesis, 1)) {
+          consumeInto(line_);
+          consumeInto(line_);
+        } else if (at(TK::DefaultKeyword, 1) &&
+                   at(TK::CloseParenthesis, 2)) {
+          consumeInto(line_);
+          consumeInto(line_);
+          consumeInto(line_);
+        } else if (!consumeAnnexDelimited(
+                       TK::OpenParenthesis, TK::CloseParenthesis,
+                       "list_of_arguments", line_)) {
+          recoverMalformedItem(saved);
+          return true;
+        }
+      }
+      skip_directives();
+    }
+    if (!interface_class && at(TK::ImplementsKeyword)) {
+      consumeInto(line_);
+      bool valid = consumeAnnexRule("interface_class_type", line_,
+                                    TK::Comma);
+      while (valid && at(TK::Comma)) {
+        consumeInto(line_);
+        valid = consumeAnnexRule("interface_class_type", line_, TK::Comma);
+      }
+      if (!valid) {
+        recordGrammarFallback("invalid Annex A class implements type");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      skip_directives();
+    }
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A class header semicolon");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    parseDelimitedBody(closeKw,
+                       interface_class ? "interface_class_item"
+                                       : "class_item");
+    return true;
+  }
+
   // class / function / task ... endclass / endfunction / endtask
   auto parseNamedBlock(TK closeKw) -> void {
     if (parseTaskFunctionBlockRule(closeKw)) return;
+    if (parseClassBlockRule(closeKw)) return;
     std::vector<std::string_view> roots;
     std::string_view body_rule;
     bool tf_ports_in_header = false;
