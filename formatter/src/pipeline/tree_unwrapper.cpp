@@ -999,8 +999,8 @@ class SVParser {
   // The grammar scope identifies the closing delimiter of an expression.
   // Delimiter counting is only used after that scope cannot parse the input.
   auto consumeAnnexDelimited(TK open, TK close, std::string_view rule,
-                             Line& line) -> void {
-    if (!at(open)) return;
+                             Line& line) -> bool {
+    if (!at(open)) return false;
     consumeInto(line);
     beginGrammar({rule});
     int depth = 1;
@@ -1010,7 +1010,7 @@ class SVParser {
       if (at(close) && grammar.complete()) {
         static_cast<void>(endGrammar());
         consumeInto(line);
-        return;
+        return true;
       }
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
@@ -1046,6 +1046,19 @@ class SVParser {
       if (at(close)) --depth;
       consumeInto(line);
     }
+    return false;
+  }
+
+  [[nodiscard]] auto unavailableMacroIn(size_t begin, size_t end) const
+      -> bool {
+    for (size_t i = begin; i < end; ++i) {
+      if (tokens_[i].kind == TK::MacroUsage ||
+          (tokens_[i].kind == TK::Directive &&
+           !isCompilerDirective(tokens_[i]))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   [[nodiscard]] auto consumeAnnexRule(std::string_view rule,
@@ -3306,8 +3319,12 @@ class SVParser {
       parseActionBlockRule();
       return true;
     }
-    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                          "expression", line_);
+    const bool condition = consumeAnnexDelimited(
+        TK::OpenParenthesis, TK::CloseParenthesis, "expression", line_);
+    if (!condition && !unavailableMacroIn(saved.pos, pos_)) {
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (line_.tokens.empty() ||
         line_.tokens.back().kind != TK::CloseParenthesis) {
       recordGrammarFallback("invalid Annex A wait condition");
@@ -3856,8 +3873,12 @@ class SVParser {
       recoverMalformedItem(saved);
       return true;
     }
-    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                          "property_spec", line_);
+    const bool property_spec = consumeAnnexDelimited(
+        TK::OpenParenthesis, TK::CloseParenthesis, "property_spec", line_);
+    if (!property_spec && !unavailableMacroIn(saved.pos, pos_)) {
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (line_.tokens.empty() ||
         line_.tokens.back().kind != TK::CloseParenthesis ||
         !at(TK::Semicolon)) {
@@ -3882,8 +3903,12 @@ class SVParser {
       recoverMalformedItem(saved);
       return true;
     }
-    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                          "property_spec", line_);
+    const bool property_spec = consumeAnnexDelimited(
+        TK::OpenParenthesis, TK::CloseParenthesis, "property_spec", line_);
+    if (!property_spec && !unavailableMacroIn(saved.pos, pos_)) {
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (line_.tokens.empty() ||
         line_.tokens.back().kind != TK::CloseParenthesis) {
       recordGrammarFallback("incomplete Annex A property assertion");
@@ -3914,8 +3939,12 @@ class SVParser {
         recoverMalformedItem(saved);
         return true;
       }
-      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                            "property_spec", line_);
+      const bool property_spec = consumeAnnexDelimited(
+          TK::OpenParenthesis, TK::CloseParenthesis, "property_spec", line_);
+      if (!property_spec && !unavailableMacroIn(saved.pos, pos_)) {
+        recoverMalformedItem(saved);
+        return true;
+      }
       if (line_.tokens.empty() ||
           line_.tokens.back().kind != TK::CloseParenthesis) {
         recordGrammarFallback("incomplete Annex A cover property");
@@ -4036,8 +4065,12 @@ class SVParser {
       recoverMalformedItem(saved);
       return true;
     }
-    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                          "expression", line_);
+    const bool expression = consumeAnnexDelimited(
+        TK::OpenParenthesis, TK::CloseParenthesis, "expression", line_);
+    if (!expression && !unavailableMacroIn(saved.pos, pos_)) {
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (line_.tokens.empty() ||
         line_.tokens.back().kind != TK::CloseParenthesis) {
       recordGrammarFallback("incomplete Annex A immediate assertion");
@@ -4064,8 +4097,12 @@ class SVParser {
       recoverMalformedItem(saved);
       return true;
     }
-    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                          "property_spec", line_);
+    const bool property_spec = consumeAnnexDelimited(
+        TK::OpenParenthesis, TK::CloseParenthesis, "property_spec", line_);
+    if (!property_spec && !unavailableMacroIn(saved.pos, pos_)) {
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (line_.tokens.empty() ||
         line_.tokens.back().kind != TK::CloseParenthesis) {
       recordGrammarFallback("incomplete Annex A expect property");
@@ -4679,6 +4716,54 @@ class SVParser {
     return true;
   }
 
+  [[nodiscard]] auto parseAssertionDeclarationHeaderRule(TK closeKw) -> bool {
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage) {
+        return false;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    const std::string_view identifier_rule =
+        closeKw == TK::EndPropertyKeyword ? "property_identifier"
+                                           : "sequence_identifier";
+    const std::string_view port_rule =
+        closeKw == TK::EndPropertyKeyword ? "property_port_list"
+                                           : "sequence_port_list";
+    consumeInto(line_);  // property / sequence
+    skip_directives();
+    if (!consumeAnnexRule(identifier_rule, line_)) return false;
+    skip_directives();
+    if (at(TK::OpenParenthesis)) {
+      if (at(TK::CloseParenthesis, 1)) {
+        consumeInto(line_);
+        consumeInto(line_);
+      } else {
+        const bool ports = consumeAnnexDelimited(
+            TK::OpenParenthesis, TK::CloseParenthesis, port_rule, line_);
+        if (!ports || line_.tokens.empty() ||
+            line_.tokens.back().kind != TK::CloseParenthesis) {
+          return false;
+        }
+      }
+      skip_directives();
+    }
+    if (!at(TK::Semicolon)) return false;
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   // Annex A gives property and sequence declarations a header, repeated local
   // declarations, and one final expression. Advance both possible body rules
   // together because a user-defined data type and an expression may both
@@ -4687,14 +4772,32 @@ class SVParser {
   auto parseAnnexWholeBlock(TK closeKw,
                             std::string_view declarationRule) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
-    beginGrammar({declarationRule});
-    consumeGrammarHeader(closeKw, {declarationRule});
-    const AnnexState header = endGrammar(false);
+    bool direct_header = true;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage) {
+        direct_header = false;
+        break;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    bool complete;
+    if (direct_header) {
+      complete = parseAssertionDeclarationHeaderRule(closeKw);
+    } else {
+      beginGrammar({declarationRule});
+      consumeGrammarHeader(closeKw, {declarationRule});
+      const AnnexState header = endGrammar(false);
+      complete = !header.failed && !header.interrupted;
+    }
     const std::string_view expression_rule =
         closeKw == TK::EndPropertyKeyword ? "property_spec" : "sequence_expr";
     const std::vector<std::string_view> body_rules = {
         "assertion_variable_declaration", expression_rule};
-    bool complete = !header.failed && !header.interrupted;
     const bool body_started = complete;
     if (complete) {
       ++indent_level_;
