@@ -2485,15 +2485,26 @@ class SVParser {
   }
 
   auto parseParameterDeclarationRule() -> bool {
-    if (at(TK::ParameterKeyword)) {
-      parseAnnexSemicolonItem("parameter_declaration");
+    if (!at(TK::ParameterKeyword) && !at(TK::LocalParamKeyword))
+      return false;
+    if (at(TK::TypeKeyword, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);  // parameter / localparam
+      if (!consumeAnnexRule("type_parameter_declaration", line_,
+                            TK::Semicolon) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A type parameter declaration");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
       return true;
     }
-    if (at(TK::LocalParamKeyword)) {
-      parseAnnexSemicolonItem("local_parameter_declaration");
-      return true;
-    }
-    return false;
+    parseAnnexSemicolonItem(at(TK::ParameterKeyword)
+                                ? "parameter_declaration"
+                                : "local_parameter_declaration");
+    return true;
   }
 
   auto parseBuiltInDataDeclarationRule() -> bool {
@@ -2549,8 +2560,49 @@ class SVParser {
   }
 
   auto parseNetDeclarationRule() -> bool {
+    if (at(TK::InterconnectKeyword)) {
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        const auto& token = tokens_[i];
+        if (isConditionalStartDirective(token) ||
+            token.kind == TK::MacroUsage ||
+            (token.kind == TK::Directive &&
+             !isCompilerDirective(token))) {
+          static_cast<void>(parseAnnexItem({"net_declaration"}, true));
+          return true;
+        }
+        if (token.kind == TK::Semicolon ||
+            token.kind == TK::EndOfFile) {
+          break;
+        }
+      }
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);
+      bool valid = true;
+      if (at(TK::SignedKeyword) || at(TK::UnsignedKeyword))
+        valid = consumeAnnexRule("signing", line_);
+      while (valid && at(TK::OpenBracket))
+        valid = consumeAnnexRule("packed_dimension", line_);
+      if (valid && at(TK::Hash)) {
+        consumeInto(line_);
+        valid = consumeAnnexRule("delay_value", line_);
+      }
+      do {
+        if (valid) valid = consumeAnnexRule("net_identifier", line_);
+        while (valid && at(TK::OpenBracket))
+          valid = consumeAnnexRule("unpacked_dimension", line_);
+        if (!valid || !at(TK::Comma)) break;
+        consumeInto(line_);
+      } while (true);
+      if (!valid || !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A interconnect declaration");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     switch (peek().kind) {
-      case TK::InterconnectKeyword:
       case TK::Supply0Keyword:
       case TK::Supply1Keyword:
       case TK::TriKeyword:
