@@ -4623,6 +4623,39 @@ class SVParser {
     return true;
   }
 
+  // Shared by loop_statement and constraint_expression after 'foreach':
+  // '(' ps_or_hierarchical_array_identifier '[' loop_variables ']' ')'.
+  [[nodiscard]] auto parseForeachHeaderRule() -> bool {
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    if (!consumeAnnexRule("ps_or_hierarchical_array_identifier", line_,
+                          TK::OpenBracket)) {
+      return false;
+    }
+    skip_directives();
+    if (!at(TK::OpenBracket)) return false;
+    consumeInto(line_);
+    if (!at(TK::CloseBracket) &&
+        !consumeAnnexRule("loop_variables", line_, TK::CloseBracket)) {
+      return false;
+    }
+    skip_directives();
+    if (!at(TK::CloseBracket)) return false;
+    consumeInto(line_);
+    skip_directives();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   // constraint_expression chooses its Annex A alternative while reading the
   // source, then calls the corresponding child production.
   auto parseConstraintExpressionRule() -> bool {
@@ -4636,43 +4669,11 @@ class SVParser {
         !isConditionalStartDirective(peek(1))) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
-      while (isCompilerDirective(peek()) &&
-             !isConditionalStartDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-      if (!at(TK::OpenParenthesis)) {
-        recordGrammarFallback("invalid Annex A constraint foreach header");
-        recoverMalformedItem(saved);
-        return true;
-      }
-      consumeInto(line_);
-      if (!consumeAnnexRule("ps_or_hierarchical_array_identifier", line_,
-                            TK::OpenBracket) ||
-          !at(TK::OpenBracket)) {
-        recordGrammarFallback("invalid Annex A constraint foreach array");
-        recoverMalformedItem(saved);
-        return true;
-      }
-      consumeInto(line_);
-      if (!consumeAnnexRule("loop_variables", line_, TK::CloseBracket) ||
-          !at(TK::CloseBracket)) {
-        recordGrammarFallback("invalid Annex A constraint foreach variables");
-        recoverMalformedItem(saved);
-        return true;
-      }
-      consumeInto(line_);
-      while (isCompilerDirective(peek()) &&
-             !isConditionalStartDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-      if (!at(TK::CloseParenthesis)) {
+      if (!parseForeachHeaderRule()) {
         recordGrammarFallback("incomplete Annex A constraint foreach header");
         recoverMalformedItem(saved);
         return true;
       }
-      consumeInto(line_);
       addLine();
       if (!parseConstraintSetRule()) recoverMalformedItem(saved);
       return true;
@@ -5358,8 +5359,9 @@ class SVParser {
     parseDelimitedBody(closeKw);
   }
 
-  // always / always_comb / always_ff / always_latch / initial / final
-  auto parseProceduralBlock() -> void {
+  // Conditional directives between a procedural keyword and its statement
+  // need a live Annex A continuation through each preprocessor branch.
+  auto parseConditionalProceduralBlock() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"always_construct", "initial_construct", "final_construct"});
     consumeInto(line_);  // keyword
@@ -5441,6 +5443,81 @@ class SVParser {
     }
     addLine();
 
+    parseIndentedStatement(std::move(body_roots));
+  }
+
+  // initial_construct ::= initial statement_or_null;
+  // always_construct ::= always_keyword statement;
+  // final_construct ::= final function_statement.
+  auto parseProceduralBlock() -> void {
+    for (size_t i = pos_ + 1; i < tokens_.size() &&
+                                isCompilerDirective(tokens_[i]); ++i) {
+      if (isConditionalStartDirective(tokens_[i])) {
+        parseConditionalProceduralBlock();
+        return;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    const TK keyword = peek().kind;
+    consumeInto(line_);
+    while (isCompilerDirective(peek()) &&
+           !isConditionalStartDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+    const bool delay_control = at(TK::Hash);
+    if (delay_control &&
+        !consumeAnnexRule("delay_control", line_)) {
+      recoverMalformedItem(saved);
+      return;
+    }
+    const bool event_control = at(TK::At);
+    if (event_control &&
+        !consumeAnnexRule("event_control", line_)) {
+      recoverMalformedItem(saved);
+      return;
+    }
+    if (keyword == TK::FinalKeyword &&
+        (delay_control || event_control)) {
+      recordGrammarFallback("timing control outside Annex A final construct");
+      recoverMalformedItem(saved);
+      return;
+    }
+    if (at(TK::EndOfFile) ||
+        (stop_at_conditional_boundary_ &&
+         isConditionalBoundaryDirective(peek())) ||
+        std::ranges::any_of(block_stack_, [&](const BlockFrame& frame) {
+          return matchesBlockClose(frame.close_kind, peek().kind);
+        })) {
+      recordGrammarFallback("missing Annex A procedural body");
+      recoverMalformedItem(saved);
+      return;
+    }
+    std::vector<std::string_view> body_roots;
+    if (delay_control || event_control || keyword == TK::InitialKeyword) {
+      body_roots = {"statement_or_null"};
+    } else if (keyword == TK::FinalKeyword) {
+      body_roots = {"function_statement"};
+    } else {
+      body_roots = {"statement"};
+    }
+    const TK next = peek().kind;
+    const bool compound_statement =
+        next == TK::BeginKeyword || next == TK::ForkKeyword ||
+        next == TK::IfKeyword || next == TK::CaseKeyword ||
+        next == TK::CaseXKeyword || next == TK::CaseZKeyword ||
+        next == TK::ForKeyword || next == TK::ForeachKeyword ||
+        next == TK::WhileKeyword || next == TK::RepeatKeyword ||
+        next == TK::ForeverKeyword || next == TK::DoKeyword ||
+        next == TK::UniqueKeyword || next == TK::Unique0Keyword ||
+        next == TK::PriorityKeyword;
+    if (delay_control && !compound_statement) {
+      beginGrammar(body_roots);
+      parseGrammarLeaf();
+      static_cast<void>(endGrammar());
+      return;
+    }
+    addLine();
     parseIndentedStatement(std::move(body_roots));
   }
 
@@ -5980,7 +6057,6 @@ class SVParser {
     }
     const TK loop_kind = peek().kind;
     const bool foreach = loop_kind == TK::ForeachKeyword;
-    if (foreach) beginGrammar({"loop_statement"});
     consumeInto(line_);
     if (loop_kind == TK::ForKeyword) {
       if (!consumeForHeader(line_, generate)) {
@@ -5998,19 +6074,7 @@ class SVParser {
         return;
       }
     } else if (foreach) {
-      if (!consumeBalancedInto(TK::OpenParenthesis, TK::CloseParenthesis, line_,
-                               block_stack_.empty()
-                                   ? TK::EndOfFile
-                                   : block_stack_.back().close_kind)) {
-        static_cast<void>(endGrammar(false));
-        recoverMalformedItem(saved);
-        return;
-      }
-      const AnnexState header = endGrammar(false);
-      if (header.failed || header.interrupted ||
-          !header.hasViableRule("loop_statement") ||
-          !header.consumedTerminalInRule("loop_statement",
-                                         TK::CloseParenthesis)) {
+      if (!parseForeachHeaderRule()) {
         recordGrammarFallback("incomplete Annex A foreach header");
         recoverMalformedItem(saved);
         return;

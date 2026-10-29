@@ -2242,6 +2242,28 @@ TEST_F(TreeUnwrapperTest, ConstraintForeachCallsArrayAndLoopRules) {
   EXPECT_TRUE(found_foreach);
 }
 
+TEST_F(TreeUnwrapperTest, ProceduralForeachCallsSharedHeaderRule) {
+  const auto result = parseWithDiagnostics(
+      "module m; int a[4]; initial foreach (a[i]) a[i] = 0; "
+      "endmodule");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+  const auto empty_index = parseWithDiagnostics(
+      "module m; int a[4]; initial foreach (a[]) a[0] = 0; "
+      "endmodule");
+  ASSERT_TRUE(empty_index.warnings.empty())
+      << empty_index.warnings.front().message;
+  expectTokenConservation(empty_index.lines);
+}
+
+TEST_F(TreeUnwrapperTest, ProceduralKeywordsCallTheirBodyRules) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial ; always_comb begin x = 1; end "
+      "final begin x = 2; end endmodule");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
 TEST_F(TreeUnwrapperTest, ConstraintExpressionCallsDistAndSetRules) {
   const auto result = parseWithDiagnostics(
       "class c; rand int x; constraint r { "
