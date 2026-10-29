@@ -36,6 +36,37 @@ def main() -> None:
     assert len(token_names) == 352
     assert len(symbols) < 65536
 
+    # The styled PDF extraction lost the terminal inside "[ static ]" and
+    # treated the footnote marker "8,11" as a literal comma. The independent
+    # plain-text extraction retains the production's words (see README.md).
+    # Repair that one imported production before emitting the C++ table.
+    rule = names.index("constraint_prototype")
+    optional_static = names.index("@constraint_prototype_206")
+    expected = [
+        names.index("@constraint_prototype_205"),
+        optional_static,
+        names.index("@constraint_prototype_207"),
+        -1 - token_names.index("Comma"),
+        -1 - token_names.index("StaticKeyword"),
+        -1 - token_names.index("ConstraintKeyword"),
+        names.index("constraint_identifier"),
+        -1 - token_names.index("Semicolon"),
+    ]
+    matches = [i for i, (left, offset, count) in enumerate(productions)
+               if left == rule and symbols[offset:offset + count] == expected]
+    assert len(matches) == 1, "constraint_prototype extraction changed"
+    static_choices = [count for left, _, count in productions
+                      if left == optional_static]
+    assert static_choices and all(count == 0 for count in static_choices)
+    # Append the corrected right-hand side to keep every other production's
+    # offset stable. The original broken right-hand side becomes unreachable.
+    corrected = [expected[0], optional_static, expected[5], expected[2],
+                 expected[6], expected[7]]
+    productions[matches[0]] = (rule, len(symbols), len(corrected))
+    symbols.extend(corrected)
+    productions.append((optional_static, len(symbols), 1))
+    symbols.append(-1 - token_names.index("StaticKeyword"))
+
     with destination.open("w", encoding="utf-8") as output:
         output.write(
             "// Generated from IEEE 1800-2023 Annex A via veriloggraph GrammarImporter.\n"

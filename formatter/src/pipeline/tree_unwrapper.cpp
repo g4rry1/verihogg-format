@@ -2604,24 +2604,11 @@ class SVParser {
       return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
-      parseConstraintBlock({"constraint_declaration"});
+      parseConstraintBlock({"class_constraint"});
       return true;
     }
     if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
       return parsePackageOrGenerateDeclarationRule();
-    }
-    if (at(TK::ExternKeyword)) {
-      AnnexState choice({"class_method", "class_constraint"});
-      for (size_t offset = 0; pos_ + offset < tokens_.size() &&
-                              choice.accepts(peek(offset).kind);
-           ++offset) {
-        choice.advance(peek(offset));
-        if (choice.hasViableRule("class_method") &&
-            !choice.hasViableRule("class_constraint")) {
-          static_cast<void>(parseAnnexItem({"class_method"}, true));
-          return true;
-        }
-      }
     }
     if (at(TK::VirtualKeyword) || at(TK::StaticKeyword) ||
         at(TK::ProtectedKeyword) ||
@@ -4515,7 +4502,8 @@ class SVParser {
       }
       if (!grammar_scopes_.back().accepts(peek().kind)) break;
       consumeInto(line_);
-      if (grammar_scopes_.back().completed("extern_constraint_declaration")) {
+      if (grammar_scopes_.back().completed("extern_constraint_declaration") ||
+          grammar_scopes_.back().completed("constraint_prototype")) {
         addLine();
         static_cast<void>(endGrammar());
         return;

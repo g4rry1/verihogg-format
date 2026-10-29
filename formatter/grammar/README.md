@@ -1,8 +1,8 @@
 # IEEE 1800-2023 Annex A import
 
 `../src/pipeline/annex_a/table.inc` contains 723 named syntax rules, 905
-generated helper rules, and 3408 productions after expansion of optional and
-repeated expressions. Its source
+generated helper rules, and 3409 productions after expansion of optional and
+repeated expressions and one extraction correction. Its source
 is `/home/dmitrii/veriloggraph/src/main/resources/ieee1800-2023-annex-a-styled.txt`
 (SHA-256 `4c68aa70939d2ed900e8696cbfd471df56146a8ca0ef400b6c8927688cf1d266`).
 
@@ -17,6 +17,15 @@ table. The importer reports no unresolved symbols reachable from `source_text`
 or `library_text`. The source hash and these checks establish provenance and
 structural completeness; the IEEE PDF is not present locally for a character
 by character comparison.
+
+The styled extraction loses `static` inside the optional part of
+`constraint_prototype` and turns the PDF footnote marker `8,11` into a comma.
+The independent plain-text extraction at
+`/home/dmitrii/veriloggraph/src/main/resources/ieee1800-2023-annex-a.txt`
+retains `[ static ] constraint [ dynamic_override_specifiers ]` and the
+footnote marker. `table_from_export.py` corrects this imported production to
+match the Annex A text. It asserts the broken shape before applying the
+correction, so a changed upstream extraction cannot silently receive it.
 
 To regenerate the table, build VerilogGraph, compile `ExportAnnexTable.java`
 against its classes and the Kotlin runtime, then run:

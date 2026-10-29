@@ -2903,6 +2903,37 @@ TEST_F(TreeUnwrapperTest, ExternClassMethodsUsePrototypeProduction) {
   EXPECT_TRUE(found_constraint);
 }
 
+TEST_F(TreeUnwrapperTest, ConstraintPrototypesUseAnnexProduction) {
+  const auto result = parseWithDiagnostics(
+      "class c; int x; extern constraint positive; endclass "
+      "constraint c::positive { x > 0; } "
+      "virtual class d; pure constraint valid; endclass "
+      "class e; static constraint valid; endclass "
+      "class f; constraint implicit; endclass "
+      "module after; endmodule");
+  for (const auto& warning : result.warnings) {
+    ADD_FAILURE() << warning.code << ": " << warning.message;
+  }
+  size_t prototypes = 0;
+  bool found_external_definition = false;
+  bool found_following_module = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.empty()) continue;
+    prototypes += line.tokens.back().kind == TK::Semicolon &&
+                  (line.tokens.front().kind == TK::ExternKeyword ||
+                   line.tokens.front().kind == TK::PureKeyword ||
+                   line.tokens.front().kind == TK::StaticKeyword ||
+                   line.tokens.front().kind == TK::ConstraintKeyword);
+    found_external_definition |=
+        line.tokens.front().kind == TK::ConstraintKeyword &&
+        line.tokens.back().kind == TK::OpenBrace;
+    found_following_module |= line.tokens.front().kind == TK::ModuleKeyword;
+  }
+  EXPECT_EQ(prototypes, 4U);
+  EXPECT_TRUE(found_external_definition);
+  EXPECT_TRUE(found_following_module);
+}
+
 TEST_F(TreeUnwrapperTest, ScopedConstraintUsesExternConstraintProduction) {
   const auto result = parseWithDiagnostics(
       "package p; class c; int x; endclass "
