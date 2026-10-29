@@ -2639,11 +2639,86 @@ class SVParser {
       case TK::WAndKeyword:
       case TK::WireKeyword:
       case TK::WOrKeyword:
-        static_cast<void>(parseAnnexItem({"net_declaration"}, true));
-        return true;
+        break;
       default:
         return false;
     }
+    bool ambiguous = at(TK::OpenParenthesis, 1);
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token)) ||
+          token.kind == TK::Hash) {
+        ambiguous = true;
+        break;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    size_t after_net_type = 1;
+    if (at(TK::VectoredKeyword, after_net_type) ||
+        at(TK::ScalaredKeyword, after_net_type)) {
+      ++after_net_type;
+    }
+    if (at(TK::Identifier, after_net_type) &&
+        at(TK::Identifier, after_net_type + 1)) {
+      ambiguous = true;
+    }
+    if (ambiguous) {
+      static_cast<void>(parseAnnexItem({"net_declaration"}, true));
+      return true;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = consumeAnnexRule("net_type", line_);
+    if (valid && (at(TK::VectoredKeyword) ||
+                  at(TK::ScalaredKeyword))) {
+      consumeInto(line_);
+    }
+    const auto explicit_type = [&] {
+      switch (peek().kind) {
+        case TK::BitKeyword:
+        case TK::ByteKeyword:
+        case TK::CHandleKeyword:
+        case TK::EnumKeyword:
+        case TK::EventKeyword:
+        case TK::IntKeyword:
+        case TK::IntegerKeyword:
+        case TK::LogicKeyword:
+        case TK::LongIntKeyword:
+        case TK::RealKeyword:
+        case TK::RealTimeKeyword:
+        case TK::RegKeyword:
+        case TK::ShortIntKeyword:
+        case TK::ShortRealKeyword:
+        case TK::StringKeyword:
+        case TK::StructKeyword:
+        case TK::TimeKeyword:
+        case TK::UnionKeyword:
+        case TK::SignedKeyword:
+        case TK::UnsignedKeyword:
+        case TK::OpenBracket:
+          return true;
+        default:
+          return false;
+      }
+    };
+    if (valid && explicit_type())
+      valid = consumeAnnexRule("data_type_or_implicit", line_);
+    if (valid)
+      valid = consumeAnnexRule("list_of_net_decl_assignments", line_,
+                               TK::Semicolon);
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A net declaration");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   // package_or_generate_item_declaration alternatives whose first terminal
