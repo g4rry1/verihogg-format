@@ -2251,6 +2251,27 @@ TEST_F(TreeUnwrapperTest, ConstraintExpressionCallsDistAndSetRules) {
   expectTokenConservation(result.lines);
 }
 
+TEST_F(TreeUnwrapperTest, ClassConstraintHeaderCallsModifierAndNameRules) {
+  const auto result = parseWithDiagnostics(
+      "class c; constraint : initial r { x > 0; } "
+      "static constraint : final p; endclass");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
+TEST_F(TreeUnwrapperTest, ClassConstraintHeaderResumesAfterConditional) {
+  const auto result = parseWithDiagnostics(
+      "class c; constraint\n"
+      "`ifdef USE_A\n"
+      "a\n"
+      "`else\n"
+      "b\n"
+      "`endif\n"
+      "{ x > 0; } endclass");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
 TEST_F(TreeUnwrapperTest, ConstraintIfConditionResumesAfterDirective) {
   const auto result = parseWithDiagnostics(
       "class c; constraint r { if (\n"

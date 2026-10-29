@@ -4671,44 +4671,110 @@ class SVParser {
     return true;
   }
 
+  // class_constraint ::= constraint_prototype | constraint_declaration.
+  // Both unqualified forms share the prefix through constraint_identifier;
+  // the following Annex terminal selects ';' or constraint_block.
+  [[nodiscard]] auto parseClassConstraintHeaderRule() -> std::optional<bool> {
+    if (at(TK::StaticKeyword)) consumeInto(line_);
+    while (isCompilerDirective(peek()) &&
+           !isConditionalStartDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+    if (!at(TK::ConstraintKeyword)) return std::nullopt;
+    consumeInto(line_);
+    while (isCompilerDirective(peek()) &&
+           !isConditionalStartDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+    if ((at(TK::Colon) &&
+         !consumeAnnexRule("dynamic_override_specifiers", line_,
+                           TK::Identifier)) ||
+        !consumeAnnexRule("constraint_identifier", line_)) {
+      return std::nullopt;
+    }
+    while (isCompilerDirective(peek()) &&
+           !isConditionalStartDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+    if (at(TK::Semicolon)) {
+      consumeInto(line_);
+      addLine();
+      return false;
+    }
+    if (!at(TK::OpenBrace)) return std::nullopt;
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  [[nodiscard]] auto conditionalInConstraintHeader() const -> bool {
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const Token token = tokens_[i];
+      if (token.kind == TK::OpenBrace || token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        return false;
+      }
+      if (isConditionalStartDirective(token)) return true;
+    }
+    return false;
+  }
+
   auto parseConstraintBlock(std::vector<std::string_view> roots = {
                                 "constraint_declaration",
                                 "extern_constraint_declaration"}) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
-    beginGrammar(std::move(roots));
     bool opened = false;
-    while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
-                                   isConditionalBoundaryDirective(peek()))) {
-      if (isConditionalStartDirective(peek())) {
-        bool header_ended = true;
-        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_)) {
+    bool invalid = false;
+    if (roots.size() == 1 && roots.front() == "class_constraint" &&
+        !conditionalInConstraintHeader()) {
+      const auto header = parseClassConstraintHeaderRule();
+      if (!header) {
+        invalid = true;
+      } else if (!*header) {
+        return;
+      } else {
+        opened = true;
+      }
+    } else {
+      beginGrammar(std::move(roots));
+      while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
+                                     isConditionalBoundaryDirective(peek()))) {
+        if (isConditionalStartDirective(peek())) {
+          bool header_ended = true;
+          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                     indent_level_)) {
+            break;
+          }
+          continue;
+        }
+        if (isCompilerDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+          continue;
+        }
+        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        consumeInto(line_);
+        if (grammar_scopes_.back().completed(
+                "extern_constraint_declaration") ||
+            grammar_scopes_.back().completed("constraint_prototype")) {
+          addLine();
+          static_cast<void>(endGrammar());
+          return;
+        }
+        if (grammar_scopes_.back().consumedTerminalInRule(
+                "constraint_block", TK::OpenBrace)) {
+          addLine();
+          opened = true;
           break;
         }
-        continue;
       }
-      if (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-        continue;
-      }
-      if (!grammar_scopes_.back().accepts(peek().kind)) break;
-      consumeInto(line_);
-      if (grammar_scopes_.back().completed("extern_constraint_declaration") ||
-          grammar_scopes_.back().completed("constraint_prototype")) {
-        addLine();
-        static_cast<void>(endGrammar());
-        return;
-      }
-      if (grammar_scopes_.back().consumedTerminalInRule("constraint_block",
-                                                        TK::OpenBrace)) {
-        addLine();
-        opened = true;
-        break;
-      }
+      const AnnexState header = endGrammar(false);
+      invalid = header.failed || header.interrupted;
     }
-    const AnnexState header = endGrammar(false);
-    if (!opened || header.failed || header.interrupted) {
+    if (!opened || invalid) {
       recordGrammarFallback("malformed Annex A constraint header");
       lines_.resize(saved.output_size);
       line_ = saved.line;
