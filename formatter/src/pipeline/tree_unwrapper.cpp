@@ -2575,8 +2575,7 @@ class SVParser {
         parseNamedBlock(TK::EndFunctionKeyword);
         return true;
       case TK::CheckerKeyword:
-        parseAnnexDelimitedBlock(TK::EndCheckerKeyword, "checker_declaration",
-                                 "checker_or_generate_item");
+        parseCheckerBlockRule();
         return true;
       case TK::ClassKeyword:
         parseNamedBlock(TK::EndClassKeyword);
@@ -2586,9 +2585,7 @@ class SVParser {
         parseNamedBlock(TK::EndClassKeyword);
         return true;
       case TK::CoverGroupKeyword:
-        parseAnnexDelimitedBlock(TK::EndGroupKeyword,
-                                 "covergroup_declaration",
-                                 "coverage_spec_or_option");
+        parseCovergroupBlockRule();
         return true;
       case TK::PropertyKeyword:
         parseAnnexWholeBlock(TK::EndPropertyKeyword, "property_declaration");
@@ -2688,6 +2685,124 @@ class SVParser {
       parseDelimitedBody(TK::EndClockingKeyword, "clocking_item");
     }
     return true;
+  }
+
+  // checker_declaration ::= checker checker_identifier
+  // [ '(' [ checker_port_list ] ')' ] ';' { checker_or_generate_item }
+  // endchecker [ ':' checker_identifier ].
+  auto parseCheckerBlockRule() -> void {
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage) {
+        parseAnnexDelimitedBlock(TK::EndCheckerKeyword,
+                                 "checker_declaration",
+                                 "checker_or_generate_item");
+        return;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // checker
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (!consumeAnnexRule("checker_identifier", line_)) {
+      recordGrammarFallback("invalid Annex A checker identifier");
+      recoverMalformedItem(saved);
+      return;
+    }
+    skip_directives();
+    if (at(TK::OpenParenthesis)) {
+      if (at(TK::CloseParenthesis, 1)) {
+        consumeInto(line_);
+        consumeInto(line_);
+      } else if (!consumeAnnexDelimited(
+                     TK::OpenParenthesis, TK::CloseParenthesis,
+                     "checker_port_list", line_)) {
+        recoverMalformedItem(saved);
+        return;
+      }
+      skip_directives();
+    }
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A checker semicolon");
+      recoverMalformedItem(saved);
+      return;
+    }
+    consumeInto(line_);
+    addLine();
+    parseDelimitedBody(TK::EndCheckerKeyword, "checker_or_generate_item");
+  }
+
+  auto parseCovergroupBlockRule() -> void {
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage) {
+        parseAnnexDelimitedBlock(TK::EndGroupKeyword,
+                                 "covergroup_declaration",
+                                 "coverage_spec_or_option");
+        return;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // covergroup
+    const bool extends = at(TK::ExtendsKeyword);
+    if (extends) consumeInto(line_);
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (!consumeAnnexRule("covergroup_identifier", line_)) {
+      recordGrammarFallback("invalid Annex A covergroup identifier");
+      recoverMalformedItem(saved);
+      return;
+    }
+    skip_directives();
+    if (!extends && at(TK::OpenParenthesis)) {
+      if (at(TK::CloseParenthesis, 1)) {
+        consumeInto(line_);
+        consumeInto(line_);
+      } else if (!consumeAnnexDelimited(
+                     TK::OpenParenthesis, TK::CloseParenthesis,
+                     "tf_port_list", line_)) {
+        recoverMalformedItem(saved);
+        return;
+      }
+      skip_directives();
+    }
+    if (!extends && (at(TK::At) || at(TK::DoubleAt) ||
+                     at(TK::WithKeyword))) {
+      if (!consumeAnnexRule("coverage_event", line_)) {
+        recordGrammarFallback("invalid Annex A coverage event");
+        recoverMalformedItem(saved);
+        return;
+      }
+      skip_directives();
+    }
+    if (!at(TK::Semicolon)) {
+      recordGrammarFallback("missing Annex A covergroup semicolon");
+      recoverMalformedItem(saved);
+      return;
+    }
+    consumeInto(line_);
+    addLine();
+    parseDelimitedBody(TK::EndGroupKeyword, "coverage_spec_or_option");
   }
 
   // class_constructor_declaration has its own header and body production.
@@ -3544,7 +3659,7 @@ class SVParser {
         if (parseClockingItemRule()) return true;
       }
       if (root == "coverage_spec_or_option") {
-        if (parseCoverageSpecRule()) return true;
+        if (parseCoverageOptionRule() || parseCoverageSpecRule()) return true;
       }
       if (root == "bins_or_options") {
         parseAnnexSemicolonItem("bins_or_options");
@@ -6440,6 +6555,37 @@ class SVParser {
       return true;
     }
     return false;
+  }
+
+  // coverage_option ::= option '.' member_identifier '=' expression |
+  // type_option '.' member_identifier '=' constant_expression.
+  auto parseCoverageOptionRule() -> bool {
+    if (!at(TK::Identifier) || !at(TK::Dot, 1) ||
+        (peek().rawText() != "option" &&
+         peek().rawText() != "type_option")) {
+      return false;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    const bool constant = peek().rawText() == "type_option";
+    consumeInto(line_);
+    consumeInto(line_);
+    if (!consumeAnnexRule("member_identifier", line_) ||
+        !at(TK::Equals)) {
+      recordGrammarFallback("invalid Annex A coverage option member");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    if (!consumeAnnexRule(constant ? "constant_expression" : "expression",
+                          line_, TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A coverage option value");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   // coverage_spec ::= cover_point | cover_cross. The local header chart
