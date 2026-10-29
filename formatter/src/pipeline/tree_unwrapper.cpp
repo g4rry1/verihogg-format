@@ -2348,7 +2348,7 @@ class SVParser {
                                  "specify_item", false);
         return true;
       case TK::SpecParamKeyword:
-        static_cast<void>(parseAnnexItem({"specparam_declaration"}, true));
+        parseSpecparamDeclarationRule();
         return true;
       default:
         break;
@@ -2367,14 +2367,94 @@ class SVParser {
 
   auto parseParameterOverrideRule() -> bool {
     if (!at(TK::DefParamKeyword)) return false;
-    static_cast<void>(parseAnnexItem({"parameter_override"}, true));
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);
+    if (!consumeAnnexRule("list_of_defparam_assignments", line_,
+                          TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A parameter override");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
     return true;
+  }
+
+  // specparam_declaration ::= specparam [packed_dimension]
+  //                             list_of_specparam_assignments ';'.
+  auto parseSpecparamDeclarationRule() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);
+    if (at(TK::OpenBracket) &&
+        !consumeAnnexRule("packed_dimension", line_)) {
+      recordGrammarFallback("invalid Annex A specparam dimension");
+      recoverMalformedItem(saved);
+      return;
+    }
+    if (!consumeAnnexRule("list_of_specparam_assignments", line_,
+                          TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A specparam assignment list");
+      recoverMalformedItem(saved);
+      return;
+    }
+    consumeInto(line_);
+    addLine();
   }
 
   auto parseTimeunitsRule() -> bool {
     if (!at(TK::TimeUnitKeyword) && !at(TK::TimePrecisionKeyword))
       return false;
-    static_cast<void>(parseAnnexItem({"timeunits_declaration"}));
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      if (tokens_[i].kind == TK::Semicolon ||
+          tokens_[i].kind == TK::EndOfFile) {
+        break;
+      }
+      if (isConditionalStartDirective(tokens_[i])) {
+        static_cast<void>(parseAnnexItem({"timeunits_declaration"}));
+        return true;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    const TK first = peek().kind;
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    const auto parse_clause = [&](TK keyword) -> bool {
+      consumeInto(line_);
+      skip_directives();
+      if (!at(TK::TimeLiteral)) return false;
+      consumeInto(line_);
+      skip_directives();
+      if (keyword == TK::TimeUnitKeyword && at(TK::Slash)) {
+        consumeInto(line_);
+        skip_directives();
+        if (!at(TK::TimeLiteral)) return false;
+        consumeInto(line_);
+        skip_directives();
+      }
+      if (!at(TK::Semicolon)) return false;
+      consumeInto(line_);
+      addLine();
+      return true;
+    };
+    bool valid = parse_clause(first);
+    if (valid) {
+      skip_directives();
+      const TK second = first == TK::TimeUnitKeyword
+                            ? TK::TimePrecisionKeyword
+                            : TK::TimeUnitKeyword;
+      if (at(second)) valid = parse_clause(second);
+    }
+    if (!valid) {
+      recordGrammarFallback("invalid Annex A timeunits declaration");
+      recoverMalformedItem(saved);
+    }
     return true;
   }
 
@@ -2914,7 +2994,17 @@ class SVParser {
   // neither includes net_alias or bind_directive.
   auto parseModuleCommonLeafRule(bool continuous_only = false) -> bool {
     if (at(TK::GenVarKeyword)) {
-      static_cast<void>(parseAnnexItem({"genvar_declaration"}, true));
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);
+      if (!consumeAnnexRule("list_of_genvar_identifiers", line_,
+                            TK::Semicolon) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A genvar declaration");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
       return true;
     }
     if (at(TK::AssignKeyword)) {
@@ -2922,7 +3012,29 @@ class SVParser {
       return true;
     }
     if (!continuous_only && at(TK::AliasKeyword)) {
-      static_cast<void>(parseAnnexItem({"net_alias"}, true));
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);
+      if (!consumeAnnexRule("net_lvalue", line_, TK::Equals) ||
+          !at(TK::Equals)) {
+        recordGrammarFallback("invalid Annex A net alias source");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      do {
+        consumeInto(line_);
+        if (!consumeAnnexRule("net_lvalue", line_, TK::Equals)) {
+          recordGrammarFallback("invalid Annex A net alias destination");
+          recoverMalformedItem(saved);
+          return true;
+        }
+      } while (at(TK::Equals));
+      if (!at(TK::Semicolon)) {
+        recordGrammarFallback("missing Annex A net alias semicolon");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
       return true;
     }
     if (!continuous_only && at(TK::BindKeyword)) {
@@ -4978,7 +5090,61 @@ class SVParser {
     static_cast<void>(parseAnnexItem(grammarRoots()));
   }
 
+  // package_declaration ::= {attribute_instance} package [lifetime]
+  //                         package_identifier ';' ... endpackage.
+  // Attribute prefixes have already been consumed by parseStatementImpl().
+  [[nodiscard]] auto parsePackageHeaderRule() -> bool {
+    consumeInto(line_);
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if ((at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) &&
+        !consumeAnnexRule("lifetime", line_)) {
+      return false;
+    }
+    skip_directives();
+    if (!consumeAnnexRule("package_identifier", line_)) return false;
+    skip_directives();
+    if (!at(TK::Semicolon)) return false;
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  [[nodiscard]] auto conditionalInPackageHeader() const -> bool {
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      if (tokens_[i].kind == TK::Semicolon ||
+          tokens_[i].kind == TK::EndOfFile) {
+        return false;
+      }
+      if (isConditionalStartDirective(tokens_[i])) return true;
+    }
+    return false;
+  }
+
   auto parseStructuralBlock(TK closeKw) -> void {
+    if (closeKw == TK::EndPackageKeyword &&
+        !conditionalInPackageHeader()) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      if (!parsePackageHeaderRule()) {
+        recordGrammarFallback("invalid Annex A package header");
+        lines_.resize(saved.output_size);
+        line_ = saved.line;
+        preserved_source_end_ = saved.preserved_source_end;
+        indent_level_ = saved.indent_level;
+        pos_ = saved.pos;
+        const auto after = findPairedEnd(pos_, closeKw);
+        emitOpaque(pos_, after ? *after : findOuterBoundary(pos_));
+        return;
+      }
+      parseDelimitedBody(closeKw, "package_item");
+      return;
+    }
     std::vector<std::string_view> roots;
     std::string_view body_rule;
     std::string_view declaration_rule;

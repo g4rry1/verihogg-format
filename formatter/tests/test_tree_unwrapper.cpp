@@ -2586,10 +2586,11 @@ TEST_F(TreeUnwrapperTest, MalformedUniquePrefixRecoversAtOuterBlock) {
 
 TEST_F(TreeUnwrapperTest, ModuleCommonLeafRulesKeepTheirContexts) {
   const auto result = parseWithDiagnostics(
-      "module m; wire a, b; assign a = b; alias a = b; "
+      "module m; wire a, b, c; assign a = b; alias a = b = c; "
       "initial begin assign a = b; end endmodule "
       "program p; assign a = b; endprogram");
   EXPECT_TRUE(result.warnings.empty());
+  expectTokenConservation(result.lines);
   size_t assignments = 0;
   bool found_alias = false;
   for (const auto& line : result.lines) {
@@ -2603,7 +2604,9 @@ TEST_F(TreeUnwrapperTest, ModuleCommonLeafRulesKeepTheirContexts) {
 
 TEST_F(TreeUnwrapperTest, GenvarAndDefparamFinishBeforeNextModuleItem) {
   const auto result = parseWithDiagnostics(
-      "module m; genvar i; defparam u.P = 1; logic a; endmodule");
+      "module m; genvar i, j; defparam u.P = 1, v.Q = 2; "
+      "logic a; endmodule");
+  expectTokenConservation(result.lines);
   for (const auto& warning : result.warnings) {
     ADD_FAILURE() << warning.code << ": " << warning.message;
   }
@@ -2621,9 +2624,28 @@ TEST_F(TreeUnwrapperTest, GenvarAndDefparamFinishBeforeNextModuleItem) {
             starts.end());
 }
 
+TEST_F(TreeUnwrapperTest, MalformedAliasPreservesTokensAndNextModule) {
+  const auto result = parseWithDiagnostics(
+      "module m; alias a = ; endmodule module next; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  expectTokenConservation(result.lines);
+  bool found_next = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() >= 2 &&
+        line.tokens.front().kind == TK::ModuleKeyword &&
+        line.tokens[1].rawText() == "next") {
+      found_next = true;
+    }
+  }
+  EXPECT_TRUE(found_next);
+}
+
 TEST_F(TreeUnwrapperTest, SpecparamUsesAnnexRuleAndResumesModuleItems) {
   const auto result = parseWithDiagnostics(
-      "module m; specparam SETUP = 2, HOLD = 3; logic ready; endmodule");
+      "module m; specparam [3:0] SETUP = 2, HOLD = 3; "
+      "logic ready; endmodule");
+  expectTokenConservation(result.lines);
   for (const auto& warning : result.warnings) {
     ADD_FAILURE() << warning.code << ": " << warning.message;
   }
@@ -3695,11 +3717,55 @@ TEST_F(TreeUnwrapperTest, LongNamedBodiesUsePerItemGrammar) {
 }
 
 TEST_F(TreeUnwrapperTest, PackageTimeunitsRemainAnnexAItems) {
-  const auto result =
-      parseWithDiagnostics("package p; timeunit 1ns / 1ps; int a; endpackage");
-  EXPECT_TRUE(result.warnings.empty());
+  const auto result = parseWithDiagnostics(
+      "package p; timeunit 1ns / 1ps; timeprecision 1ps; "
+      "int a; endpackage");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
   EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
             TK::EndPackageKeyword);
+  const auto reverse = parseWithDiagnostics(
+      "package p; timeprecision 1ps; timeunit 1ns; endpackage");
+  ASSERT_TRUE(reverse.warnings.empty()) << reverse.warnings.front().message;
+  expectTokenConservation(reverse.lines);
+}
+
+TEST_F(TreeUnwrapperTest, PackageHeaderCallsLifetimeAndIdentifierRules) {
+  const auto result = parseWithDiagnostics(
+      "package automatic p; int x; endpackage : p "
+      "module after; endmodule");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
+TEST_F(TreeUnwrapperTest, PackageHeaderResumesAfterConditionalLifetime) {
+  const auto result = parseWithDiagnostics(
+      "package\n"
+      "`ifdef AUTOMATIC\n"
+      "automatic\n"
+      "`else\n"
+      "static\n"
+      "`endif\n"
+      "p; int x; endpackage");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
+TEST_F(TreeUnwrapperTest, MalformedPackageHeaderResumesAfterEndpackage) {
+  const auto result = parseWithDiagnostics(
+      "package automatic; int x; endpackage module after; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  expectTokenConservation(result.lines);
+  bool found_after = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() >= 2 &&
+        line.tokens.front().kind == TK::ModuleKeyword &&
+        line.tokens[1].rawText() == "after") {
+      found_after = true;
+    }
+  }
+  EXPECT_TRUE(found_after);
 }
 
 TEST_F(TreeUnwrapperTest, PackageItemAttributeUsesAnnexAPrefix) {
