@@ -5555,47 +5555,114 @@ class SVParser {
     const std::string_view rule =
         randcase ? "randcase_statement"
                  : generate ? "case_generate_construct" : "case_statement";
-    beginGrammar({rule});
-    const auto active_body = [&]() -> std::string_view {
-      if (!randcase && !generate &&
-          (at(TK::InsideKeyword) || at(TK::MatchesKeyword))) {
-        return {};
-      }
-      for (const std::string_view child :
-           {"case_item", "case_pattern_item", "case_inside_item",
-            "randcase_item", "case_generate_item"}) {
-        if (grammar_scopes_.back().allPathsHaveActiveRule(child)) return child;
-      }
-      return {};
-    };
-    while (!at(TK::EndOfFile) && active_body().empty() &&
-           !grammar_scopes_.back().complete()) {
-      if (isConditionalStartDirective(peek())) {
-        bool header_ended = true;
-        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_)) {
+    bool conditional_before_condition = false;
+    if (!randcase) {
+      for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
+        if (tokens_[i].kind == TK::OpenParenthesis ||
+            tokens_[i].kind == TK::Semicolon ||
+            tokens_[i].kind == TK::EndOfFile) {
           break;
         }
-        continue;
+        if (isConditionalStartDirective(tokens_[i])) {
+          conditional_before_condition = true;
+          break;
+        }
       }
-      if (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-        continue;
-      }
-      if (!grammar_scopes_.back().accepts(peek().kind)) break;
-      consumeInto(line_);
     }
-    const std::string_view body_rule = active_body();
-    const AnnexState header = endGrammar(false);
-    if (header.failed || header.interrupted ||
-        (body_rule.empty() && !header.complete())) {
-      recordGrammarFallback("invalid Annex A case header");
-      recoverMalformedItem(saved);
-      return;
+    std::string_view body_rule;
+    bool header_complete = false;
+    if (conditional_before_condition) {
+      beginGrammar({rule});
+      const auto active_body = [&]() -> std::string_view {
+        if (!generate &&
+            (at(TK::InsideKeyword) || at(TK::MatchesKeyword))) {
+          return {};
+        }
+        for (const std::string_view child :
+             {"case_item", "case_pattern_item", "case_inside_item",
+              "case_generate_item"}) {
+          if (grammar_scopes_.back().allPathsHaveActiveRule(child))
+            return child;
+        }
+        return {};
+      };
+      while (!at(TK::EndOfFile) && active_body().empty() &&
+             !grammar_scopes_.back().complete()) {
+        if (isConditionalStartDirective(peek())) {
+          bool header_ended = true;
+          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                     indent_level_)) {
+            break;
+          }
+          continue;
+        }
+        if (isCompilerDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+          continue;
+        }
+        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        consumeInto(line_);
+      }
+      body_rule = active_body();
+      const AnnexState header = endGrammar(false);
+      if (header.failed || header.interrupted ||
+          (body_rule.empty() && !header.complete())) {
+        recordGrammarFallback("invalid Annex A case header");
+        recoverMalformedItem(saved);
+        return;
+      }
+      header_complete = header.complete();
+    } else {
+      const TK keyword = peek().kind;
+      consumeInto(line_);
+      if (randcase) {
+        body_rule = "randcase_item";
+      } else {
+        while (isCompilerDirective(peek()) &&
+               !isConditionalStartDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+        }
+        if (!at(TK::OpenParenthesis)) {
+          recordGrammarFallback("invalid Annex A case condition");
+          recoverMalformedItem(saved);
+          return;
+        }
+        consumeAnnexDelimited(
+            TK::OpenParenthesis, TK::CloseParenthesis,
+            generate ? "constant_expression" : "case_expression", line_);
+        if (pos_ == 0 ||
+            tokens_[pos_ - 1].kind != TK::CloseParenthesis) {
+          recordGrammarFallback("incomplete Annex A case condition");
+          recoverMalformedItem(saved);
+          return;
+        }
+        while (isCompilerDirective(peek()) &&
+               !isConditionalStartDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+        }
+        if (generate) {
+          body_rule = "case_generate_item";
+        } else if (at(TK::MatchesKeyword)) {
+          consumeInto(line_);
+          body_rule = "case_pattern_item";
+        } else if (at(TK::InsideKeyword) &&
+                   keyword == TK::CaseKeyword) {
+          consumeInto(line_);
+          body_rule = "case_inside_item";
+        } else if (at(TK::InsideKeyword)) {
+          recordGrammarFallback("case inside outside Annex A case rule");
+          recoverMalformedItem(saved);
+          return;
+        } else {
+          body_rule = "case_item";
+        }
+      }
     }
     addLine();
-    if (header.complete()) return;
+    if (header_complete) return;
 
     pushOpenFrame(TK::EndCaseKeyword);
     block_stack_.back().grammar_body = body_rule;
@@ -5776,52 +5843,110 @@ class SVParser {
   auto parseCaseItem() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     const std::string_view item_rule = block_stack_.back().grammar_body;
-    beginGrammar({item_rule});
     const bool default_item = at(TK::DefaultKeyword);
     bool colon_seen = false;
-    if (default_item) {
-      consumeInto(line_);
-      if (at(TK::Colon)) {
-        consumeInto(line_);
-        colon_seen = true;
+    bool conditional_header = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const TK kind = tokens_[i].kind;
+      if (kind == TK::Colon || kind == TK::Semicolon ||
+          kind == TK::EndCaseKeyword || kind == TK::EndOfFile) {
+        break;
       }
-    } else {
-      while (!at(TK::EndOfFile) && !at(TK::EndCaseKeyword) &&
-             !(at(TK::Colon) &&
-               (grammar_scopes_.back().failed ||
-                grammar_scopes_.back().expectsRootTerminal(TK::Colon)))) {
-        if (stop_at_conditional_boundary_ &&
-            isConditionalBoundaryDirective(peek())) {
-          break;
-        }
-        if (isConditionalStartDirective(peek())) {
-          bool header_ended = true;
-          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                     indent_level_)) {
-            break;
-          }
-          continue;
-        }
-        if (isCompilerDirective(peek())) {
-          addLine();
-          parseDirectiveLine();
-          continue;
-        }
-        if (at(TK::Directive)) break;
-        consumeInto(line_);
-      }
-      if (at(TK::Colon)) {
-        consumeInto(line_);
-        colon_seen = true;
+      if (isConditionalStartDirective(tokens_[i])) {
+        conditional_header = true;
+        break;
       }
     }
-    const AnnexState header = endGrammar(false);
-    colon_seen |= header.consumedTerminalInRule(item_rule, TK::Colon);
-    if ((!default_item && !colon_seen) || header.failed || header.interrupted ||
-        !header.hasViableRule(item_rule)) {
-      recordGrammarFallback("invalid Annex A case item header");
-      recoverMalformedItem(saved);
-      return;
+    if (conditional_header) {
+      beginGrammar({item_rule});
+      if (default_item) {
+        consumeInto(line_);
+        if (at(TK::Colon)) {
+          consumeInto(line_);
+          colon_seen = true;
+        }
+      } else {
+        while (!at(TK::EndOfFile) && !at(TK::EndCaseKeyword) &&
+               !(at(TK::Colon) &&
+                 (grammar_scopes_.back().failed ||
+                  grammar_scopes_.back().expectsRootTerminal(TK::Colon)))) {
+          if (stop_at_conditional_boundary_ &&
+              isConditionalBoundaryDirective(peek())) {
+            break;
+          }
+          if (isConditionalStartDirective(peek())) {
+            bool header_ended = true;
+            if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                       indent_level_)) {
+              break;
+            }
+            continue;
+          }
+          if (isCompilerDirective(peek())) {
+            addLine();
+            parseDirectiveLine();
+            continue;
+          }
+          if (at(TK::Directive)) break;
+          consumeInto(line_);
+        }
+        if (at(TK::Colon)) {
+          consumeInto(line_);
+          colon_seen = true;
+        }
+      }
+      const AnnexState header = endGrammar(false);
+      colon_seen |= header.consumedTerminalInRule(item_rule, TK::Colon);
+      if ((!default_item && !colon_seen) || header.failed ||
+          header.interrupted || !header.hasViableRule(item_rule)) {
+        recordGrammarFallback("invalid Annex A case item header");
+        recoverMalformedItem(saved);
+        return;
+      }
+    } else {
+      bool valid = true;
+      if (default_item) {
+        valid = item_rule != "randcase_item";
+        consumeInto(line_);
+      } else if (item_rule == "case_item") {
+        valid = consumeAnnexRule("case_item_expression", line_, TK::Colon);
+        while (valid && at(TK::Comma)) {
+          consumeInto(line_);
+          valid = consumeAnnexRule("case_item_expression", line_, TK::Colon);
+        }
+      } else if (item_rule == "case_pattern_item") {
+        valid = consumeAnnexRule("pattern", line_, TK::Colon);
+        if (valid && at(TK::TripleAnd)) {
+          consumeInto(line_);
+          valid = consumeAnnexRule("expression", line_, TK::Colon);
+        }
+      } else if (item_rule == "case_inside_item") {
+        valid = consumeAnnexRule("range_list", line_, TK::Colon);
+      } else if (item_rule == "randcase_item") {
+        valid = consumeAnnexRule("expression", line_, TK::Colon);
+      } else if (item_rule == "case_generate_item") {
+        valid = consumeAnnexRule("constant_expression", line_, TK::Colon);
+        while (valid && at(TK::Comma)) {
+          consumeInto(line_);
+          valid = consumeAnnexRule("constant_expression", line_, TK::Colon);
+        }
+      } else {
+        valid = false;
+      }
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+      if (at(TK::Colon)) {
+        consumeInto(line_);
+        colon_seen = true;
+      }
+      if (!valid || (!default_item && !colon_seen)) {
+        recordGrammarFallback("invalid Annex A case item header");
+        recoverMalformedItem(saved);
+        return;
+      }
     }
     addLine();
 

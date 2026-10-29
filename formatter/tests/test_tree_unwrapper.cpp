@@ -3540,6 +3540,43 @@ TEST_F(TreeUnwrapperTest, CaseInsideAndMatchesUseAnnexAItems) {
   EXPECT_EQ(modified_case_headers, 2U);
 }
 
+TEST_F(TreeUnwrapperTest, CaseItemListsCallExpressionRules) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial case (x) 1, 2: y = 1; endcase "
+      "generate case (1) 1, 2: begin : g wire z; end endcase "
+      "endgenerate endmodule");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
+TEST_F(TreeUnwrapperTest, CasePatternAndInsideItemsCallChildRules) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial begin "
+      "case (x) matches 1 &&& enabled: y = 1; endcase "
+      "case (x) inside [1:$]: y = 2; endcase "
+      "end endmodule");
+  ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
+  expectTokenConservation(result.lines);
+}
+
+TEST_F(TreeUnwrapperTest, CaseXInsideFallsBackAndResumesAtModuleClose) {
+  const auto result = parseWithDiagnostics(
+      "module m; initial casex (a) inside "
+      "1: b = 1; endcase endmodule module after; endmodule");
+  ASSERT_FALSE(result.warnings.empty());
+  EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
+  expectTokenConservation(result.lines);
+  bool found_after = false;
+  for (const auto& line : result.lines) {
+    if (line.tokens.size() >= 2 &&
+        line.tokens.front().kind == TK::ModuleKeyword &&
+        line.tokens[1].rawText() == "after") {
+      found_after = true;
+    }
+  }
+  EXPECT_TRUE(found_after);
+}
+
 TEST_F(TreeUnwrapperTest, IncompleteAutomaticModuleUsesDiagnosticRecovery) {
   const auto result = parseWithDiagnostics("module automatic m; logic a;");
   ASSERT_FALSE(result.warnings.empty());
