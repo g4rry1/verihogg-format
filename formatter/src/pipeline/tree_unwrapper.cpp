@@ -3481,6 +3481,63 @@ class SVParser {
     return true;
   }
 
+  auto parseClassMethodPrototypeRule() -> bool {
+    if (!at(TK::PureKeyword) && !at(TK::ExternKeyword)) return false;
+    if (at(TK::ConstraintKeyword, 1)) return false;
+    const bool pure = at(TK::PureKeyword);
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"class_method"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // pure / extern
+    bool valid = true;
+    if (pure) {
+      if (!at(TK::VirtualKeyword)) valid = false;
+      else consumeInto(line_);
+      while (valid && (at(TK::StaticKeyword) ||
+                       at(TK::ProtectedKeyword) ||
+                       at(TK::LocalKeyword)))
+        valid = consumeAnnexRule("class_item_qualifier", line_);
+    } else {
+      while (valid && (at(TK::VirtualKeyword) ||
+                       at(TK::StaticKeyword) ||
+                       at(TK::ProtectedKeyword) ||
+                       at(TK::LocalKeyword) ||
+                       at(TK::PureKeyword)))
+        valid = consumeAnnexRule("method_qualifier", line_);
+    }
+    if (valid && !pure && at(TK::FunctionKeyword) &&
+        at(TK::NewKeyword, 1)) {
+      valid = consumeAnnexRule("class_constructor_prototype", line_);
+      if (valid && !line_.tokens.empty() &&
+          line_.tokens.back().kind == TK::Semicolon) {
+        addLine();
+        return true;
+      }
+      valid = false;
+    } else if (valid) {
+      valid = consumeAnnexRule("method_prototype", line_, TK::Semicolon) &&
+              at(TK::Semicolon);
+      if (valid) {
+        consumeInto(line_);
+        addLine();
+        return true;
+      }
+    }
+    recordGrammarFallback("invalid Annex A class method prototype");
+    recoverMalformedLeaf(saved);
+    return true;
+  }
+
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
@@ -3489,6 +3546,7 @@ class SVParser {
         parseBuiltInDataDeclarationRule())
       return true;
     if (parseExplicitClassPropertyRule()) return true;
+    if (parseClassMethodPrototypeRule()) return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
       parseConstraintBlock({"class_constraint"});
