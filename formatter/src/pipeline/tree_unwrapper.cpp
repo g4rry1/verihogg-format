@@ -3125,6 +3125,39 @@ class SVParser {
     }
   }
 
+  auto parseModportDeclarationRule() -> bool {
+    if (!at(TK::ModPortKeyword)) return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // modport
+    bool valid = consumeAnnexRule("modport_item", line_, TK::Comma);
+    while (valid && at(TK::Comma)) {
+      consumeInto(line_);
+      valid = consumeAnnexRule("modport_item", line_, TK::Comma);
+    }
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A modport item list");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   auto parseInterfaceItemRule(bool allow_port_declaration) -> bool {
     if (parseTimeunitsRule()) return true;
     if (parseDefaultClockingOrDisableRule(false)) return true;
@@ -3139,8 +3172,7 @@ class SVParser {
         parseBuiltInDataDeclarationRule() || parseNetDeclarationRule())
       return true;
     if (at(TK::ModPortKeyword)) {
-      static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
-      return true;
+      return parseModportDeclarationRule();
     }
     if (at(TK::ExternKeyword) &&
         (at(TK::FunctionKeyword, 1) || at(TK::TaskKeyword, 1) ||
