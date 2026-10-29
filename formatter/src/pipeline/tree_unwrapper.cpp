@@ -5809,14 +5809,73 @@ class SVParser {
   }
 
   auto parsePrimitiveBlock() -> void {
-    beginGrammar({"udp_declaration"});
-    consumeGrammarHeader(
-        TK::EndPrimitiveKeyword, {},
-        {"udp_nonansi_declaration", "udp_ansi_declaration", "udp_declaration"});
-    const AnnexState header = endGrammar(false);
-    if (header.complete()) return;  // extern udp_declaration has no body
-    const bool nonansi = header.completedFrom("udp_nonansi_declaration", 0);
-    const bool ansi = header.completedFrom("udp_ansi_declaration", 0);
+    bool interrupted_header = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token)) ||
+          (token.kind == TK::OpenParenthesis &&
+           i + 2 < tokens_.size() && tokens_[i + 1].kind == TK::Dot &&
+           tokens_[i + 2].kind == TK::Star)) {
+        interrupted_header = true;
+        break;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile) {
+        break;
+      }
+    }
+    bool nonansi = false;
+    bool ansi = false;
+    if (interrupted_header) {
+      beginGrammar({"udp_declaration"});
+      consumeGrammarHeader(
+          TK::EndPrimitiveKeyword, {},
+          {"udp_nonansi_declaration", "udp_ansi_declaration",
+           "udp_declaration"});
+      const AnnexState header = endGrammar(false);
+      if (header.complete()) return;  // extern declaration has no body
+      nonansi = header.completedFrom("udp_nonansi_declaration", 0);
+      ansi = header.completedFrom("udp_ansi_declaration", 0);
+    } else {
+      const LeafCheckpoint saved = leafCheckpoint();
+      const bool external = at(TK::ExternKeyword);
+      if (external) consumeInto(line_);
+      if (!at(TK::PrimitiveKeyword)) {
+        recordGrammarFallback("invalid Annex A primitive keyword");
+        recoverMalformedItem(saved);
+        return;
+      }
+      consumeInto(line_);
+      if (!consumeAnnexRule("udp_identifier", line_) ||
+          !at(TK::OpenParenthesis)) {
+        recordGrammarFallback("invalid Annex A UDP identifier");
+        recoverMalformedItem(saved);
+        return;
+      }
+      consumeInto(line_);
+      const AnnexState ports = parseAnnexItem(
+          {"udp_port_list", "udp_declaration_port_list"}, false, true);
+      nonansi = ports.completed("udp_port_list");
+      ansi = ports.completed("udp_declaration_port_list");
+      if (ports.failed || ports.interrupted || !ports.complete() ||
+          !at(TK::CloseParenthesis)) {
+        recordGrammarFallback("invalid Annex A UDP port list");
+        recoverMalformedItem(saved);
+        return;
+      }
+      consumeInto(line_);
+      if (!at(TK::Semicolon)) {
+        recordGrammarFallback("missing Annex A UDP header semicolon");
+        recoverMalformedItem(saved);
+        return;
+      }
+      consumeInto(line_);
+      addLine();
+      if (external) return;
+    }
     pushOpenFrame(TK::EndPrimitiveKeyword);
     block_stack_.back().grammar_body = "udp_body";
     block_stack_.back().udp_nonansi_header = nonansi;
@@ -5850,8 +5909,7 @@ class SVParser {
     if (before_table && !body.udp_ansi_header && !body.udp_initial_seen &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::RegKeyword))) {
-      const AnnexState item = parseAnnexItem({"udp_port_declaration"});
-      if (item.complete()) {
+      if (parseUdpPortDeclarationRule()) {
         auto& udp = block_stack_.back();
         udp.udp_port_on_all_paths = true;
         udp.udp_port_on_any_path = true;
@@ -5859,8 +5917,7 @@ class SVParser {
       return;
     }
     if (before_table && !body.udp_initial_seen && at(TK::InitialKeyword)) {
-      const AnnexState item = parseAnnexItem({"udp_initial_statement"});
-      block_stack_.back().udp_initial_seen = item.complete();
+      block_stack_.back().udp_initial_seen = parseUdpInitialStatementRule();
       return;
     }
     if (before_table && at(TK::TableKeyword)) {
@@ -5892,6 +5949,55 @@ class SVParser {
       return;
     }
     static_cast<void>(parseAnnexItem(grammarRoots()));
+  }
+
+  [[nodiscard]] auto parseUdpPortDeclarationRule() -> bool {
+    std::string_view rule;
+    switch (peek().kind) {
+      case TK::OutputKeyword:
+        rule = "udp_output_declaration";
+        break;
+      case TK::InputKeyword:
+        rule = "udp_input_declaration";
+        break;
+      case TK::RegKeyword:
+        rule = "udp_reg_declaration";
+        break;
+      default:
+        return false;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (!consumeAnnexRule(rule, line_, TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A UDP port declaration");
+      recoverMalformedItem(saved);
+      return false;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  [[nodiscard]] auto parseUdpInitialStatementRule() -> bool {
+    if (!at(TK::InitialKeyword)) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);
+    if (!consumeAnnexRule("output_port_identifier", line_) ||
+        !at(TK::Equals)) {
+      recordGrammarFallback("invalid Annex A UDP initial output");
+      recoverMalformedItem(saved);
+      return false;
+    }
+    consumeInto(line_);
+    if (!consumeAnnexRule("init_val", line_, TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A UDP initial value");
+      recoverMalformedItem(saved);
+      return false;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   // package_declaration ::= {attribute_instance} package [lifetime]
