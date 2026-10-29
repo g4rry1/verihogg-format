@@ -5579,8 +5579,60 @@ class SVParser {
     parseDelimitedBody(closeKw, body_rule);
   }
 
+  [[nodiscard]] auto parseTaskFunctionBlockRule(TK closeKw) -> bool {
+    if (closeKw != TK::EndTaskKeyword &&
+        closeKw != TK::EndFunctionKeyword) {
+      return false;
+    }
+    if (isConditionalStartDirective(peek(1)) ||
+        peek(1).kind == TK::MacroUsage) {
+      return false;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // task / function
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (at(TK::Colon) &&
+        !consumeAnnexRule("dynamic_override_specifiers", line_)) {
+      recordGrammarFallback("invalid Annex A task/function specifier");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    skip_directives();
+    if ((at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) &&
+        !consumeAnnexRule("lifetime", line_)) {
+      recordGrammarFallback("invalid Annex A task/function lifetime");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    skip_directives();
+    const std::string_view body_rule =
+        closeKw == TK::EndTaskKeyword ? "task_body_declaration"
+                                      : "function_body_declaration";
+    beginGrammar({body_rule});
+    consumeGrammarHeader(closeKw, {body_rule});
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted ||
+        !header.consumedTerminalInRule(body_rule, TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A task/function header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    const bool ports_in_header =
+        header.hasActiveProductionContaining(body_rule, TK::OpenParenthesis);
+    parseDelimitedBody(closeKw, {}, false, ports_in_header);
+    return true;
+  }
+
   // class / function / task ... endclass / endfunction / endtask
   auto parseNamedBlock(TK closeKw) -> void {
+    if (parseTaskFunctionBlockRule(closeKw)) return;
     std::vector<std::string_view> roots;
     std::string_view body_rule;
     bool tf_ports_in_header = false;
