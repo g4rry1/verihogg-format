@@ -1235,11 +1235,19 @@ class SVParser {
   // expression unavailable. Keep the rest of the aggregate in the fallback
   // item so its closing brace cannot be mistaken for a sibling declaration.
   auto recoverAggregateAfterMacro(int brace_depth) -> void {
-    while (!at(TK::EndOfFile) &&
-           !(stop_at_conditional_boundary_ &&
-             isConditionalBoundaryDirective(peek())) &&
-           !matchingOpenFrame(peek().kind)) {
+    int conditional_depth = 0;
+    while (!at(TK::EndOfFile) && !matchingOpenFrame(peek().kind)) {
       if (isCompilerDirective(peek())) {
+        if (stop_at_conditional_boundary_ && conditional_depth == 0 &&
+            isConditionalBoundaryDirective(peek())) {
+          break;
+        }
+        if (isConditionalStartDirective(peek())) {
+          ++conditional_depth;
+        } else if (isConditionalEndDirective(peek()) &&
+                   conditional_depth > 0) {
+          --conditional_depth;
+        }
         addLine();
         parseDirectiveLine();
         continue;
