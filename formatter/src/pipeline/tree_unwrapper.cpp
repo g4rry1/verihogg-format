@@ -2341,8 +2341,10 @@ class SVParser {
       case TK::VirtualKeyword:
         return at(TK::ClassKeyword, 1) &&
                parsePackageOrGenerateDeclarationRule();
+      case TK::BindKeyword:
+        return parseModuleCommonLeafRule();
       default:
-        return false;
+        return parsePackageItemRule();
     }
   }
 
@@ -3411,6 +3413,11 @@ class SVParser {
   // package_or_generate_item_declaration alternatives whose first terminal
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
+    if (at(TK::Semicolon)) {
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     if (parseClassConstructorRule()) return true;
     if (parseQualifiedDataDeclarationRule()) return true;
     if (parseDpiDeclarationRule()) return true;
