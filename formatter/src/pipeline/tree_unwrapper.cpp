@@ -5629,17 +5629,31 @@ class SVParser {
   // not have the instance shape stay with their local declaration chart.
   auto parseStructuralInstantiationRule() -> bool {
     if (!at(TK::Identifier)) return false;
-    bool instance_shape = at(TK::Identifier, 1) &&
-                          at(TK::OpenParenthesis, 2);
+    const auto has_instance_shape = [&](size_t index) {
+      if (index >= tokens_.size() ||
+          tokens_[index].kind != TK::Identifier) return false;
+      ++index;
+      while (index < tokens_.size() &&
+             tokens_[index].kind == TK::OpenBracket) {
+        int depth = 0;
+        do {
+          if (tokens_[index].kind == TK::OpenBracket) ++depth;
+          if (tokens_[index].kind == TK::CloseBracket) --depth;
+          ++index;
+        } while (depth > 0 && index < tokens_.size());
+        if (depth != 0) return false;
+      }
+      return index < tokens_.size() &&
+             tokens_[index].kind == TK::OpenParenthesis;
+    };
+    bool instance_shape = has_instance_shape(pos_ + 1);
     if (at(TK::Hash, 1) && at(TK::OpenParenthesis, 2)) {
       int depth = 0;
       for (size_t i = pos_ + 2; i < tokens_.size(); ++i) {
         if (tokens_[i].kind == TK::OpenParenthesis) ++depth;
         if (tokens_[i].kind == TK::CloseParenthesis) --depth;
         if (depth == 0) {
-          instance_shape = i + 2 < tokens_.size() &&
-                           tokens_[i + 1].kind == TK::Identifier &&
-                           tokens_[i + 2].kind == TK::OpenParenthesis;
+          instance_shape = has_instance_shape(i + 1);
           break;
         }
         if (tokens_[i].kind == TK::EndOfFile ||
