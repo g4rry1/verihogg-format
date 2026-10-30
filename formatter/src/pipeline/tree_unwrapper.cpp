@@ -8693,14 +8693,15 @@ class SVParser {
       if (valid)
         valid = consumeAnnexRule("rs_production_identifier", line_);
       if (valid && at(TK::OpenParenthesis)) {
-        if (at(TK::CloseParenthesis, 1)) {
+        consumeInto(line_);
+        valid = !at(TK::CloseParenthesis);
+        while (valid) {
+          valid = consumeAnnexRule("tf_port_item", line_, TK::Comma);
+          if (!valid || !at(TK::Comma)) break;
           consumeInto(line_);
-          consumeInto(line_);
-        } else {
-          valid = consumeAnnexDelimited(
-              TK::OpenParenthesis, TK::CloseParenthesis,
-              "tf_port_list", line_);
         }
+        if (valid && at(TK::CloseParenthesis)) consumeInto(line_);
+        else valid = false;
       }
       if (valid && at(TK::Colon)) consumeInto(line_);
       else valid = false;
