@@ -3483,25 +3483,6 @@ class SVParser {
     return true;
   }
 
-  auto parsePackageImportItemRule() -> bool {
-    const auto skip_directives = [&] {
-      while (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-    };
-    skip_directives();
-    if (!at(TK::Identifier)) return false;
-    consumeInto(line_);
-    skip_directives();
-    if (!at(TK::DoubleColon)) return false;
-    consumeInto(line_);
-    skip_directives();
-    if (!at(TK::Identifier) && !at(TK::Star)) return false;
-    consumeInto(line_);
-    return true;
-  }
-
   auto parsePackageImportExportRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
         at(TK::StringLiteral, 1))
@@ -3539,7 +3520,7 @@ class SVParser {
     } else {
       do {
         if (at(TK::Comma)) consumeInto(line_);
-        valid = parsePackageImportItemRule();
+        valid = consumeAnnexRule("package_import_item", line_, TK::Comma);
         skip_directives();
       } while (valid && at(TK::Comma));
     }
