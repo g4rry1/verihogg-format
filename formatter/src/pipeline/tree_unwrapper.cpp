@@ -2395,7 +2395,7 @@ class SVParser {
       default:
         break;
     }
-    if (parseTypeDeclarationRule() || parseBuiltInDataDeclarationRule() ||
+    if (parseTypeDeclarationRule() || parseExplicitDataDeclarationRule() ||
         parseNettypeDeclarationRule() || parseNetDeclarationRule() ||
         parseParameterOverrideRule() ||
         parseAssertionItemRule() || parseModuleCommonLeafRule() ||
@@ -2833,7 +2833,7 @@ class SVParser {
     return true;
   }
 
-  auto parseBuiltInDataDeclarationRule() -> bool {
+  auto parseExplicitDataDeclarationRule() -> bool {
     switch (peek().kind) {
       case TK::BitKeyword:
       case TK::ByteKeyword:
@@ -2853,6 +2853,14 @@ class SVParser {
       case TK::StructKeyword:
       case TK::TimeKeyword:
       case TK::UnionKeyword:
+        break;
+      case TK::VirtualKeyword:
+        if (at(TK::ClassKeyword, 1) || at(TK::FunctionKeyword, 1) ||
+            at(TK::TaskKeyword, 1))
+          return false;
+        break;
+      case TK::TypeKeyword:
+        if (!at(TK::OpenParenthesis, 1)) return false;
         break;
       default:
         return false;
@@ -3758,7 +3766,7 @@ class SVParser {
   auto parseClassItemRule() -> bool {
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseBuiltInDataDeclarationRule())
+        parseExplicitDataDeclarationRule())
       return true;
     if (parseExplicitClassPropertyRule()) return true;
     if (parseClassMethodPrototypeRule()) return true;
@@ -3946,7 +3954,7 @@ class SVParser {
     }
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseBuiltInDataDeclarationRule() || parseNetDeclarationRule())
+        parseExplicitDataDeclarationRule() || parseNetDeclarationRule())
       return true;
     if (at(TK::ModPortKeyword)) {
       return parseModportDeclarationRule();
@@ -3984,7 +3992,7 @@ class SVParser {
     }
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseBuiltInDataDeclarationRule() || parseNetDeclarationRule())
+        parseExplicitDataDeclarationRule() || parseNetDeclarationRule())
       return true;
     if (at(TK::GenerateKeyword)) {
       parseSimpleBlock(TK::EndGenerateKeyword);
@@ -4029,7 +4037,7 @@ class SVParser {
     }
     consumeInto(line_);  // rand
     return parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-           parseBuiltInDataDeclarationRule();
+           parseExplicitDataDeclarationRule();
   }
 
   auto parseGenerateItemRule() -> bool {
@@ -4037,7 +4045,7 @@ class SVParser {
     if (parseRandCheckerDataDeclarationRule()) return true;
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseBuiltInDataDeclarationRule() || parseNetDeclarationRule() ||
+        parseExplicitDataDeclarationRule() || parseNetDeclarationRule() ||
         parseParameterOverrideRule())
       return true;
     if (at(TK::GenerateKeyword)) {
@@ -4057,7 +4065,7 @@ class SVParser {
     if (parseDefaultClockingOrDisableRule(true)) return true;
     if (parseRandCheckerDataDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseBuiltInDataDeclarationRule())
+        parseExplicitDataDeclarationRule())
       return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule(true) ||
@@ -4075,7 +4083,7 @@ class SVParser {
     return parseParameterDeclarationRule() ||
            parseTypeDeclarationRule() ||
            parseNettypeDeclarationRule() ||
-           parseBuiltInDataDeclarationRule() ||
+           parseExplicitDataDeclarationRule() ||
            parseNetDeclarationRule() ||
            parsePackageOrGenerateDeclarationRule();
   }
@@ -4225,7 +4233,7 @@ class SVParser {
     }
     if (allow_tf_port && parseTfPortDeclarationRule()) return true;
     return parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-           parseBuiltInDataDeclarationRule();
+           parseExplicitDataDeclarationRule();
   }
 
   auto parseProceduralConstructRule(bool allow_always) -> bool {
