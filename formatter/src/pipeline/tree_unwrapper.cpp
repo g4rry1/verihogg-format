@@ -8228,16 +8228,39 @@ class SVParser {
     addLine();
   }
 
-  // clocking_item delegates its assertion_item_declaration alternative to
-  // the property, sequence, or let declaration production. Its skew and
-  // clockvar alternatives remain leaf rules of the current item chart.
+  // clocking_item ::= default default_skew ';'
+  //                | clocking_direction list_of_clocking_decl_assign ';'
+  //                | { attribute_instance } assertion_item_declaration.
   auto parseClockingItemRule() -> bool {
     if (at(TK::PropertyKeyword) || at(TK::SequenceKeyword))
       return parsePackageOrGenerateDeclarationRule();
     if (at(TK::LetKeyword)) {
       return parseLetDeclarationRule();
     }
-    return false;
+    const bool default_item = at(TK::DefaultKeyword);
+    const bool direction_item = at(TK::InputKeyword) ||
+                                at(TK::OutputKeyword) ||
+                                at(TK::InOutKeyword);
+    if (!default_item && !direction_item) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = true;
+    if (default_item) {
+      consumeInto(line_);
+      valid = consumeAnnexRule("default_skew", line_, TK::Semicolon);
+    } else {
+      valid = consumeAnnexRule("clocking_direction", line_);
+      if (valid)
+        valid = consumeAnnexRule("list_of_clocking_decl_assign", line_,
+                                 TK::Semicolon);
+    }
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A clocking item");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   // let_declaration ::= let let_identifier
