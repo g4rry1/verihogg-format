@@ -5627,6 +5627,44 @@ class SVParser {
   // [ parameter_value_assignment ] hierarchical_instance
   // { ',' hierarchical_instance } ';'. Shared identifier prefixes that do
   // not have the instance shape stay with their local declaration chart.
+  [[nodiscard]] auto interruptedInstanceList(size_t open_index) const -> bool {
+    int depth = 0;
+    for (size_t i = open_index; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token)))
+        return true;
+      if (token.kind == TK::OpenParenthesis) ++depth;
+      if (token.kind == TK::CloseParenthesis && --depth == 0) break;
+      if (token.kind == TK::EndOfFile) break;
+    }
+    return false;
+  }
+
+  [[nodiscard]] auto parseParameterValueAssignmentRule() -> bool {
+    if (!at(TK::Hash) || !at(TK::OpenParenthesis, 1)) return false;
+    consumeInto(line_);
+    consumeInto(line_);
+    addLine();
+    if (!at(TK::CloseParenthesis)) {
+      const std::string_view item_rule = at(TK::Dot)
+                                             ? "named_parameter_assignment"
+                                             : "ordered_parameter_assignment";
+      do {
+        const AnnexState item = parseAnnexItem({item_rule}, false, true);
+        if (item.failed || item.interrupted || !item.complete()) return false;
+        if (!at(TK::Comma)) break;
+        consumeInto(line_);
+        addLine();
+      } while (!at(TK::EndOfFile));
+    }
+    if (!at(TK::CloseParenthesis)) return false;
+    addLine();
+    consumeInto(line_);
+    return true;
+  }
+
   auto parseStructuralInstantiationRule() -> bool {
     if (!at(TK::Identifier)) return false;
     const auto has_instance_shape = [&](size_t index) {
@@ -5680,12 +5718,18 @@ class SVParser {
     };
     skip_directives();
     if (at(TK::Hash)) {
-      beginGrammar({"parameter_value_assignment"});
-      consumeInto(line_);
-      static_cast<void>(parseParenthesizedListInto(line_));
-      const AnnexState parameters = endGrammar();
-      if (parameters.failed || parameters.interrupted ||
-          !parameters.complete()) {
+      bool valid = false;
+      if (interruptedInstanceList(pos_ + 1)) {
+        beginGrammar({"parameter_value_assignment"});
+        consumeInto(line_);
+        static_cast<void>(parseParenthesizedListInto(line_));
+        const AnnexState parameters = endGrammar();
+        valid = !parameters.failed && !parameters.interrupted &&
+                parameters.complete();
+      } else {
+        valid = parseParameterValueAssignmentRule();
+      }
+      if (!valid) {
         recordGrammarFallback("invalid Annex A parameter assignment");
         recoverMalformedItem(saved);
         return true;
