@@ -2511,6 +2511,25 @@ class SVParser {
     addLine();
   }
 
+  auto parseSpecifyOutputListRule() -> bool {
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    do {
+      skip_directives();
+      if (!consumeAnnexRule("specify_output_terminal_descriptor", line_,
+                            TK::Comma))
+        return false;
+      skip_directives();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseSpecifyItemRule() -> bool {
     if (at(TK::SpecParamKeyword)) {
       parseSpecparamDeclarationRule();
@@ -2522,9 +2541,21 @@ class SVParser {
                         at(TK::NoShowCancelledKeyword);
     if (pulse || cancel) {
       const LeafCheckpoint saved = leafCheckpoint();
+      bool conditional = false;
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        if (isConditionalStartDirective(tokens_[i])) {
+          conditional = true;
+          break;
+        }
+        if (tokens_[i].kind == TK::Semicolon ||
+            tokens_[i].kind == TK::EndOfFile)
+          break;
+      }
       consumeInto(line_);
-      if (!consumeAnnexRule("list_of_path_outputs", line_,
-                            TK::Semicolon) ||
+      if (!(conditional
+                ? consumeAnnexRule("list_of_path_outputs", line_,
+                                   TK::Semicolon)
+                : parseSpecifyOutputListRule()) ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A specify output list");
         recoverMalformedLeaf(saved);
