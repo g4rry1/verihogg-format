@@ -2885,7 +2885,10 @@ class SVParser {
           return false;
       }
     };
-    if (!explicit_type(peek(offset).kind)) return false;
+    const TK type_start = peek(offset).kind;
+    if (!explicit_type(type_start) && type_start != TK::Identifier &&
+        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
+      return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
