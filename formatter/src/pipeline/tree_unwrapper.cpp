@@ -4232,7 +4232,19 @@ class SVParser {
           return false;
       }
     };
-    if (!explicit_type(peek(offset).kind)) {
+    const TK type_start = peek(offset).kind;
+    if (type_start == TK::Identifier &&
+        at(TK::OpenBracket, offset + 1)) {
+      static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
+      return true;
+    }
+    const bool implicit_type =
+        type_start == TK::Identifier &&
+        (at(TK::Semicolon, offset + 1) ||
+         at(TK::Equals, offset + 1) ||
+         at(TK::Comma, offset + 1));
+    if (!explicit_type(type_start) && type_start != TK::Identifier &&
+        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword) {
       static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
       return true;
     }
@@ -4251,7 +4263,8 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = consumeAnnexRule("tf_port_direction", line_);
     if (valid && at(TK::VarKeyword)) consumeInto(line_);
-    if (valid) valid = consumeAnnexRule("data_type_or_implicit", line_);
+    if (valid && !implicit_type)
+      valid = consumeAnnexRule("data_type_or_implicit", line_);
     if (valid)
       valid = consumeAnnexRule("list_of_tf_variable_identifiers", line_,
                                TK::Semicolon);
