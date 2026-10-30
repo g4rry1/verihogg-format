@@ -6087,13 +6087,37 @@ class SVParser {
     consumeInto(line_);
     consumeInto(line_);
     addLine();
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
     if (!at(TK::CloseParenthesis)) {
-      const std::string_view item_rule = at(TK::Dot)
-                                             ? "named_parameter_assignment"
-                                             : "ordered_parameter_assignment";
+      const bool named = at(TK::Dot);
       do {
-        const AnnexState item = parseAnnexItem({item_rule}, false, true);
-        if (item.failed || item.interrupted || !item.complete()) return false;
+        skip_directives();
+        if (at(TK::Dot) != named) return false;
+        if (named) {
+          consumeInto(line_);
+          if (!consumeAnnexRule("parameter_identifier", line_)) return false;
+          skip_directives();
+          if (!at(TK::OpenParenthesis)) return false;
+          consumeInto(line_);
+          skip_directives();
+          if (!at(TK::CloseParenthesis) &&
+              !consumeAnnexRule("param_expression", line_,
+                                TK::CloseParenthesis))
+            return false;
+          skip_directives();
+          if (!at(TK::CloseParenthesis)) return false;
+          consumeInto(line_);
+        } else if (!consumeAnnexRule("param_expression", line_,
+                                     TK::Comma)) {
+          return false;
+        }
+        skip_directives();
         if (!at(TK::Comma)) break;
         consumeInto(line_);
         addLine();
