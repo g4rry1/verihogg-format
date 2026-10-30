@@ -4843,10 +4843,8 @@ class SVParser {
         parseAnnexSemicolonItem("bins_or_options");
         return true;
       }
-      if (root == "cross_body_item" && at(TK::FunctionKeyword)) {
-        parseNamedBlock(TK::EndFunctionKeyword);
+      if (root == "cross_body_item" && parseCrossBodyItemRule())
         return true;
-      }
       if (root == "tf_item_declaration" ||
           root == "block_item_declaration") {
         if (parseBlockOrTfItemDeclarationRule(root == "tf_item_declaration"))
@@ -8340,6 +8338,30 @@ class SVParser {
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A coverage option value");
       recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  // cross_body_item ::= function_declaration |
+  //                     bins_selection_or_option ';'. Attributes are consumed
+  // by parseStatementImpl before this rule is selected.
+  auto parseCrossBodyItemRule() -> bool {
+    if (at(TK::FunctionKeyword)) {
+      parseNamedBlock(TK::EndFunctionKeyword);
+      return true;
+    }
+    if (parseCoverageOptionRule()) return true;
+    if (!at(TK::BinsKeyword) && !at(TK::IllegalBinsKeyword) &&
+        !at(TK::IgnoreBinsKeyword))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (!consumeAnnexRule("bins_selection", line_, TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A cross bins selection");
+      recoverMalformedLeaf(saved);
       return true;
     }
     consumeInto(line_);
