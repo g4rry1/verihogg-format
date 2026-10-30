@@ -8667,6 +8667,18 @@ class SVParser {
   // rs_production ::= [ data_type_or_void ] rs_production_identifier
   // [ '(' tf_port_list ')' ] ':' rs_rule { '|' rs_rule } ';'. The parent
   // production remains live while each rs_rule is parsed as a child.
+  [[nodiscard]] auto parseRsRule() -> bool {
+    if (!consumeAnnexRule("rs_production_list", line_, TK::ColonEquals))
+      return false;
+    if (at(TK::ColonEquals)) {
+      consumeInto(line_);
+      if (!consumeAnnexRule("rs_weight_specification", line_)) return false;
+      if (at(TK::OpenBrace) &&
+          !consumeAnnexRule("rs_code_block", line_)) return false;
+    }
+    return true;
+  }
+
   auto parseRsProductionRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool untyped = at(TK::Identifier) &&
@@ -8692,11 +8704,11 @@ class SVParser {
       }
       if (valid && at(TK::Colon)) consumeInto(line_);
       else valid = false;
-      if (valid) valid = consumeAnnexRule("rs_rule", line_, TK::Or);
+      if (valid) valid = parseRsRule();
       while (valid && at(TK::Or)) {
         consumeInto(line_);
         addLine();
-        valid = consumeAnnexRule("rs_rule", line_, TK::Or);
+        valid = parseRsRule();
       }
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A randsequence production");
