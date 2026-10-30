@@ -4321,6 +4321,11 @@ class SVParser {
   // { attribute_instance } interface_class_method |
   // local_parameter_declaration ';' | parameter_declaration ';' | ';'.
   auto parseInterfaceClassItemRule() -> bool {
+    if (at(TK::Semicolon)) {
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     if (parseParameterDeclarationRule() || parseTypeDeclarationRule())
       return true;
     if (at(TK::PureKeyword) && at(TK::VirtualKeyword, 1)) {
@@ -4366,6 +4371,10 @@ class SVParser {
 
   auto parseAnonymousProgramItemRule() -> bool {
     switch (peek().kind) {
+      case TK::Semicolon:
+        consumeInto(line_);
+        addLine();
+        return true;
       case TK::TaskKeyword:
       case TK::FunctionKeyword:
       case TK::ClassKeyword:
