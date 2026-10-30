@@ -6876,6 +6876,34 @@ class SVParser {
     return true;
   }
 
+  // property_spec ::= [ clocking_event ]
+  //   [ disable iff '(' expression_or_dist ')' ] property_expr.
+  [[nodiscard]] auto parsePropertySpecRule() -> bool {
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (at(TK::At) && !consumeAnnexRule("clocking_event", line_))
+      return false;
+    skip_directives();
+    if (at(TK::DisableKeyword)) {
+      consumeInto(line_);
+      skip_directives();
+      if (!at(TK::IffKeyword)) return false;
+      consumeInto(line_);
+      skip_directives();
+      if (!consumeAnnexDelimited(TK::OpenParenthesis,
+                                 TK::CloseParenthesis,
+                                 "expression_or_dist", line_))
+        return false;
+      skip_directives();
+    }
+    return consumeAnnexRule("property_expr", line_, TK::Semicolon);
+  }
+
   // Annex A gives property and sequence declarations a header, repeated local
   // declarations, and one final expression. Advance both possible body rules
   // together because a user-defined data type and an expression may both
@@ -6952,7 +6980,22 @@ class SVParser {
         isConditionalStartDirective(peek()) ||
         (at(TK::Identifier) && at(TK::DoubleColon, 1));
     if (complete && !ambiguous_body) {
-      complete = consumeAnnexRule(expression_rule, line_, TK::Semicolon) &&
+      bool conditional_body = false;
+      if (closeKw == TK::EndPropertyKeyword) {
+        for (size_t i = pos_; i < tokens_.size(); ++i) {
+          if (isConditionalStartDirective(tokens_[i])) {
+            conditional_body = true;
+            break;
+          }
+          if (tokens_[i].kind == closeKw ||
+              tokens_[i].kind == TK::EndOfFile)
+            break;
+        }
+      }
+      complete = (closeKw == TK::EndPropertyKeyword && !conditional_body
+                      ? parsePropertySpecRule()
+                      : consumeAnnexRule(expression_rule, line_,
+                                         TK::Semicolon)) &&
                  (at(TK::Semicolon) || at(closeKw));
       if (complete) {
         if (at(TK::Semicolon)) {
