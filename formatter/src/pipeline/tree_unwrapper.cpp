@@ -2901,9 +2901,24 @@ class SVParser {
   auto parseUserDataDeclarationRule() -> bool {
     if (!at(TK::Identifier)) return false;
     size_t variable = 1;
-    while (at(TK::DoubleColon, variable) &&
-           at(TK::Identifier, variable + 1))
+    while (true) {
+      if (at(TK::Hash, variable) &&
+          at(TK::OpenParenthesis, variable + 1)) {
+        size_t next = variable + 1;
+        int depth = 0;
+        do {
+          if (at(TK::OpenParenthesis, next)) ++depth;
+          if (at(TK::CloseParenthesis, next)) --depth;
+          ++next;
+        } while (depth > 0 && next < tokens_.size());
+        if (depth != 0) return false;
+        variable = next;
+      }
+      if (!at(TK::DoubleColon, variable) ||
+          !at(TK::Identifier, variable + 1))
+        break;
       variable += 2;
+    }
     if (!at(TK::Identifier, variable) ||
         at(TK::OpenParenthesis, variable + 1))
       return false;
