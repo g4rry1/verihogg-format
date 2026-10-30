@@ -3285,10 +3285,7 @@ class SVParser {
                              : "package_export_declaration";
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token)) {
         static_cast<void>(parseAnnexItem({rule}, true));
         return true;
       }
@@ -3327,12 +3324,8 @@ class SVParser {
     if (parseClassConstructorRule()) return true;
     if (parseQualifiedDataDeclarationRule()) return true;
     if (parseDpiDeclarationRule()) return true;
-    if (at(TK::ImportKeyword)) {
+    if (at(TK::ImportKeyword) || at(TK::ExportKeyword)) {
       return parsePackageImportExportRule();
-    }
-    if (at(TK::ExportKeyword)) {
-      static_cast<void>(parseAnnexItem({"dpi_import_export"}, true));
-      return true;
     }
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
