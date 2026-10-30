@@ -2365,15 +2365,20 @@ class SVParser {
   // and program_declaration contain only one ANSI or non-ANSI header.
   auto parseExternStructuralDeclarationRule() -> bool {
     std::vector<std::string_view> headers;
+    TK close_kw = TK::EndOfFile;
     if (at(TK::ModuleKeyword, 1) || at(TK::MacromoduleKeyword, 1)) {
       headers = {"module_nonansi_header", "module_ansi_header"};
+      close_kw = TK::EndModuleKeyword;
     } else if (at(TK::InterfaceKeyword, 1)) {
       headers = {"interface_nonansi_header", "interface_ansi_header"};
+      close_kw = TK::EndInterfaceKeyword;
     } else if (at(TK::ProgramKeyword, 1)) {
       headers = {"program_nonansi_header", "program_ansi_header"};
+      close_kw = TK::EndProgramKeyword;
     } else {
       return false;
     }
+    if (parseStructuralHeaderRule(close_kw, true)) return true;
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // extern
     beginGrammar(std::move(headers));
@@ -7679,12 +7684,13 @@ class SVParser {
     return true;
   }
 
-  [[nodiscard]] auto parseStructuralHeaderRule(TK closeKw) -> bool {
+  [[nodiscard]] auto parseStructuralHeaderRule(TK closeKw,
+                                               bool external = false) -> bool {
     // Conditional branches and unavailable macro expansions can change the
     // header production. They keep the existing interrupted chart path.
     int parens = 0;
     bool import_segment = false;
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
+    for (size_t i = pos_ + (external ? 1 : 0); i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
           isConditionalBoundaryDirective(token) ||
@@ -7738,6 +7744,7 @@ class SVParser {
         parseDirectiveLine();
       }
     };
+    if (external) consumeInto(line_);  // extern
     consumeInto(line_);  // module_keyword / interface / program
     skip_directives();
     if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) {
@@ -7799,7 +7806,7 @@ class SVParser {
     }
     consumeInto(line_);
     addLine();
-    parseDelimitedBody(closeKw, body_rule);
+    if (!external) parseDelimitedBody(closeKw, body_rule);
     return true;
   }
 
