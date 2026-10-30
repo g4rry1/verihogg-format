@@ -4099,10 +4099,45 @@ class SVParser {
     }
     if (!continuous_only && at(TK::BindKeyword)) {
       const LeafCheckpoint saved = leafCheckpoint();
-      const AnnexState item = parseAnnexItem({"bind_directive"}, true);
-      if (item.failed || item.interrupted || !item.complete()) {
-        recoverMalformedItem(saved);
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        const auto& token = tokens_[i];
+        if (isConditionalStartDirective(token) ||
+            token.kind == TK::MacroUsage ||
+            (token.kind == TK::Directive &&
+             !isCompilerDirective(token))) {
+          const AnnexState item = parseAnnexItem({"bind_directive"}, true);
+          if (item.failed || item.interrupted || !item.complete())
+            recoverMalformedItem(saved);
+          return true;
+        }
+        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+          break;
       }
+      consumeInto(line_);  // bind
+      const bool instance_target =
+          at(TK::Identifier) &&
+          (at(TK::Dot, 1) || at(TK::OpenBracket, 1));
+      bool valid = consumeAnnexRule(instance_target
+                                        ? "bind_target_instance"
+                                        : "bind_target_scope", line_);
+      if (valid && at(TK::Colon)) {
+        if (instance_target) valid = false;
+        else {
+          consumeInto(line_);
+          valid = consumeAnnexRule("bind_target_instance_list", line_);
+        }
+      }
+      if (valid)
+        valid = consumeAnnexRule("bind_instantiation", line_);
+      // Annex A appends a semicolon to bind_instantiation, whose own
+      // alternatives already include one. Preserve that literal production.
+      if (!valid || !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A bind directive");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
       return true;
     }
     return false;
