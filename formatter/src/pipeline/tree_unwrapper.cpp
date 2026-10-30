@@ -4436,16 +4436,32 @@ class SVParser {
       }
     };
     const TK type_start = peek(offset).kind;
+    bool dimensioned_implicit = false;
     if (type_start == TK::Identifier &&
         at(TK::OpenBracket, offset + 1)) {
-      static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
-      return true;
+      size_t next = offset + 1;
+      while (at(TK::OpenBracket, next)) {
+        int depth = 0;
+        do {
+          if (at(TK::OpenBracket, next)) ++depth;
+          if (at(TK::CloseBracket, next)) --depth;
+          ++next;
+        } while (depth > 0 && next < tokens_.size());
+        if (depth != 0) break;
+      }
+      dimensioned_implicit = at(TK::Semicolon, next) ||
+                             at(TK::Equals, next) || at(TK::Comma, next);
+      if (!dimensioned_implicit && !at(TK::Identifier, next)) {
+        static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
+        return true;
+      }
     }
     const bool implicit_type =
-        type_start == TK::Identifier &&
-        (at(TK::Semicolon, offset + 1) ||
-         at(TK::Equals, offset + 1) ||
-         at(TK::Comma, offset + 1));
+        dimensioned_implicit ||
+        (type_start == TK::Identifier &&
+         (at(TK::Semicolon, offset + 1) ||
+          at(TK::Equals, offset + 1) ||
+          at(TK::Comma, offset + 1)));
     if (!explicit_type(type_start) && type_start != TK::Identifier &&
         type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword) {
       static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
@@ -5790,10 +5806,11 @@ class SVParser {
   // [ parameter_value_assignment ] hierarchical_instance
   // { ',' hierarchical_instance } ';'. Shared identifier prefixes that do
   // not have the instance shape stay with their local declaration chart.
-  [[nodiscard]] auto interruptedInstanceList(size_t open_index) const -> bool {
+  [[nodiscard]] auto unavailableInFollowingParentheses(size_t start) const
+      -> bool {
     int depth = 0;
     int brackets = 0;
-    for (size_t i = open_index; i < tokens_.size(); ++i) {
+    for (size_t i = start; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
           token.kind == TK::MacroUsage ||
@@ -5922,7 +5939,7 @@ class SVParser {
     skip_directives();
     if (at(TK::Hash)) {
       bool valid = false;
-      if (interruptedInstanceList(pos_ + 1)) {
+      if (unavailableInFollowingParentheses(pos_ + 1)) {
         beginGrammar({"parameter_value_assignment"});
         consumeInto(line_);
         static_cast<void>(parseParenthesizedListInto(line_));
@@ -5941,7 +5958,7 @@ class SVParser {
     }
     do {
       bool valid = false;
-      if (interruptedInstanceList(pos_)) {
+      if (unavailableInFollowingParentheses(pos_)) {
         beginGrammar({"hierarchical_instance"});
         const bool named = consumeAnnexRule("name_of_instance", line_);
         if (named && at(TK::OpenParenthesis))
@@ -8728,7 +8745,7 @@ class SVParser {
   auto parseRandsequenceStatement() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     if (!at(TK::OpenParenthesis, 1) ||
-        !interruptedInstanceList(pos_ + 1)) {
+        !unavailableInFollowingParentheses(pos_ + 1)) {
       consumeInto(line_);  // randsequence
       if (!at(TK::OpenParenthesis)) {
         recordGrammarFallback("invalid Annex A randsequence header");
