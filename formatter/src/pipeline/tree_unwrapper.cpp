@@ -7988,6 +7988,53 @@ class SVParser {
     const std::string_view body_rule =
         closeKw == TK::EndTaskKeyword ? "task_body_declaration"
                                       : "function_body_declaration";
+    bool interrupted_header = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      if (isConditionalStartDirective(tokens_[i]) ||
+          tokens_[i].kind == TK::MacroUsage) {
+        interrupted_header = true;
+        break;
+      }
+      if (tokens_[i].kind == TK::Semicolon ||
+          tokens_[i].kind == TK::EndOfFile)
+        break;
+    }
+    if (closeKw == TK::EndTaskKeyword && !interrupted_header &&
+        at(TK::Identifier) &&
+        (at(TK::Semicolon, 1) || at(TK::OpenParenthesis, 1))) {
+      if (!consumeAnnexRule("task_identifier", line_)) {
+        recordGrammarFallback("invalid Annex A task identifier");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      const bool ports_in_header = at(TK::OpenParenthesis);
+      if (ports_in_header) {
+        consumeInto(line_);
+        bool valid = true;
+        if (!at(TK::CloseParenthesis)) {
+          do {
+            valid = consumeAnnexRule("tf_port_item", line_, TK::Comma);
+            if (!valid || !at(TK::Comma)) break;
+            consumeInto(line_);
+          } while (!at(TK::EndOfFile));
+        }
+        if (!valid || !at(TK::CloseParenthesis)) {
+          recordGrammarFallback("invalid Annex A task port list");
+          recoverMalformedItem(saved);
+          return true;
+        }
+        consumeInto(line_);
+      }
+      if (!at(TK::Semicolon)) {
+        recordGrammarFallback("missing Annex A task header semicolon");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      parseDelimitedBody(closeKw, {}, false, ports_in_header);
+      return true;
+    }
     beginGrammar({body_rule});
     consumeGrammarHeader(closeKw, {body_rule});
     const AnnexState header = endGrammar(false);
