@@ -6498,25 +6498,25 @@ class SVParser {
     const std::string_view identifier_rule =
         closeKw == TK::EndPropertyKeyword ? "property_identifier"
                                            : "sequence_identifier";
-    const std::string_view port_rule =
-        closeKw == TK::EndPropertyKeyword ? "property_port_list"
-                                           : "sequence_port_list";
+    const std::string_view port_item =
+        closeKw == TK::EndPropertyKeyword ? "property_port_item"
+                                           : "sequence_port_item";
     consumeInto(line_);  // property / sequence
     skip_directives();
     if (!consumeAnnexRule(identifier_rule, line_)) return false;
     skip_directives();
     if (at(TK::OpenParenthesis)) {
-      if (at(TK::CloseParenthesis, 1)) {
-        consumeInto(line_);
-        consumeInto(line_);
-      } else {
-        const bool ports = consumeAnnexDelimited(
-            TK::OpenParenthesis, TK::CloseParenthesis, port_rule, line_);
-        if (!ports || line_.tokens.empty() ||
-            line_.tokens.back().kind != TK::CloseParenthesis) {
-          return false;
-        }
+      consumeInto(line_);
+      bool valid = true;
+      if (!at(TK::CloseParenthesis)) {
+        do {
+          valid = consumeAnnexRule(port_item, line_, TK::Comma);
+          if (!valid || !at(TK::Comma)) break;
+          consumeInto(line_);
+        } while (!at(TK::EndOfFile));
       }
+      if (!valid || !at(TK::CloseParenthesis)) return false;
+      consumeInto(line_);
       skip_directives();
     }
     if (!at(TK::Semicolon)) return false;
