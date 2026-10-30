@@ -3604,7 +3604,17 @@ class SVParser {
           return false;
       }
     };
-    if (offset == 0 || !built_in_type(peek(offset).kind)) return false;
+    const TK type_start = peek(offset).kind;
+    if (type_start == TK::VirtualKeyword &&
+        (at(TK::FunctionKeyword, offset + 1) ||
+         at(TK::TaskKeyword, offset + 1)))
+      return false;
+    if (offset == 0 && type_start != TK::Identifier &&
+        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
+      return false;
+    if (!built_in_type(type_start) && type_start != TK::Identifier &&
+        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
+      return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
