@@ -5999,8 +5999,10 @@ class SVParser {
     if (complete) {
       ++indent_level_;
       while (explicit_type(peek().kind) ||
+             (at(TK::Identifier) && at(TK::Identifier, 1)) ||
              (at(TK::VarKeyword) &&
-              explicit_type(peek(1).kind))) {
+              (explicit_type(peek(1).kind) ||
+               (at(TK::Identifier, 1) && at(TK::Identifier, 2))))) {
         if (!consumeAnnexRule("var_data_type", line_) ||
             !consumeAnnexRule("list_of_variable_decl_assignments", line_,
                               TK::Semicolon) ||
@@ -6010,6 +6012,23 @@ class SVParser {
         }
         consumeInto(line_);
         addLine();
+      }
+    }
+    const bool ambiguous_body =
+        at(TK::VarKeyword) || isConditionalStartDirective(peek()) ||
+        (at(TK::Identifier) && at(TK::DoubleColon, 1));
+    if (complete && !ambiguous_body) {
+      complete = consumeAnnexRule(expression_rule, line_, TK::Semicolon) &&
+                 (at(TK::Semicolon) || at(closeKw));
+      if (complete) {
+        if (at(TK::Semicolon)) {
+          consumeInto(line_);
+          addLine();
+        }
+        addLine();
+        pushOpenFrame(closeKw);
+        parseOpenFrameClose();
+        return;
       }
     }
     const bool body_started = complete;
