@@ -4034,9 +4034,26 @@ class SVParser {
           break;
         }
       }
-      if (interrupted_header || at(TK::OpenParenthesis, 1) ||
-          at(TK::Hash, 1)) {
+      if (interrupted_header || at(TK::Hash, 1)) {
         static_cast<void>(parseAnnexItem({"continuous_assign"}, true));
+        return true;
+      }
+      if (at(TK::OpenParenthesis, 1)) {
+        const LeafCheckpoint saved = leafCheckpoint();
+        consumeInto(line_);  // assign
+        bool valid = consumeAnnexRule("drive_strength", line_);
+        if (valid && at(TK::Hash))
+          valid = consumeAnnexRule("delay3", line_);
+        if (valid)
+          valid = consumeAnnexRule("list_of_net_assignments", line_,
+                                   TK::Semicolon);
+        if (!valid || !at(TK::Semicolon)) {
+          recordGrammarFallback("invalid Annex A driven assignment");
+          recoverMalformedLeaf(saved);
+          return true;
+        }
+        consumeInto(line_);
+        addLine();
         return true;
       }
       const LeafCheckpoint saved = leafCheckpoint();
