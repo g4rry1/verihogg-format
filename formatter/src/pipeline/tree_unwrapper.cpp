@@ -5021,6 +5021,18 @@ class SVParser {
   // Keep only those Annex A children live while emitting the statement.
   auto parseIdentifierStatementRule() -> bool {
     if (!at(TK::Identifier)) return false;
+    if (at(TK::OpenParenthesis, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      if (!consumeAnnexRule("subroutine_call_statement", line_) ||
+          line_.tokens.empty() ||
+          line_.tokens.back().kind != TK::Semicolon) {
+        recordGrammarFallback("invalid Annex A subroutine call statement");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      addLine();
+      return true;
+    }
     if (at(TK::Equals, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       if (!consumeAnnexRule("blocking_assignment", line_, TK::Semicolon) ||
