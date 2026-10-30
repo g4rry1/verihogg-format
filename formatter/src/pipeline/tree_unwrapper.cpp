@@ -2956,6 +2956,14 @@ class SVParser {
       }
     };
     const TK type_start = peek(offset).kind;
+    if (type_start == TK::Identifier &&
+        at(TK::OpenBracket, offset + 1))
+      return false;
+    const bool implicit_type =
+        type_start == TK::Identifier &&
+        (at(TK::Semicolon, offset + 1) ||
+         at(TK::Equals, offset + 1) ||
+         at(TK::Comma, offset + 1));
     if (!explicit_type(type_start) && type_start != TK::Identifier &&
         type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
       return false;
@@ -2977,7 +2985,8 @@ class SVParser {
     bool valid = true;
     if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword))
       valid = consumeAnnexRule("lifetime", line_);
-    if (valid) valid = consumeAnnexRule("data_type_or_implicit", line_);
+    if (valid && !implicit_type)
+      valid = consumeAnnexRule("data_type_or_implicit", line_);
     if (valid)
       valid = consumeAnnexRule("list_of_variable_decl_assignments", line_,
                                TK::Semicolon);
