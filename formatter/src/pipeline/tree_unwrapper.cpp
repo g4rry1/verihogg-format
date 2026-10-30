@@ -6917,19 +6917,13 @@ class SVParser {
   auto parseDesignStatementRule() -> bool {
     if (!at(TK::DesignKeyword)) return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(tokens_[i])) {
         const AnnexState item = parseAnnexItem({"design_statement"});
         if (item.complete()) block_stack_.back().statement_phase = true;
         return true;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
-        break;
-      }
+      if (tokens_[i].kind == TK::Semicolon ||
+          tokens_[i].kind == TK::EndOfFile) break;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // design
@@ -6969,18 +6963,12 @@ class SVParser {
         return false;
     }
     for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(tokens_[i])) {
         static_cast<void>(parseAnnexItem({"config_rule_statement"}));
         return true;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
-        break;
-      }
+      if (tokens_[i].kind == TK::Semicolon ||
+          tokens_[i].kind == TK::EndOfFile) break;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     if (!consumeAnnexRule(clause, line_)) {
@@ -6989,7 +6977,8 @@ class SVParser {
       return true;
     }
     const bool liblist = at(TK::LibListKeyword);
-    if (!liblist && !at(TK::UseKeyword)) {
+    if (!liblist &&
+        (clause == "default_clause" || !at(TK::UseKeyword))) {
       recordGrammarFallback("missing Annex A config rule clause");
       recoverMalformedItem(saved);
       return true;
@@ -8475,20 +8464,6 @@ class SVParser {
   // [ '(' [ let_port_list ] ')' ] '=' expression ';'.
   auto parseLetDeclarationRule() -> bool {
     if (!at(TK::LetKeyword)) return false;
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
-        static_cast<void>(parseAnnexItem({"let_declaration"}, true));
-        return true;
-      }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
-        break;
-      }
-    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
     if (!consumeAnnexRule("let_identifier", line_)) {
