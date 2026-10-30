@@ -3356,6 +3356,25 @@ class SVParser {
     return true;
   }
 
+  auto parsePackageImportItemRule() -> bool {
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    if (!at(TK::Identifier)) return false;
+    consumeInto(line_);
+    skip_directives();
+    if (!at(TK::DoubleColon)) return false;
+    consumeInto(line_);
+    skip_directives();
+    if (!at(TK::Identifier) && !at(TK::Star)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   auto parsePackageImportExportRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
         at(TK::StringLiteral, 1))
@@ -3375,19 +3394,29 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
     bool valid = true;
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
     if (!import && at(TK::Star)) {
       consumeInto(line_);
+      skip_directives();
       if (at(TK::DoubleColon)) consumeInto(line_);
       else valid = false;
+      skip_directives();
       if (valid && at(TK::Star)) consumeInto(line_);
       else valid = false;
     } else {
       do {
         if (at(TK::Comma)) consumeInto(line_);
-        valid = consumeAnnexRule("package_import_item", line_,
-                                 TK::Comma);
+        valid = parsePackageImportItemRule();
+        skip_directives();
       } while (valid && at(TK::Comma));
     }
+    skip_directives();
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A package import or export");
       recoverMalformedLeaf(saved);
