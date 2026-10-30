@@ -5850,7 +5850,8 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseHierarchicalInstanceRule(bool allow_checker,
-                                                    bool& checker_only) -> bool {
+                                                    bool& checker_only,
+                                                    bool& checker_viable) -> bool {
     if (!consumeAnnexRule("name_of_instance", line_) ||
         !at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
@@ -5902,36 +5903,59 @@ class SVParser {
     addLine();
     consumeInto(line_);
     checker_only = checker_possible && !module_possible;
+    checker_viable = checker_possible;
+    return true;
+  }
+
+  [[nodiscard]] auto hasInstanceShape(size_t index) const -> bool {
+    if (index >= tokens_.size() ||
+        tokens_[index].kind != TK::Identifier) return false;
+    ++index;
+    while (index < tokens_.size() &&
+           tokens_[index].kind == TK::OpenBracket) {
+      int depth = 0;
+      do {
+        if (tokens_[index].kind == TK::OpenBracket) ++depth;
+        if (tokens_[index].kind == TK::CloseBracket) --depth;
+        ++index;
+      } while (depth > 0 && index < tokens_.size());
+      if (depth != 0) return false;
+    }
+    return index < tokens_.size() &&
+           tokens_[index].kind == TK::OpenParenthesis;
+  }
+
+  auto parseScopedCheckerInstantiationRule() -> bool {
+    if (!at(TK::Identifier) || !at(TK::DoubleColon, 1) ||
+        !at(TK::Identifier, 2) || !hasInstanceShape(pos_ + 3))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool checker_only = false;
+    bool checker_viable = false;
+    if (!consumeAnnexRule("ps_checker_identifier", line_) ||
+        !parseHierarchicalInstanceRule(true, checker_only, checker_viable) ||
+        !checker_viable || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A scoped checker instantiation");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
     return true;
   }
 
   auto parseStructuralInstantiationRule() -> bool {
     if (!at(TK::Identifier)) return false;
-    const auto has_instance_shape = [&](size_t index) {
-      if (index >= tokens_.size() ||
-          tokens_[index].kind != TK::Identifier) return false;
-      ++index;
-      while (index < tokens_.size() &&
-             tokens_[index].kind == TK::OpenBracket) {
-        int depth = 0;
-        do {
-          if (tokens_[index].kind == TK::OpenBracket) ++depth;
-          if (tokens_[index].kind == TK::CloseBracket) --depth;
-          ++index;
-        } while (depth > 0 && index < tokens_.size());
-        if (depth != 0) return false;
-      }
-      return index < tokens_.size() &&
-             tokens_[index].kind == TK::OpenParenthesis;
-    };
-    bool instance_shape = has_instance_shape(pos_ + 1);
+    if (at(TK::DoubleColon, 1))
+      return parseScopedCheckerInstantiationRule();
+    bool instance_shape = hasInstanceShape(pos_ + 1);
     if (at(TK::Hash, 1) && at(TK::OpenParenthesis, 2)) {
       int depth = 0;
       for (size_t i = pos_ + 2; i < tokens_.size(); ++i) {
         if (tokens_[i].kind == TK::OpenParenthesis) ++depth;
         if (tokens_[i].kind == TK::CloseParenthesis) --depth;
         if (depth == 0) {
-          instance_shape = has_instance_shape(i + 1);
+          instance_shape = hasInstanceShape(i + 1);
           break;
         }
         if (tokens_[i].kind == TK::EndOfFile ||
@@ -5981,6 +6005,7 @@ class SVParser {
     do {
       bool valid = false;
       bool checker_only = false;
+      bool checker_viable = false;
       if (unavailableInFollowingParentheses(pos_)) {
         beginGrammar({"hierarchical_instance"});
         const bool named = consumeAnnexRule("name_of_instance", line_);
@@ -5990,7 +6015,8 @@ class SVParser {
         valid = named && !instance.failed && !instance.interrupted &&
                 instance.complete();
       } else {
-        valid = parseHierarchicalInstanceRule(!parameterized, checker_only);
+        valid = parseHierarchicalInstanceRule(!parameterized, checker_only,
+                                              checker_viable);
       }
       if (!valid || (checker_only && instance_count != 0)) {
         recordGrammarFallback("invalid Annex A hierarchical instance");
