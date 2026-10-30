@@ -3880,13 +3880,46 @@ class SVParser {
       if (kind == TK::Semicolon) break;
     }
     if (!constructor_name) return false;
-    beginGrammar({"class_constructor_declaration"});
-    consumeGrammarHeader(TK::EndFunctionKeyword,
-                         {"class_constructor_declaration"});
-    const AnnexState header = endGrammar(false);
-    if (header.failed || header.interrupted ||
-        !header.hasViableRule("class_constructor_declaration")) {
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // function
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
+    bool valid = true;
+    if (!at(TK::NewKeyword)) {
+      valid = consumeAnnexRule("class_scope", line_, TK::NewKeyword);
+      skip_directives();
+    }
+    if (valid && at(TK::NewKeyword)) consumeInto(line_);
+    else valid = false;
+    skip_directives();
+    if (valid && at(TK::OpenParenthesis)) {
+      consumeInto(line_);
+      skip_directives();
+      if (!at(TK::CloseParenthesis))
+        valid = consumeAnnexRule("class_constructor_arg_list", line_,
+                                 TK::CloseParenthesis);
+      skip_directives();
+      if (valid && at(TK::CloseParenthesis)) consumeInto(line_);
+      else valid = false;
+    }
+    skip_directives();
+    if (valid && at(TK::Semicolon)) {
+      consumeInto(line_);
+      addLine();
+    } else {
       recordGrammarFallback("invalid Annex A class constructor header");
+      lines_.resize(saved.output_size);
+      line_ = saved.line;
+      preserved_source_end_ = saved.preserved_source_end;
+      indent_level_ = saved.indent_level;
+      const auto after = findPairedEnd(saved.pos, TK::EndFunctionKeyword);
+      emitOpaque(saved.pos, after ? *after : findOuterBoundary(saved.pos));
+      return true;
     }
     parseDelimitedBody(TK::EndFunctionKeyword, {}, true);
     return true;
@@ -4945,7 +4978,21 @@ class SVParser {
   // Keep only those Annex A children live while emitting the statement.
   auto parseIdentifierStatementRule() -> bool {
     if (!at(TK::Identifier)) return false;
-    if (at(TK::OpenParenthesis, 1)) {
+    bool interrupted = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        interrupted = true;
+        break;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile)
+        break;
+    }
+    if (!interrupted && at(TK::OpenParenthesis, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       if (!consumeAnnexRule("subroutine_call_statement", line_) ||
           line_.tokens.empty() ||
@@ -4957,7 +5004,7 @@ class SVParser {
       addLine();
       return true;
     }
-    if (at(TK::Equals, 1)) {
+    if (!interrupted && at(TK::Equals, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       if (!consumeAnnexRule("blocking_assignment", line_, TK::Semicolon) ||
           !at(TK::Semicolon)) {
