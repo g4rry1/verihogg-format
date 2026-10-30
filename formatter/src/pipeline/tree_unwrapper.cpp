@@ -2621,6 +2621,7 @@ class SVParser {
     const auto parse_clause = [&](TK keyword) -> bool {
       consumeInto(line_);
       skip_directives();
+      // slang has already combined Annex A time_literal into TimeLiteral.
       if (!at(TK::TimeLiteral)) return false;
       consumeInto(line_);
       skip_directives();
@@ -4215,8 +4216,16 @@ class SVParser {
   }
 
   auto parseModportPortsDeclarationRule() -> bool {
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      skip_directives();
     }
     const bool simple = at(TK::InputKeyword) || at(TK::OutputKeyword) ||
                         at(TK::InOutKeyword) || at(TK::RefKeyword);
@@ -4235,27 +4244,52 @@ class SVParser {
     } else {
       return false;
     }
-    while (at(TK::Comma) &&
-           (at(TK::Identifier, 1) || at(TK::Dot, 1) ||
-            (tf && (at(TK::FunctionKeyword, 1) ||
-                    at(TK::TaskKeyword, 1))))) {
+    skip_directives();
+    const auto next_port_after_comma = [&] {
+      size_t next = pos_ + 1;
+      while (next < tokens_.size() &&
+             isCompilerDirective(tokens_[next])) {
+        ++next;
+        while (next < tokens_.size() &&
+               !hasLeadingNewline(tokens_[next]))
+          ++next;
+      }
+      const TK kind = next < tokens_.size()
+                          ? tokens_[next].kind : TK::EndOfFile;
+      return kind == TK::Identifier || kind == TK::Dot ||
+             (tf && (kind == TK::FunctionKeyword ||
+                     kind == TK::TaskKeyword));
+    };
+    while (at(TK::Comma) && next_port_after_comma()) {
       consumeInto(line_);
+      skip_directives();
       if (!consumeAnnexRule(simple ? "modport_simple_port"
                                    : "modport_tf_port", line_, TK::Comma))
         return false;
+      skip_directives();
     }
     return true;
   }
 
   auto parseModportItemRule() -> bool {
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
     if (!at(TK::Identifier)) return false;
     consumeInto(line_);
+    skip_directives();
     if (!at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
     if (!parseModportPortsDeclarationRule()) return false;
+    skip_directives();
     while (at(TK::Comma)) {
       consumeInto(line_);
       if (!parseModportPortsDeclarationRule()) return false;
+      skip_directives();
     }
     if (!at(TK::CloseParenthesis)) return false;
     consumeInto(line_);
@@ -4267,8 +4301,11 @@ class SVParser {
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
-          isCompilerDirective(token) ||
           token.kind == TK::MacroUsage ||
+          (isCompilerDirective(token) &&
+           (token.rawText() == "`define" ||
+            token.rawText() == "`pragma" ||
+            token.rawText() == "`timescale")) ||
           (token.kind == TK::Directive &&
            !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
@@ -4281,10 +4318,19 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // modport
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
     bool valid = parseModportItemRule();
+    skip_directives();
     while (valid && at(TK::Comma)) {
       consumeInto(line_);
       valid = parseModportItemRule();
+      skip_directives();
     }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A modport item list");
@@ -4974,7 +5020,7 @@ class SVParser {
   }
 
   // statement_item alternatives with an identifier prefix share tokens until
-  // the call, assignment, checker instance, or clocking drive is complete.
+  // the call, assignment, or clocking drive is complete.
   // Keep only those Annex A children live while emitting the statement.
   auto parseIdentifierStatementRule() -> bool {
     if (!at(TK::Identifier)) return false;
