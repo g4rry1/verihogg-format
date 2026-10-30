@@ -2866,6 +2866,36 @@ class SVParser {
     return true;
   }
 
+  auto parseTypeAssignmentRule() -> bool {
+    if (!at(TK::Identifier)) return false;
+    consumeInto(line_);
+    while (isCompilerDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+    if (!at(TK::Equals)) return true;
+    consumeInto(line_);
+    return consumeAnnexRule("data_type_or_incomplete_class_scoped_type",
+                            line_, TK::Comma);
+  }
+
+  auto parseTypeAssignmentListRule() -> bool {
+    do {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+      if (!parseTypeAssignmentRule()) return false;
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseParameterDeclarationRule() -> bool {
     if (!at(TK::ParameterKeyword) && !at(TK::LocalParamKeyword))
       return false;
@@ -2911,7 +2941,7 @@ class SVParser {
                             at(TK::ClassKeyword, 1));
       bool valid = !forward || consumeAnnexRule("forward_type", line_);
       skip_directives();
-      if (!valid || !parseAnnexCommaListRule("type_assignment") ||
+      if (!valid || !parseTypeAssignmentListRule() ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A type parameter declaration");
         recoverMalformedItem(saved);
