@@ -4211,33 +4211,6 @@ class SVParser {
     }
   }
 
-  auto parseModportSimplePortRule() -> bool {
-    if (at(TK::Dot)) {
-      consumeInto(line_);
-      if (!at(TK::Identifier)) return false;
-      consumeInto(line_);
-      if (!at(TK::OpenParenthesis)) return false;
-      consumeInto(line_);
-      if (!at(TK::CloseParenthesis) &&
-          !consumeAnnexRule("expression", line_, TK::CloseParenthesis))
-        return false;
-      if (!at(TK::CloseParenthesis)) return false;
-      consumeInto(line_);
-      return true;
-    }
-    if (!at(TK::Identifier)) return false;
-    consumeInto(line_);
-    return true;
-  }
-
-  auto parseModportTfPortRule() -> bool {
-    if (at(TK::FunctionKeyword) || at(TK::TaskKeyword))
-      return consumeAnnexRule("method_prototype", line_, TK::Comma);
-    if (!at(TK::Identifier)) return false;
-    consumeInto(line_);
-    return true;
-  }
-
   auto parseModportPortsDeclarationRule() -> bool {
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       if (!consumeAnnexRule("attribute_instance", line_)) return false;
@@ -4246,16 +4219,16 @@ class SVParser {
                         at(TK::InOutKeyword) || at(TK::RefKeyword);
     const bool tf = at(TK::ImportKeyword) || at(TK::ExportKeyword);
     if (simple) {
-      consumeInto(line_);
-      if (!parseModportSimplePortRule()) return false;
+      if (!consumeAnnexRule("port_direction", line_) ||
+          !consumeAnnexRule("modport_simple_port", line_, TK::Comma))
+        return false;
     } else if (tf) {
-      consumeInto(line_);
-      if (!parseModportTfPortRule()) return false;
+      if (!consumeAnnexRule("import_export", line_) ||
+          !consumeAnnexRule("modport_tf_port", line_, TK::Comma))
+        return false;
     } else if (at(TK::ClockingKeyword)) {
-      consumeInto(line_);
-      if (!at(TK::Identifier)) return false;
-      consumeInto(line_);
-      return true;
+      return consumeAnnexRule("modport_clocking_declaration", line_,
+                              TK::Comma);
     } else {
       return false;
     }
@@ -4264,8 +4237,8 @@ class SVParser {
             (tf && (at(TK::FunctionKeyword, 1) ||
                     at(TK::TaskKeyword, 1))))) {
       consumeInto(line_);
-      if (!(simple ? parseModportSimplePortRule()
-                   : parseModportTfPortRule()))
+      if (!consumeAnnexRule(simple ? "modport_simple_port"
+                                   : "modport_tf_port", line_, TK::Comma))
         return false;
     }
     return true;
@@ -4749,27 +4722,6 @@ class SVParser {
     return true;
   }
 
-  auto parseGenvarIdentifierListRule() -> bool {
-    const auto skip_directives = [&] {
-      while (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-    };
-    skip_directives();
-    if (!at(TK::Identifier)) return false;
-    consumeInto(line_);
-    skip_directives();
-    while (at(TK::Comma)) {
-      consumeInto(line_);
-      skip_directives();
-      if (!at(TK::Identifier)) return false;
-      consumeInto(line_);
-      skip_directives();
-    }
-    return true;
-  }
-
   // module_common_item has distinct leading terminals for these three leaf
   // productions. Program and checker items include continuous_assign, but
   // neither includes net_alias or bind_directive.
@@ -4786,7 +4738,9 @@ class SVParser {
       }
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
-      if (!parseGenvarIdentifierListRule() || !at(TK::Semicolon)) {
+      if (!consumeAnnexRule("list_of_genvar_identifiers", line_,
+                            TK::Semicolon) ||
+          !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A genvar declaration");
         recoverMalformedItem(saved);
         return true;
