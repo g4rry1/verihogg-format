@@ -4462,42 +4462,6 @@ class SVParser {
       addLine();
       return true;
     }
-    const bool direct = at(TK::TypedefKeyword, 1) ||
-                        at(TK::NetTypeKeyword, 1) ||
-                        (at(TK::Identifier, 1) && at(TK::Hash, 2)) ||
-                        at(TK::ConstKeyword, 1) ||
-                        at(TK::VarKeyword, 1) ||
-                        at(TK::StaticKeyword, 1) ||
-                        at(TK::AutomaticKeyword, 1) ||
-                        at(TK::SignedKeyword, 1) ||
-                        at(TK::UnsignedKeyword, 1) ||
-                        at(TK::OpenBracket, 1) ||
-                        at(TK::VirtualKeyword, 1) ||
-                        (at(TK::TypeKeyword, 1) &&
-                         at(TK::OpenParenthesis, 2)) ||
-                        at(TK::BitKeyword, 1) ||
-                        at(TK::ByteKeyword, 1) ||
-                        at(TK::CHandleKeyword, 1) ||
-                        at(TK::EnumKeyword, 1) ||
-                        at(TK::EventKeyword, 1) ||
-                        at(TK::IntKeyword, 1) ||
-                        at(TK::IntegerKeyword, 1) ||
-                        at(TK::LogicKeyword, 1) ||
-                        at(TK::LongIntKeyword, 1) ||
-                        at(TK::RealKeyword, 1) ||
-                        at(TK::RealTimeKeyword, 1) ||
-                        at(TK::RegKeyword, 1) ||
-                        at(TK::ShortIntKeyword, 1) ||
-                        at(TK::ShortRealKeyword, 1) ||
-                        at(TK::StringKeyword, 1) ||
-                        at(TK::StructKeyword, 1) ||
-                        at(TK::TimeKeyword, 1) ||
-                        at(TK::UnionKeyword, 1);
-    if (!direct) {
-      static_cast<void>(parseAnnexItem(
-          {"checker_or_generate_item_declaration"}, true));
-      return true;
-    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // rand
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
@@ -4505,8 +4469,13 @@ class SVParser {
         parseExplicitDataDeclarationRule() ||
         parseUserDataDeclarationRule())
       return true;
-    recordGrammarFallback("invalid Annex A rand data declaration");
-    recoverMalformedLeaf(saved);
+    lines_.resize(saved.output_size);
+    line_ = saved.line;
+    preserved_source_end_ = saved.preserved_source_end;
+    indent_level_ = saved.indent_level;
+    pos_ = saved.pos;
+    static_cast<void>(parseAnnexItem(
+        {"checker_or_generate_item_declaration"}, true));
     return true;
   }
 
