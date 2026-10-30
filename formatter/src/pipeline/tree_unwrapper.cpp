@@ -2416,8 +2416,7 @@ class SVParser {
         parseStructuralBlock(TK::EndProgramKeyword);
         return true;
       case TK::SpecifyKeyword:
-        parseAnnexDelimitedBlock(TK::EndSpecifyKeyword, "specify_block",
-                                 "specify_item", false);
+        parseSpecifyBlockRule();
         return true;
       case TK::SpecParamKeyword:
         parseSpecparamDeclarationRule();
@@ -6270,20 +6269,16 @@ class SVParser {
     addLine();
   }
 
+  auto parseSpecifyBlockRule() -> void {
+    consumeInto(line_);
+    addLine();
+    parseDelimitedBody(TK::EndSpecifyKeyword, "specify_item");
+  }
+
   auto parseAnnexDelimitedBlock(TK closeKw, std::string_view declarationRule,
-                                std::string_view bodyRule,
-                                bool hasHeader = true) -> void {
+                                std::string_view bodyRule) -> void {
     beginGrammar({declarationRule});
-    if (hasHeader) {
-      consumeGrammarHeader(closeKw, {declarationRule});
-    } else {
-      consumeInto(line_);  // specify
-      if (!grammar_scopes_.back().consumedTerminalInRule(declarationRule,
-                                                         TK::SpecifyKeyword)) {
-        recordGrammarFallback("specify header outside Annex A rule");
-      }
-      addLine();
-    }
+    consumeGrammarHeader(closeKw, {declarationRule});
     const AnnexState header = endGrammar(false);
     const bool global_clocking = declarationRule == "clocking_declaration" &&
                                  header.hasViableProductionStartingWith(
