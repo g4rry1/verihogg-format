@@ -7225,14 +7225,27 @@ class SVParser {
       recoverMalformedLeaf(saved);
       return;
     }
-    const bool valid = consumeAnnexRule(
-        sequential ? "sequential_entry" : "combinational_entry", line_);
-    if (!valid || line_.tokens.empty() ||
-        line_.tokens.back().kind != TK::Semicolon) {
+    bool valid = consumeAnnexRule(
+        sequential ? "seq_input_list" : "level_input_list", line_,
+        TK::Colon);
+    if (valid && at(TK::Colon)) {
+      consumeInto(line_);
+      valid = consumeAnnexRule(
+          sequential ? "current_state" : "@lexer_output_symbol", line_,
+          sequential ? TK::Colon : TK::Semicolon);
+    } else {
+      valid = false;
+    }
+    if (valid && sequential && at(TK::Colon)) {
+      consumeInto(line_);
+      valid = consumeAnnexRule("next_state", line_, TK::Semicolon);
+    }
+    if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A UDP table entry");
       recoverMalformedLeaf(saved);
       return;
     }
+    consumeInto(line_);
     table.udp_sequential |= sequential;
     table.udp_combinational |= !sequential;
     table.udp_has_entry = true;
