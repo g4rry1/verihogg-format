@@ -5629,14 +5629,18 @@ class SVParser {
   // not have the instance shape stay with their local declaration chart.
   [[nodiscard]] auto interruptedInstanceList(size_t open_index) const -> bool {
     int depth = 0;
+    int brackets = 0;
     for (size_t i = open_index; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
           token.kind == TK::MacroUsage ||
           (token.kind == TK::Directive && !isCompilerDirective(token)))
         return true;
-      if (token.kind == TK::OpenParenthesis) ++depth;
-      if (token.kind == TK::CloseParenthesis && --depth == 0) break;
+      if (token.kind == TK::OpenBracket) ++brackets;
+      if (token.kind == TK::CloseBracket && brackets > 0) --brackets;
+      if (brackets == 0 && token.kind == TK::OpenParenthesis) ++depth;
+      if (brackets == 0 && token.kind == TK::CloseParenthesis &&
+          depth > 0 && --depth == 0) break;
       if (token.kind == TK::EndOfFile) break;
     }
     return false;
@@ -5654,6 +5658,42 @@ class SVParser {
       do {
         const AnnexState item = parseAnnexItem({item_rule}, false, true);
         if (item.failed || item.interrupted || !item.complete()) return false;
+        if (!at(TK::Comma)) break;
+        consumeInto(line_);
+        addLine();
+      } while (!at(TK::EndOfFile));
+    }
+    if (!at(TK::CloseParenthesis)) return false;
+    addLine();
+    consumeInto(line_);
+    return true;
+  }
+
+  [[nodiscard]] auto parseHierarchicalInstanceRule() -> bool {
+    if (!consumeAnnexRule("name_of_instance", line_) ||
+        !at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    addLine();
+    if (!at(TK::CloseParenthesis)) {
+      std::string_view item_rule;
+      do {
+        if (at(TK::Comma) || at(TK::CloseParenthesis)) {
+          if (item_rule == "named_port_connection") return false;
+          item_rule = "ordered_port_connection";
+        } else {
+          const AnnexState item = parseAnnexItem(
+              item_rule.empty()
+                  ? std::vector<std::string_view>{"ordered_port_connection",
+                                                  "named_port_connection"}
+                  : std::vector<std::string_view>{item_rule},
+              false, true);
+          if (item.failed || item.interrupted || !item.complete()) return false;
+          if (item_rule.empty()) {
+            item_rule = item.completed("named_port_connection")
+                            ? "named_port_connection"
+                            : "ordered_port_connection";
+          }
+        }
         if (!at(TK::Comma)) break;
         consumeInto(line_);
         addLine();
@@ -5737,13 +5777,19 @@ class SVParser {
       skip_directives();
     }
     do {
-      beginGrammar({"hierarchical_instance"});
-      const bool named = consumeAnnexRule("name_of_instance", line_);
-      if (named && at(TK::OpenParenthesis))
-        static_cast<void>(parseParenthesizedListInto(line_));
-      const AnnexState instance = endGrammar();
-      if (!named || instance.failed || instance.interrupted ||
-          !instance.complete()) {
+      bool valid = false;
+      if (interruptedInstanceList(pos_)) {
+        beginGrammar({"hierarchical_instance"});
+        const bool named = consumeAnnexRule("name_of_instance", line_);
+        if (named && at(TK::OpenParenthesis))
+          static_cast<void>(parseParenthesizedListInto(line_));
+        const AnnexState instance = endGrammar();
+        valid = named && !instance.failed && !instance.interrupted &&
+                instance.complete();
+      } else {
+        valid = parseHierarchicalInstanceRule();
+      }
+      if (!valid) {
         recordGrammarFallback("invalid Annex A hierarchical instance");
         recoverMalformedItem(saved);
         return true;
