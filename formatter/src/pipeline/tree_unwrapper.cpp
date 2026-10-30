@@ -1514,9 +1514,8 @@ class SVParser {
     pos_ = resume;
   }
 
-  // The active Annex A chart decides where an item ends. Tokens are appended
-  // to the output line as the chart advances; malformed items fall back to
-  // opaque recovery at the enclosing block boundary.
+  // Save the emission point for a grammar child. If it fails, restore that
+  // point before recovery so each original token is emitted exactly once.
   [[nodiscard]] auto leafCheckpoint() const -> LeafCheckpoint {
     return {pos_, line_, lines_.size(), preserved_source_end_, indent_level_};
   }
@@ -2350,7 +2349,10 @@ class SVParser {
       return true;
     }
     if (at(TK::LibraryKeyword) || at(TK::IncludeKeyword)) {
-      static_cast<void>(parseAnnexItem({"library_description"}, true));
+      const LeafCheckpoint saved = leafCheckpoint();
+      recordGrammarFallback(
+          "Annex A file_path_spec has no production in the available grammar");
+      recoverMalformedLeaf(saved);
       return true;
     }
     return false;
