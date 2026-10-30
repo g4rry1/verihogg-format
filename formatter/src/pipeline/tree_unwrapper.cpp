@@ -2573,6 +2573,37 @@ class SVParser {
 
   auto parseTypeDeclarationRule() -> bool {
     if (!at(TK::TypedefKeyword)) return false;
+    if (at(TK::Identifier, 1)) {
+      size_t dot = 2;
+      while (at(TK::OpenBracket, dot)) {
+        int depth = 0;
+        do {
+          if (at(TK::OpenBracket, dot)) ++depth;
+          if (at(TK::CloseBracket, dot)) --depth;
+          ++dot;
+        } while (depth > 0 && dot < tokens_.size());
+        if (depth != 0) break;
+      }
+      if (at(TK::Dot, dot)) {
+        const LeafCheckpoint saved = leafCheckpoint();
+        consumeInto(line_);  // typedef
+        bool valid = consumeAnnexRule("interface_port_identifier", line_);
+        if (valid && at(TK::OpenBracket))
+          valid = consumeAnnexRule("constant_bit_select", line_, TK::Dot);
+        if (valid && at(TK::Dot)) consumeInto(line_);
+        else valid = false;
+        if (valid) valid = consumeAnnexRule("type_identifier", line_);
+        if (valid) valid = consumeAnnexRule("type_identifier", line_);
+        if (!valid || !at(TK::Semicolon)) {
+          recordGrammarFallback("invalid Annex A interface typedef");
+          recoverMalformedLeaf(saved);
+          return true;
+        }
+        consumeInto(line_);
+        addLine();
+        return true;
+      }
+    }
     size_t identifier_offset = 1;
     const bool interface_class = at(TK::InterfaceKeyword, 1) &&
                                  at(TK::ClassKeyword, 2);
