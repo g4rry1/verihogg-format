@@ -7952,6 +7952,21 @@ class SVParser {
     parseDelimitedBody(closeKw, body_rule);
   }
 
+  [[nodiscard]] auto parseTfHeaderPortListRule() -> bool {
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    if (!at(TK::CloseParenthesis)) {
+      do {
+        if (!consumeAnnexRule("tf_port_item", line_, TK::Comma)) return false;
+        if (!at(TK::Comma)) break;
+        consumeInto(line_);
+      } while (!at(TK::EndOfFile));
+    }
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   [[nodiscard]] auto parseTaskFunctionBlockRule(TK closeKw) -> bool {
     if (closeKw != TK::EndTaskKeyword &&
         closeKw != TK::EndFunctionKeyword) {
@@ -8008,22 +8023,10 @@ class SVParser {
         return true;
       }
       const bool ports_in_header = at(TK::OpenParenthesis);
-      if (ports_in_header) {
-        consumeInto(line_);
-        bool valid = true;
-        if (!at(TK::CloseParenthesis)) {
-          do {
-            valid = consumeAnnexRule("tf_port_item", line_, TK::Comma);
-            if (!valid || !at(TK::Comma)) break;
-            consumeInto(line_);
-          } while (!at(TK::EndOfFile));
-        }
-        if (!valid || !at(TK::CloseParenthesis)) {
-          recordGrammarFallback("invalid Annex A task port list");
-          recoverMalformedItem(saved);
-          return true;
-        }
-        consumeInto(line_);
+      if (ports_in_header && !parseTfHeaderPortListRule()) {
+        recordGrammarFallback("invalid Annex A task port list");
+        recoverMalformedItem(saved);
+        return true;
       }
       if (!at(TK::Semicolon)) {
         recordGrammarFallback("missing Annex A task header semicolon");
@@ -8034,6 +8037,33 @@ class SVParser {
       addLine();
       parseDelimitedBody(closeKw, {}, false, ports_in_header);
       return true;
+    }
+    if (closeKw == TK::EndFunctionKeyword && !interrupted_header) {
+      const bool implicit_type =
+          at(TK::Identifier) &&
+          (at(TK::Semicolon, 1) || at(TK::OpenParenthesis, 1));
+      const bool typed =
+          !implicit_type &&
+          (annexCanStart("function_data_type_or_implicit", peek().kind) &&
+           !(at(TK::Identifier) &&
+             (at(TK::DoubleColon, 1) || at(TK::Dot, 1))));
+      if (implicit_type || typed) {
+        bool valid = implicit_type ||
+                     consumeAnnexRule("function_data_type_or_implicit", line_);
+        if (valid) valid = consumeAnnexRule("function_identifier", line_);
+        const bool ports_in_header = at(TK::OpenParenthesis);
+        if (valid && ports_in_header)
+          valid = parseTfHeaderPortListRule();
+        if (!valid || !at(TK::Semicolon)) {
+          recordGrammarFallback("invalid Annex A function header");
+          recoverMalformedItem(saved);
+          return true;
+        }
+        consumeInto(line_);
+        addLine();
+        parseDelimitedBody(closeKw, {}, false, ports_in_header);
+        return true;
+      }
     }
     beginGrammar({body_rule});
     consumeGrammarHeader(closeKw, {body_rule});
