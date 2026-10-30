@@ -2446,6 +2446,46 @@ class SVParser {
     addLine();
   }
 
+  auto parseSpecifyItemRule() -> bool {
+    if (at(TK::SpecParamKeyword)) {
+      parseSpecparamDeclarationRule();
+      return true;
+    }
+    const bool pulse = at(TK::PulseStyleOnEventKeyword) ||
+                       at(TK::PulseStyleOnDetectKeyword);
+    const bool cancel = at(TK::ShowCancelledKeyword) ||
+                        at(TK::NoShowCancelledKeyword);
+    if (pulse || cancel) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);
+      if (!consumeAnnexRule("list_of_path_outputs", line_,
+                            TK::Semicolon) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A specify output list");
+        recoverMalformedLeaf(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
+    const bool path = at(TK::OpenParenthesis) || at(TK::IfKeyword) ||
+                      at(TK::IfNoneKeyword);
+    const bool timing = at(TK::SystemIdentifier);
+    if (!path && !timing) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    const bool valid = consumeAnnexRule(
+        path ? "path_declaration" : "system_timing_check", line_);
+    if (!valid || line_.tokens.empty() ||
+        line_.tokens.back().kind != TK::Semicolon) {
+      recordGrammarFallback("invalid Annex A specify item");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    addLine();
+    return true;
+  }
+
   auto parseTimeunitsRule() -> bool {
     if (!at(TK::TimeUnitKeyword) && !at(TK::TimePrecisionKeyword))
       return false;
@@ -4697,6 +4737,9 @@ class SVParser {
       }
       if (root == "clocking_item") {
         if (parseClockingItemRule()) return true;
+      }
+      if (root == "specify_item") {
+        if (parseSpecifyItemRule()) return true;
       }
       if (root == "coverage_spec_or_option") {
         if (parseCoverageOptionRule() || parseCoverageSpecRule()) return true;
