@@ -2504,8 +2504,21 @@ class SVParser {
     const bool timing = at(TK::SystemIdentifier);
     if (!path && !timing) return false;
     const LeafCheckpoint saved = leafCheckpoint();
-    const bool valid = consumeAnnexRule(
-        path ? "path_declaration" : "system_timing_check", line_);
+    bool valid = false;
+    if (path) {
+      const AnnexState declaration = parseAnnexItem(
+          at(TK::OpenParenthesis)
+              ? std::vector<std::string_view>{"simple_path_declaration",
+                                              "edge_sensitive_path_declaration"}
+              : std::vector<std::string_view>{
+                    "state_dependent_path_declaration"},
+          false, true);
+      valid = !declaration.failed && !declaration.interrupted &&
+              declaration.complete() && at(TK::Semicolon);
+      if (valid) consumeInto(line_);
+    } else {
+      valid = consumeAnnexRule("system_timing_check", line_);
+    }
     if (!valid || line_.tokens.empty() ||
         line_.tokens.back().kind != TK::Semicolon) {
       recordGrammarFallback("invalid Annex A specify item");
