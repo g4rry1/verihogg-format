@@ -8607,6 +8607,28 @@ class SVParser {
   // rs_production { rs_production } endsequence.
   auto parseRandsequenceStatement() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
+    if (!at(TK::OpenParenthesis, 1) ||
+        !interruptedInstanceList(pos_ + 1)) {
+      consumeInto(line_);  // randsequence
+      if (!at(TK::OpenParenthesis)) {
+        recordGrammarFallback("invalid Annex A randsequence header");
+        recoverMalformedItem(saved);
+        return;
+      }
+      consumeInto(line_);
+      bool valid = true;
+      if (!at(TK::CloseParenthesis))
+        valid = consumeAnnexRule("rs_production_identifier", line_);
+      if (!valid || !at(TK::CloseParenthesis)) {
+        recordGrammarFallback("invalid Annex A randsequence header");
+        recoverMalformedItem(saved);
+        return;
+      }
+      consumeInto(line_);
+      addLine();
+      parseDelimitedBody(TK::EndSequenceKeyword, "rs_production");
+      return;
+    }
     beginGrammar({"randsequence_statement"});
     consumeInto(line_);
     if (!at(TK::OpenParenthesis) ||
