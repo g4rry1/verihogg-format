@@ -2568,6 +2568,8 @@ class SVParser {
       return true;
     }
     const bool explicit_type =
+        at(TK::Identifier, 1) || at(TK::VirtualKeyword, 1) ||
+        at(TK::TypeKeyword, 1) ||
         at(TK::BitKeyword, 1) || at(TK::ByteKeyword, 1) ||
         at(TK::CHandleKeyword, 1) || at(TK::EnumKeyword, 1) ||
         at(TK::EventKeyword, 1) || at(TK::IntKeyword, 1) ||
