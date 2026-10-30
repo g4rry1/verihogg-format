@@ -2899,8 +2899,13 @@ class SVParser {
   // variable_decl_assignment. Instance-shaped pairs are handled earlier by
   // the instantiation production in contexts where it is permitted.
   auto parseUserDataDeclarationRule() -> bool {
-    if (!at(TK::Identifier) || !at(TK::Identifier, 1) ||
-        at(TK::OpenParenthesis, 2))
+    if (!at(TK::Identifier)) return false;
+    size_t variable = 1;
+    while (at(TK::DoubleColon, variable) &&
+           at(TK::Identifier, variable + 1))
+      variable += 2;
+    if (!at(TK::Identifier, variable) ||
+        at(TK::OpenParenthesis, variable + 1))
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
     if (!consumeAnnexRule("data_type_or_implicit", line_) ||
