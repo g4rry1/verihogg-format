@@ -8327,10 +8327,49 @@ class SVParser {
   // coverage_spec ::= cover_point | cover_cross. The local header chart
   // resolves optional labels and types. Once it reaches bins_or_empty or
   // cross_body, that child enters its own production and emits its items.
+  auto parseDirectCoverageSpecRule() -> bool {
+    const bool labeled = at(TK::Identifier) && at(TK::Colon, 1);
+    const size_t keyword_offset = labeled ? 2 : 0;
+    const bool point = at(TK::CoverPointKeyword, keyword_offset);
+    const bool cross = at(TK::CrossKeyword, keyword_offset);
+    if (!point && !cross) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = true;
+    if (labeled) {
+      valid = consumeAnnexRule(point ? "cover_point_identifier"
+                                     : "cross_identifier", line_);
+      if (valid && at(TK::Colon)) consumeInto(line_);
+      else valid = false;
+    }
+    if (valid) consumeInto(line_);  // coverpoint / cross
+    if (valid)
+      valid = consumeAnnexRule(point ? "expression"
+                                    : "list_of_cross_items", line_,
+                               TK::IffKeyword);
+    if (valid && at(TK::IffKeyword)) {
+      consumeInto(line_);
+      valid = consumeAnnexDelimited(
+          TK::OpenParenthesis, TK::CloseParenthesis, "expression", line_);
+    }
+    if (!valid || (!at(TK::Semicolon) && !at(TK::OpenBrace))) {
+      recordGrammarFallback("invalid Annex A coverage spec header");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    const bool braced = at(TK::OpenBrace);
+    consumeInto(line_);
+    addLine();
+    if (braced)
+      parseDelimitedBody(TK::CloseBrace,
+                         point ? "bins_or_options" : "cross_body_item");
+    return true;
+  }
+
   auto parseCoverageSpecRule() -> bool {
     if (!annexCanStart("cover_point", peek().kind) &&
         !annexCanStart("cover_cross", peek().kind))
       return false;
+    if (parseDirectCoverageSpecRule()) return true;
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"cover_point", "cover_cross"});
     while (!at(TK::EndOfFile) &&
