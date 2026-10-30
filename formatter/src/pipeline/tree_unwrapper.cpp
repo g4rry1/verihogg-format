@@ -3682,6 +3682,14 @@ class SVParser {
         (at(TK::FunctionKeyword, offset + 1) ||
          at(TK::TaskKeyword, offset + 1)))
       return false;
+    if (type_start == TK::Identifier &&
+        at(TK::OpenBracket, offset + 1))
+      return false;
+    const bool implicit_type =
+        type_start == TK::Identifier &&
+        (at(TK::Semicolon, offset + 1) ||
+         at(TK::Equals, offset + 1) ||
+         at(TK::Comma, offset + 1));
     if (offset == 0 && type_start != TK::Identifier &&
         type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
       return false;
@@ -3718,7 +3726,8 @@ class SVParser {
       recoverMalformedLeaf(saved);
       return true;
     }
-    if (!consumeAnnexRule("data_type_or_implicit", line_) ||
+    if ((!implicit_type &&
+         !consumeAnnexRule("data_type_or_implicit", line_)) ||
         !consumeAnnexRule("list_of_variable_decl_assignments", line_,
                           TK::Semicolon) ||
         !at(TK::Semicolon)) {
