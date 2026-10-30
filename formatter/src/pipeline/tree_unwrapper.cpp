@@ -2796,6 +2796,37 @@ class SVParser {
       addLine();
       return true;
     }
+    if (at(TK::Identifier, 1) &&
+        (at(TK::Equals, 2) || at(TK::Comma, 2) ||
+         at(TK::Semicolon, 2))) {
+      bool interrupted = false;
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        const auto& token = tokens_[i];
+        if (isConditionalStartDirective(token) ||
+            token.kind == TK::MacroUsage ||
+            (token.kind == TK::Directive &&
+             !isCompilerDirective(token))) {
+          interrupted = true;
+          break;
+        }
+        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+          break;
+      }
+      if (!interrupted) {
+        const LeafCheckpoint saved = leafCheckpoint();
+        consumeInto(line_);  // parameter / localparam
+        if (!consumeAnnexRule("list_of_param_assignments", line_,
+                              TK::Semicolon) ||
+            !at(TK::Semicolon)) {
+          recordGrammarFallback("invalid Annex A implicit parameter");
+          recoverMalformedLeaf(saved);
+          return true;
+        }
+        consumeInto(line_);
+        addLine();
+        return true;
+      }
+    }
     parseAnnexSemicolonItem(at(TK::ParameterKeyword)
                                 ? "parameter_declaration"
                                 : "local_parameter_declaration");
