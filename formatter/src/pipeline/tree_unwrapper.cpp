@@ -2602,7 +2602,16 @@ class SVParser {
 
   auto parseNettypeDeclarationRule() -> bool {
     if (!at(TK::NetTypeKeyword)) return false;
+    bool has_resolver = false;
+    for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
+      if (tokens_[i].kind == TK::Semicolon ||
+          tokens_[i].kind == TK::EndOfFile)
+        break;
+      if (tokens_[i].kind == TK::WithKeyword) has_resolver = true;
+    }
     const bool explicit_type =
+        (at(TK::Identifier, 1) && has_resolver) ||
+        at(TK::VirtualKeyword, 1) || at(TK::TypeKeyword, 1) ||
         at(TK::BitKeyword, 1) || at(TK::ByteKeyword, 1) ||
         at(TK::CHandleKeyword, 1) || at(TK::EnumKeyword, 1) ||
         at(TK::EventKeyword, 1) || at(TK::IntKeyword, 1) ||
