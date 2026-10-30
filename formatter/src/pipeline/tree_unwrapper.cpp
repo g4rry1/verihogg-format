@@ -5048,8 +5048,7 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     const AnnexState item = parseAnnexItem(
         {"blocking_assignment", "nonblocking_assignment",
-         "subroutine_call_statement", "checker_instantiation",
-         "clocking_drive"},
+         "subroutine_call_statement", "clocking_drive"},
         false, true);
     if (item.interrupted) return true;
     if (item.failed || !item.complete()) {
