@@ -5849,30 +5849,49 @@ class SVParser {
     return true;
   }
 
-  [[nodiscard]] auto parseHierarchicalInstanceRule() -> bool {
+  [[nodiscard]] auto parseHierarchicalInstanceRule(bool allow_checker,
+                                                    bool& checker_only) -> bool {
     if (!consumeAnnexRule("name_of_instance", line_) ||
         !at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
     addLine();
+    bool module_possible = true;
+    bool checker_possible = allow_checker;
     if (!at(TK::CloseParenthesis)) {
-      std::string_view item_rule;
+      bool named = false;
+      bool style_selected = false;
       do {
         if (at(TK::Comma) || at(TK::CloseParenthesis)) {
-          if (item_rule == "named_port_connection") return false;
-          item_rule = "ordered_port_connection";
+          if (style_selected && named) return false;
+          style_selected = true;
         } else {
-          const AnnexState item = parseAnnexItem(
-              item_rule.empty()
-                  ? std::vector<std::string_view>{"ordered_port_connection",
-                                                  "named_port_connection"}
-                  : std::vector<std::string_view>{item_rule},
-              false, true);
-          if (item.failed || item.interrupted || !item.complete()) return false;
-          if (item_rule.empty()) {
-            item_rule = item.completed("named_port_connection")
-                            ? "named_port_connection"
-                            : "ordered_port_connection";
+          std::vector<std::string_view> roots;
+          if (module_possible) {
+            if (!style_selected || !named)
+              roots.push_back("ordered_port_connection");
+            if (!style_selected || named)
+              roots.push_back("named_port_connection");
           }
+          if (checker_possible) {
+            if (!style_selected || !named)
+              roots.push_back("ordered_checker_port_connection");
+            if (!style_selected || named)
+              roots.push_back("named_checker_port_connection");
+          }
+          const AnnexState item = parseAnnexItem(std::move(roots), false, true);
+          if (item.failed || item.interrupted || !item.complete()) return false;
+          if (!style_selected) {
+            named = item.completed("named_port_connection") ||
+                    item.completed("named_checker_port_connection");
+            style_selected = true;
+          }
+          module_possible &=
+              item.completed(named ? "named_port_connection"
+                                   : "ordered_port_connection");
+          checker_possible &=
+              item.completed(named ? "named_checker_port_connection"
+                                   : "ordered_checker_port_connection");
+          if (!module_possible && !checker_possible) return false;
         }
         if (!at(TK::Comma)) break;
         consumeInto(line_);
@@ -5882,6 +5901,7 @@ class SVParser {
     if (!at(TK::CloseParenthesis)) return false;
     addLine();
     consumeInto(line_);
+    checker_only = checker_possible && !module_possible;
     return true;
   }
 
@@ -5937,6 +5957,7 @@ class SVParser {
       }
     };
     skip_directives();
+    const bool parameterized = at(TK::Hash);
     if (at(TK::Hash)) {
       bool valid = false;
       if (unavailableInFollowingParentheses(pos_ + 1)) {
@@ -5956,8 +5977,10 @@ class SVParser {
       }
       skip_directives();
     }
+    size_t instance_count = 0;
     do {
       bool valid = false;
+      bool checker_only = false;
       if (unavailableInFollowingParentheses(pos_)) {
         beginGrammar({"hierarchical_instance"});
         const bool named = consumeAnnexRule("name_of_instance", line_);
@@ -5967,14 +5990,20 @@ class SVParser {
         valid = named && !instance.failed && !instance.interrupted &&
                 instance.complete();
       } else {
-        valid = parseHierarchicalInstanceRule();
+        valid = parseHierarchicalInstanceRule(!parameterized, checker_only);
       }
-      if (!valid) {
+      if (!valid || (checker_only && instance_count != 0)) {
         recordGrammarFallback("invalid Annex A hierarchical instance");
         recoverMalformedItem(saved);
         return true;
       }
+      ++instance_count;
       skip_directives();
+      if (checker_only && at(TK::Comma)) {
+        recordGrammarFallback("checker instantiation has one Annex A instance");
+        recoverMalformedItem(saved);
+        return true;
+      }
       if (!at(TK::Comma)) break;
       consumeInto(line_);
       addLine();
