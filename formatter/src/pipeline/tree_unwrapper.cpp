@@ -5156,19 +5156,12 @@ class SVParser {
       const bool package_item =
           !block_stack_.empty() &&
           block_stack_.back().grammar_body == "package_item";
-      beginGrammar(package_item
-                       ? std::vector<std::string_view>{"attribute_instance"}
-                       : grammarRoots());
-      const size_t origin = grammar_scopes_.back().charts.size() - 1;
-      do {
-        consumeInto(line_);
-      } while (
-          !at(TK::EndOfFile) && !grammar_scopes_.back().failed &&
-          !grammar_scopes_.back().interrupted &&
-          !grammar_scopes_.back().completedFrom("attribute_instance", origin));
-      const AnnexState prefix = endGrammar(false);
-      if (prefix.failed || prefix.interrupted ||
-          !prefix.completedFrom("attribute_instance", origin)) {
+      const auto roots = grammarRoots();
+      const bool allowed = package_item || std::ranges::any_of(
+          roots, [](std::string_view root) {
+            return annexCanStart(root, TK::OpenParenthesis);
+          });
+      if (!allowed || !consumeAnnexRule("attribute_instance", line_)) {
         recordGrammarFallback("incomplete Annex A attribute instance");
         consumeUntilSemi();
         return;
