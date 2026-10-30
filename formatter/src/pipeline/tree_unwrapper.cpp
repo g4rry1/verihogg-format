@@ -8019,6 +8019,22 @@ class SVParser {
     return false;
   }
 
+  auto recoverMalformedStructuralHeader(const LeafCheckpoint& saved,
+                                        TK closeKw, bool external = false)
+      -> void {
+    if (external) {
+      recoverMalformedLeaf(saved);
+      return;
+    }
+    lines_.resize(saved.output_size);
+    line_ = saved.line;
+    preserved_source_end_ = saved.preserved_source_end;
+    indent_level_ = saved.indent_level;
+    pos_ = saved.pos;
+    const auto after = findPairedEnd(saved.pos, closeKw);
+    emitOpaque(saved.pos, after ? *after : findOuterBoundary(saved.pos));
+  }
+
   // The ANSI header may omit list_of_port_declarations entirely. For that
   // production, parse each child directly and enter non_port_*_item.
   [[nodiscard]] auto parsePortlessStructuralHeaderRule(TK closeKw) -> bool {
@@ -8053,7 +8069,7 @@ class SVParser {
     valid = valid && consumeAnnexRule(identifier_rule, line_);
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A structural header");
-      recoverMalformedItem(saved);
+      recoverMalformedStructuralHeader(saved, closeKw);
       return true;
     }
     consumeInto(line_);
@@ -8065,6 +8081,39 @@ class SVParser {
                   ? "non_port_interface_item"
                   : "non_port_program_item";
     parseDelimitedBody(closeKw, body_rule);
+    return true;
+  }
+
+  // list_of_port_declarations ::= '(' [ { attribute_instance }
+  // ansi_port_declaration { ',' { attribute_instance }
+  // ansi_port_declaration } ] ')'. The caller selects this rule only when
+  // its first port keyword excludes the non-ANSI list_of_ports alternative.
+  [[nodiscard]] auto parseAnsiStructuralPortListRule() -> bool {
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    addLine();
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    do {
+      skip_directives();
+      while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+        if (!consumeAnnexRule("attribute_instance", line_)) return false;
+        skip_directives();
+      }
+      if (!consumeAnnexRule("ansi_port_declaration", line_, TK::Comma))
+        return false;
+      skip_directives();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+      addLine();
+    } while (!at(TK::EndOfFile));
+    addLine();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
     return true;
   }
 
@@ -8134,21 +8183,21 @@ class SVParser {
     if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) {
       if (!consumeAnnexRule("lifetime", line_)) {
         recordGrammarFallback("invalid Annex A structural lifetime");
-        recoverMalformedItem(saved);
+        recoverMalformedStructuralHeader(saved, closeKw, external);
         return true;
       }
     }
     skip_directives();
     if (!consumeAnnexRule(identifier_rule, line_)) {
       recordGrammarFallback("invalid Annex A structural identifier");
-      recoverMalformedItem(saved);
+      recoverMalformedStructuralHeader(saved, closeKw, external);
       return true;
     }
     skip_directives();
     while (at(TK::ImportKeyword)) {
       if (!consumeAnnexRule("package_import_declaration", line_)) {
         recordGrammarFallback("invalid Annex A header package import");
-        recoverMalformedItem(saved);
+        recoverMalformedStructuralHeader(saved, closeKw, external);
         return true;
       }
       skip_directives();
@@ -8161,23 +8210,36 @@ class SVParser {
       if (parameters.failed || parameters.interrupted ||
           !parameters.complete()) {
         recordGrammarFallback("invalid Annex A parameter port list");
-        recoverMalformedItem(saved);
+        recoverMalformedStructuralHeader(saved, closeKw, external);
         return true;
       }
       skip_directives();
     }
     if (at(TK::OpenParenthesis)) {
-      beginGrammar({"list_of_ports", "list_of_port_declarations"});
-      static_cast<void>(parseParenthesizedListInto(line_, closeKw));
-      const AnnexState ports = endGrammar();
-      if (ports.failed || ports.interrupted || !ports.complete()) {
-        recordGrammarFallback("invalid Annex A structural port list");
-        recoverMalformedItem(saved);
-        return true;
-      }
-      if (ports.completed("list_of_port_declarations") &&
-          !ports.completed("list_of_ports")) {
+      const bool direct_ansi =
+          at(TK::InputKeyword, 1) || at(TK::OutputKeyword, 1) ||
+          at(TK::InOutKeyword, 1) || at(TK::RefKeyword, 1) ||
+          at(TK::InterfaceKeyword, 1);
+      if (direct_ansi) {
+        if (!parseAnsiStructuralPortListRule()) {
+          recordGrammarFallback("invalid Annex A ANSI structural port list");
+          recoverMalformedStructuralHeader(saved, closeKw, external);
+          return true;
+        }
         body_rule = non_port_body_rule;
+      } else {
+        beginGrammar({"list_of_ports", "list_of_port_declarations"});
+        static_cast<void>(parseParenthesizedListInto(line_, closeKw));
+        const AnnexState ports = endGrammar();
+        if (ports.failed || ports.interrupted || !ports.complete()) {
+          recordGrammarFallback("invalid Annex A structural port list");
+          recoverMalformedStructuralHeader(saved, closeKw, external);
+          return true;
+        }
+        if (ports.completed("list_of_port_declarations") &&
+            !ports.completed("list_of_ports")) {
+          body_rule = non_port_body_rule;
+        }
       }
       skip_directives();
     } else {
@@ -8185,7 +8247,7 @@ class SVParser {
     }
     if (!at(TK::Semicolon)) {
       recordGrammarFallback("missing Annex A structural header semicolon");
-      recoverMalformedItem(saved);
+      recoverMalformedStructuralHeader(saved, closeKw, external);
       return true;
     }
     consumeInto(line_);
