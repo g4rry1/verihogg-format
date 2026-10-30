@@ -3871,13 +3871,41 @@ class SVParser {
 
   // generate_item ::= module_or_generate_item |
   // interface_or_generate_item | checker_or_generate_item.
-  auto parseGenerateItemRule() -> bool {
-    if (parseDefaultClockingOrDisableRule(false)) return true;
-    if (at(TK::RandKeyword)) {
+  auto parseRandCheckerDataDeclarationRule() -> bool {
+    if (!at(TK::RandKeyword)) return false;
+    const bool direct = at(TK::TypedefKeyword, 1) ||
+                        at(TK::NetTypeKeyword, 1) ||
+                        at(TK::BitKeyword, 1) ||
+                        at(TK::ByteKeyword, 1) ||
+                        at(TK::CHandleKeyword, 1) ||
+                        at(TK::EnumKeyword, 1) ||
+                        at(TK::EventKeyword, 1) ||
+                        at(TK::IntKeyword, 1) ||
+                        at(TK::IntegerKeyword, 1) ||
+                        at(TK::LogicKeyword, 1) ||
+                        at(TK::LongIntKeyword, 1) ||
+                        at(TK::RealKeyword, 1) ||
+                        at(TK::RealTimeKeyword, 1) ||
+                        at(TK::RegKeyword, 1) ||
+                        at(TK::ShortIntKeyword, 1) ||
+                        at(TK::ShortRealKeyword, 1) ||
+                        at(TK::StringKeyword, 1) ||
+                        at(TK::StructKeyword, 1) ||
+                        at(TK::TimeKeyword, 1) ||
+                        at(TK::UnionKeyword, 1);
+    if (!direct) {
       static_cast<void>(parseAnnexItem(
           {"checker_or_generate_item_declaration"}, true));
       return true;
     }
+    consumeInto(line_);  // rand
+    return parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+           parseBuiltInDataDeclarationRule();
+  }
+
+  auto parseGenerateItemRule() -> bool {
+    if (parseDefaultClockingOrDisableRule(false)) return true;
+    if (parseRandCheckerDataDeclarationRule()) return true;
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseBuiltInDataDeclarationRule() || parseNetDeclarationRule() ||
@@ -3898,11 +3926,7 @@ class SVParser {
 
   auto parseCheckerItemRule() -> bool {
     if (parseDefaultClockingOrDisableRule(true)) return true;
-    if (at(TK::RandKeyword)) {
-      static_cast<void>(parseAnnexItem(
-          {"checker_or_generate_item_declaration"}, true));
-      return true;
-    }
+    if (parseRandCheckerDataDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseBuiltInDataDeclarationRule())
       return true;
