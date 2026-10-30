@@ -4840,6 +4840,7 @@ class SVParser {
         if (parseCoverageOptionRule() || parseCoverageSpecRule()) return true;
       }
       if (root == "bins_or_options") {
+        if (parseBinsOrOptionsRule()) return true;
         parseAnnexSemicolonItem("bins_or_options");
         return true;
       }
@@ -8361,6 +8362,89 @@ class SVParser {
     if (!consumeAnnexRule("bins_selection", line_, TK::Semicolon) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A cross bins selection");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  // The brace and default alternatives of bins_or_options have distinct
+  // right-hand starts. Select them after the common grammar prefix; the
+  // expression and transition alternatives still share a chart.
+  auto parseBinsOrOptionsRule() -> bool {
+    if (parseCoverageOptionRule()) return true;
+    size_t next = pos_;
+    if (next >= tokens_.size()) return false;
+    const bool wildcard = tokens_[next].kind == TK::WildcardKeyword;
+    if (wildcard) ++next;
+    if (next >= tokens_.size()) return false;
+    if (tokens_[next].kind != TK::BinsKeyword &&
+        tokens_[next].kind != TK::IllegalBinsKeyword &&
+        tokens_[next].kind != TK::IgnoreBinsKeyword)
+      return false;
+    ++next;
+    if (next >= tokens_.size()) return false;
+    if (tokens_[next].kind != TK::Identifier) return false;
+    ++next;
+    if (next >= tokens_.size()) return false;
+    bool bracketed = false;
+    if (tokens_[next].kind == TK::OpenBracket) {
+      bracketed = true;
+      int depth = 0;
+      do {
+        if (tokens_[next].kind == TK::OpenBracket) ++depth;
+        if (tokens_[next].kind == TK::CloseBracket) --depth;
+        ++next;
+      } while (depth > 0 && next < tokens_.size());
+      if (depth != 0 || next >= tokens_.size()) return false;
+    }
+    if (next + 1 >= tokens_.size() || tokens_[next].kind != TK::Equals)
+      return false;
+    const TK rhs = tokens_[next + 1].kind;
+    if (rhs != TK::OpenBrace && rhs != TK::DefaultKeyword) return false;
+
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = true;
+    if (wildcard) consumeInto(line_);
+    valid = consumeAnnexRule("bins_keyword", line_);
+    if (valid) valid = consumeAnnexRule("bin_identifier", line_);
+    if (valid && at(TK::OpenBracket)) {
+      if (at(TK::CloseBracket, 1)) {
+        consumeInto(line_);
+        consumeInto(line_);
+      } else {
+        valid = consumeAnnexDelimited(TK::OpenBracket, TK::CloseBracket,
+                                      "covergroup_expression", line_);
+      }
+    }
+    if (valid && at(TK::Equals)) consumeInto(line_);
+    else valid = false;
+    if (valid && rhs == TK::OpenBrace) {
+      valid = consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace,
+                                    "covergroup_range_list", line_);
+      if (valid && at(TK::WithKeyword)) {
+        consumeInto(line_);
+        valid = consumeAnnexDelimited(TK::OpenParenthesis,
+                                      TK::CloseParenthesis,
+                                      "with_covergroup_expression", line_);
+      }
+    } else if (valid) {
+      valid = !wildcard;
+      if (valid) consumeInto(line_);  // default
+      if (valid && at(TK::SequenceKeyword)) {
+        valid = !bracketed;
+        if (valid) consumeInto(line_);
+      }
+    }
+    if (valid && at(TK::IffKeyword)) {
+      consumeInto(line_);
+      valid = consumeAnnexDelimited(TK::OpenParenthesis,
+                                    TK::CloseParenthesis, "expression", line_);
+    }
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A covergroup bins item");
       recoverMalformedLeaf(saved);
       return true;
     }
