@@ -3982,6 +3982,9 @@ class SVParser {
         case TK::StructKeyword:
         case TK::TimeKeyword:
         case TK::UnionKeyword:
+        case TK::SignedKeyword:
+        case TK::UnsignedKeyword:
+        case TK::OpenBracket:
           return true;
         default:
           return false;
@@ -4674,6 +4677,9 @@ class SVParser {
         case TK::StructKeyword:
         case TK::TimeKeyword:
         case TK::UnionKeyword:
+        case TK::SignedKeyword:
+        case TK::UnsignedKeyword:
+        case TK::OpenBracket:
           return true;
         default:
           return false;
