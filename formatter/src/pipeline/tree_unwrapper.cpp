@@ -2832,14 +2832,13 @@ class SVParser {
       default:
         return false;
     }
-    bool ambiguous = at(TK::OpenParenthesis, 1);
+    bool ambiguous = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
           token.kind == TK::MacroUsage ||
           (token.kind == TK::Directive &&
-           !isCompilerDirective(token)) ||
-          token.kind == TK::Hash) {
+           !isCompilerDirective(token))) {
         ambiguous = true;
         break;
       }
@@ -2849,6 +2848,15 @@ class SVParser {
       }
     }
     size_t after_net_type = 1;
+    if (at(TK::OpenParenthesis, after_net_type)) {
+      while (pos_ + after_net_type < tokens_.size() &&
+             !at(TK::CloseParenthesis, after_net_type) &&
+             !at(TK::Semicolon, after_net_type) &&
+             !at(TK::EndOfFile, after_net_type))
+        ++after_net_type;
+      if (at(TK::CloseParenthesis, after_net_type))
+        ++after_net_type;
+    }
     if (at(TK::VectoredKeyword, after_net_type) ||
         at(TK::ScalaredKeyword, after_net_type)) {
       ++after_net_type;
@@ -2857,12 +2865,22 @@ class SVParser {
         at(TK::Identifier, after_net_type + 1)) {
       ambiguous = true;
     }
+    if (at(TK::Identifier, after_net_type) &&
+        at(TK::Hash, after_net_type + 1))
+      ambiguous = true;
     if (ambiguous) {
       static_cast<void>(parseAnnexItem({"net_declaration"}, true));
       return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = consumeAnnexRule("net_type", line_);
+    if (valid && at(TK::OpenParenthesis)) {
+      const bool charge = at(TK::SmallKeyword, 1) ||
+                          at(TK::MediumKeyword, 1) ||
+                          at(TK::LargeKeyword, 1);
+      valid = consumeAnnexRule(charge ? "charge_strength"
+                                     : "drive_strength", line_);
+    }
     if (valid && (at(TK::VectoredKeyword) ||
                   at(TK::ScalaredKeyword))) {
       consumeInto(line_);
@@ -2897,6 +2915,8 @@ class SVParser {
     };
     if (valid && explicit_type())
       valid = consumeAnnexRule("data_type_or_implicit", line_);
+    if (valid && at(TK::Hash))
+      valid = consumeAnnexRule("delay3", line_);
     if (valid)
       valid = consumeAnnexRule("list_of_net_decl_assignments", line_,
                                TK::Semicolon);
