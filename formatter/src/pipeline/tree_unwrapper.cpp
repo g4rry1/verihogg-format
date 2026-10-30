@@ -2913,7 +2913,7 @@ class SVParser {
                           TK::Semicolon) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A user-typed declaration");
-      recoverMalformedLeaf(saved);
+      recoverMalformedItem(saved);
       return true;
     }
     consumeInto(line_);
@@ -4649,6 +4649,34 @@ class SVParser {
     }
   }
 
+  // statement_item alternatives with an identifier prefix share tokens until
+  // the call, assignment, checker instance, or clocking drive is complete.
+  // Keep only those Annex A children live while emitting the statement.
+  auto parseIdentifierStatementRule() -> bool {
+    if (!at(TK::Identifier)) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    const AnnexState item = parseAnnexItem(
+        {"blocking_assignment", "nonblocking_assignment",
+         "subroutine_call_statement", "checker_instantiation",
+         "clocking_drive"},
+        false, true);
+    if (item.interrupted) return true;
+    if (item.failed || !item.complete()) {
+      recordGrammarFallback("invalid Annex A identifier statement");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    if (at(TK::Semicolon)) consumeInto(line_);
+    if (line_.tokens.empty() ||
+        line_.tokens.back().kind != TK::Semicolon) {
+      recordGrammarFallback("missing Annex A statement semicolon");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    addLine();
+    return true;
+  }
+
   auto parseJumpStatementRule() -> bool {
     if (!at(TK::ReturnKeyword) && !at(TK::BreakKeyword) &&
         !at(TK::ContinueKeyword)) {
@@ -5036,7 +5064,8 @@ class SVParser {
           root == "function_statement_or_null" ||
           root == "function_statement") {
         if (parseStatementLabelRule(roots) ||
-            parseQualifiedStatementRule() || parseStatementItemRule()) {
+            parseQualifiedStatementRule() || parseStatementItemRule() ||
+            parseIdentifierStatementRule()) {
           markStatementPhase();
           return true;
         }
@@ -5048,7 +5077,8 @@ class SVParser {
         if (parseImmediateAssertionRule()) return true;
       }
       if (root == "statement_item") {
-        if (parseQualifiedStatementRule() || parseStatementItemRule()) {
+        if (parseQualifiedStatementRule() || parseStatementItemRule() ||
+            parseIdentifierStatementRule()) {
           markStatementPhase();
           return true;
         }
