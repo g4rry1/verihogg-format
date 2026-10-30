@@ -4341,8 +4341,40 @@ class SVParser {
           break;
         }
       }
-      if (interrupted_header || at(TK::Hash, 1)) {
+      if (interrupted_header) {
         static_cast<void>(parseAnnexItem({"continuous_assign"}, true));
+        return true;
+      }
+      if (at(TK::Hash, 1)) {
+        const LeafCheckpoint saved = leafCheckpoint();
+        consumeInto(line_);  // assign
+        const AnnexState delay =
+            parseAnnexItem({"delay3", "delay_control"}, false, true);
+        if (delay.failed || delay.interrupted || !delay.complete()) {
+          recordGrammarFallback("invalid Annex A continuous assign delay");
+          recoverMalformedLeaf(saved);
+          return true;
+        }
+        std::vector<std::string_view> assignments;
+        if (delay.completed("delay3"))
+          assignments.push_back("list_of_net_assignments");
+        if (delay.completed("delay_control"))
+          assignments.push_back("list_of_variable_assignments");
+        if (assignments.empty()) {
+          recordGrammarFallback("unresolved Annex A continuous assign delay");
+          recoverMalformedLeaf(saved);
+          return true;
+        }
+        const AnnexState items = parseAnnexItem(std::move(assignments),
+                                                false, true);
+        if (items.failed || items.interrupted || !items.complete() ||
+            !at(TK::Semicolon)) {
+          recordGrammarFallback("invalid Annex A delayed assignment");
+          recoverMalformedLeaf(saved);
+          return true;
+        }
+        consumeInto(line_);
+        addLine();
         return true;
       }
       if (at(TK::OpenParenthesis, 1)) {
