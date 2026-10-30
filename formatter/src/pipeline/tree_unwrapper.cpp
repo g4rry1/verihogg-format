@@ -2461,8 +2461,36 @@ class SVParser {
 
   // specparam_declaration ::= specparam [packed_dimension]
   //                             list_of_specparam_assignments ';'.
+  auto parseSpecparamAssignmentListRule() -> bool {
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    do {
+      skip_directives();
+      if (!consumeAnnexRule("specparam_assignment", line_, TK::Comma))
+        return false;
+      skip_directives();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseSpecparamDeclarationRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
+    bool conditional = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      if (isConditionalStartDirective(tokens_[i])) {
+        conditional = true;
+        break;
+      }
+      if (tokens_[i].kind == TK::Semicolon ||
+          tokens_[i].kind == TK::EndOfFile)
+        break;
+    }
     consumeInto(line_);
     if (at(TK::OpenBracket) &&
         !consumeAnnexRule("packed_dimension", line_)) {
@@ -2470,8 +2498,10 @@ class SVParser {
       recoverMalformedItem(saved);
       return;
     }
-    if (!consumeAnnexRule("list_of_specparam_assignments", line_,
-                          TK::Semicolon) ||
+    if (!(conditional
+              ? consumeAnnexRule("list_of_specparam_assignments", line_,
+                                 TK::Semicolon)
+              : parseSpecparamAssignmentListRule()) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A specparam assignment list");
       recoverMalformedItem(saved);
