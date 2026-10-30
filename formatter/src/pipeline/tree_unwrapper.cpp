@@ -2839,6 +2839,74 @@ class SVParser {
     return true;
   }
 
+  auto parseQualifiedDataDeclarationRule() -> bool {
+    if (!at(TK::ConstKeyword) && !at(TK::VarKeyword) &&
+        !at(TK::StaticKeyword) && !at(TK::AutomaticKeyword))
+      return false;
+    size_t offset = 0;
+    if (at(TK::ConstKeyword, offset)) ++offset;
+    if (at(TK::VarKeyword, offset)) ++offset;
+    if (at(TK::StaticKeyword, offset) ||
+        at(TK::AutomaticKeyword, offset))
+      ++offset;
+    const auto explicit_type = [](TK kind) {
+      switch (kind) {
+        case TK::BitKeyword:
+        case TK::ByteKeyword:
+        case TK::CHandleKeyword:
+        case TK::EnumKeyword:
+        case TK::EventKeyword:
+        case TK::IntKeyword:
+        case TK::IntegerKeyword:
+        case TK::LogicKeyword:
+        case TK::LongIntKeyword:
+        case TK::RealKeyword:
+        case TK::RealTimeKeyword:
+        case TK::RegKeyword:
+        case TK::ShortIntKeyword:
+        case TK::ShortRealKeyword:
+        case TK::StringKeyword:
+        case TK::StructKeyword:
+        case TK::TimeKeyword:
+        case TK::UnionKeyword:
+          return true;
+        default:
+          return false;
+      }
+    };
+    if (!explicit_type(peek(offset).kind)) return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"data_declaration"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (at(TK::ConstKeyword)) consumeInto(line_);
+    if (at(TK::VarKeyword)) consumeInto(line_);
+    bool valid = true;
+    if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword))
+      valid = consumeAnnexRule("lifetime", line_);
+    if (valid) valid = consumeAnnexRule("data_type_or_implicit", line_);
+    if (valid)
+      valid = consumeAnnexRule("list_of_variable_decl_assignments", line_,
+                               TK::Semicolon);
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A qualified data declaration");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   auto parseNetDeclarationRule() -> bool {
     if (at(TK::InterconnectKeyword)) {
       for (size_t i = pos_; i < tokens_.size(); ++i) {
@@ -3124,6 +3192,7 @@ class SVParser {
   // identifies the declaration. Shared prefixes still use the local grammar.
   auto parsePackageOrGenerateDeclarationRule() -> bool {
     if (parseClassConstructorRule()) return true;
+    if (parseQualifiedDataDeclarationRule()) return true;
     if (parseDpiDeclarationRule()) return true;
     if (at(TK::ImportKeyword)) {
       return parsePackageImportExportRule();
@@ -3719,6 +3788,7 @@ class SVParser {
   // checker_or_generate_item_declaration excludes task and class
   // declarations, unlike package_or_generate_item_declaration.
   auto parseCheckerDeclarationRule() -> bool {
+    if (parseQualifiedDataDeclarationRule()) return true;
     switch (peek().kind) {
       case TK::FunctionKeyword:
         // checker_or_generate_item_declaration contains function_declaration,
@@ -4085,6 +4155,7 @@ class SVParser {
 
   auto parseBlockOrTfItemDeclarationRule(bool allow_tf_port) -> bool {
     if (parseParameterDeclarationRule()) return true;
+    if (parseQualifiedDataDeclarationRule()) return true;
     if (at(TK::ImportKeyword)) {
       if (parsePackageImportExportRule()) return true;
       static_cast<void>(parseAnnexItem({"data_declaration"}, true));
