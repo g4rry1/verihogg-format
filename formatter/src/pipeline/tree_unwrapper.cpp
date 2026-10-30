@@ -2678,7 +2678,7 @@ class SVParser {
       if (tokens_[i].kind == TK::WithKeyword) has_resolver = true;
     }
     const bool explicit_type =
-        (at(TK::Identifier, 1) && has_resolver) ||
+        (has_resolver && annexCanStart("data_type", peek(1).kind)) ||
         at(TK::VirtualKeyword, 1) || at(TK::TypeKeyword, 1) ||
         at(TK::BitKeyword, 1) || at(TK::ByteKeyword, 1) ||
         at(TK::CHandleKeyword, 1) || at(TK::EnumKeyword, 1) ||
@@ -2769,12 +2769,13 @@ class SVParser {
       if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
         break;
     }
-    if (at(TK::Identifier, 1) &&
-        (at(TK::Identifier, 2) || at(TK::DoubleColon, 2))) {
+    if ((at(TK::Identifier, 1) &&
+         (at(TK::Identifier, 2) || at(TK::DoubleColon, 2))) ||
+        (at(TK::UnitSystemName, 1) && at(TK::DoubleColon, 2))) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // nettype
       bool valid = true;
-      if (at(TK::DoubleColon, 1)) {
+      if (at(TK::DoubleColon, 1) || at(TK::UnitSystemName)) {
         beginGrammar({"package_scope", "class_scope"});
         while (!at(TK::EndOfFile)) {
           const auto& scope = grammar_scopes_.back();
