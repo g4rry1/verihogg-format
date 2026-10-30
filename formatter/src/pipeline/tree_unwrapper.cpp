@@ -2870,10 +2870,48 @@ class SVParser {
     if (!at(TK::ParameterKeyword) && !at(TK::LocalParamKeyword))
       return false;
     if (at(TK::TypeKeyword, 1)) {
+      bool interrupted = false;
+      for (size_t i = pos_; i < tokens_.size(); ++i) {
+        const auto& token = tokens_[i];
+        if (isConditionalStartDirective(token) ||
+            token.kind == TK::MacroUsage ||
+            (token.kind == TK::Directive &&
+             !isCompilerDirective(token))) {
+          interrupted = true;
+          break;
+        }
+        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+          break;
+      }
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // parameter / localparam
-      if (!consumeAnnexRule("type_parameter_declaration", line_,
-                            TK::Semicolon) ||
+      if (interrupted) {
+        if (!consumeAnnexRule("type_parameter_declaration", line_,
+                              TK::Semicolon) ||
+            !at(TK::Semicolon)) {
+          recordGrammarFallback("invalid Annex A type parameter declaration");
+          recoverMalformedItem(saved);
+          return true;
+        }
+        consumeInto(line_);
+        addLine();
+        return true;
+      }
+      consumeInto(line_);  // type
+      const auto skip_directives = [&] {
+        while (isCompilerDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+        }
+      };
+      skip_directives();
+      const bool forward = at(TK::EnumKeyword) || at(TK::StructKeyword) ||
+                           at(TK::UnionKeyword) || at(TK::ClassKeyword) ||
+                           (at(TK::InterfaceKeyword) &&
+                            at(TK::ClassKeyword, 1));
+      bool valid = !forward || consumeAnnexRule("forward_type", line_);
+      skip_directives();
+      if (!valid || !parseAnnexCommaListRule("type_assignment") ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A type parameter declaration");
         recoverMalformedItem(saved);
