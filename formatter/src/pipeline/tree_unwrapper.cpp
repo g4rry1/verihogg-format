@@ -4055,6 +4055,33 @@ class SVParser {
     }
   }
 
+  auto parseModportSimplePortRule() -> bool {
+    if (at(TK::Dot)) {
+      consumeInto(line_);
+      if (!at(TK::Identifier)) return false;
+      consumeInto(line_);
+      if (!at(TK::OpenParenthesis)) return false;
+      consumeInto(line_);
+      if (!at(TK::CloseParenthesis) &&
+          !consumeAnnexRule("expression", line_, TK::CloseParenthesis))
+        return false;
+      if (!at(TK::CloseParenthesis)) return false;
+      consumeInto(line_);
+      return true;
+    }
+    if (!at(TK::Identifier)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
+  auto parseModportTfPortRule() -> bool {
+    if (at(TK::FunctionKeyword) || at(TK::TaskKeyword))
+      return consumeAnnexRule("method_prototype", line_, TK::Comma);
+    if (!at(TK::Identifier)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   auto parseModportPortsDeclarationRule() -> bool {
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       if (!consumeAnnexRule("attribute_instance", line_)) return false;
@@ -4063,35 +4090,35 @@ class SVParser {
                         at(TK::InOutKeyword) || at(TK::RefKeyword);
     const bool tf = at(TK::ImportKeyword) || at(TK::ExportKeyword);
     if (simple) {
-      if (!consumeAnnexRule("port_direction", line_) ||
-          !consumeAnnexRule("modport_simple_port", line_, TK::Comma))
-        return false;
+      consumeInto(line_);
+      if (!parseModportSimplePortRule()) return false;
     } else if (tf) {
-      if (!consumeAnnexRule("import_export", line_) ||
-          !consumeAnnexRule("modport_tf_port", line_, TK::Comma))
-        return false;
+      consumeInto(line_);
+      if (!parseModportTfPortRule()) return false;
     } else if (at(TK::ClockingKeyword)) {
       consumeInto(line_);
-      return consumeAnnexRule("clocking_identifier", line_);
+      if (!at(TK::Identifier)) return false;
+      consumeInto(line_);
+      return true;
     } else {
       return false;
     }
-    const std::string_view port = simple ? "modport_simple_port"
-                                         : "modport_tf_port";
     while (at(TK::Comma) &&
            (at(TK::Identifier, 1) || at(TK::Dot, 1) ||
             (tf && (at(TK::FunctionKeyword, 1) ||
                     at(TK::TaskKeyword, 1))))) {
       consumeInto(line_);
-      if (!consumeAnnexRule(port, line_, TK::Comma)) return false;
+      if (!(simple ? parseModportSimplePortRule()
+                   : parseModportTfPortRule()))
+        return false;
     }
     return true;
   }
 
   auto parseModportItemRule() -> bool {
-    if (!consumeAnnexRule("modport_identifier", line_) ||
-        !at(TK::OpenParenthesis))
-      return false;
+    if (!at(TK::Identifier)) return false;
+    consumeInto(line_);
+    if (!at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
     if (!parseModportPortsDeclarationRule()) return false;
     while (at(TK::Comma)) {
