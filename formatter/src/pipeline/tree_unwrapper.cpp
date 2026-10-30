@@ -5018,11 +5018,7 @@ class SVParser {
     }
     if (!block_stack_.empty() &&
         block_stack_.back().grammar_body == "udp_table_entry") {
-      const AnnexState entry = parseAnnexItem(grammarRoots());
-      auto& table = block_stack_.back();
-      table.udp_combinational |= entry.completed("combinational_entry");
-      table.udp_sequential |= entry.completed("sequential_entry");
-      table.udp_has_entry |= entry.complete();
+      parseUdpTableEntryRule();
       return;
     }
 
@@ -6994,6 +6990,56 @@ class SVParser {
       return;
     }
     static_cast<void>(parseAnnexItem(grammarRoots()));
+  }
+
+  auto parseUdpTableEntryRule() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    int separators = 0;
+    bool interrupted = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        interrupted = true;
+        break;
+      }
+      if (token.kind == TK::Colon) ++separators;
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndTableKeyword ||
+          token.kind == TK::EndPrimitiveKeyword ||
+          token.kind == TK::EndOfFile)
+        break;
+    }
+    if (interrupted || (separators != 1 && separators != 2)) {
+      const AnnexState entry = parseAnnexItem(grammarRoots());
+      auto& table = block_stack_.back();
+      table.udp_combinational |= entry.completed("combinational_entry");
+      table.udp_sequential |= entry.completed("sequential_entry");
+      table.udp_has_entry |= entry.complete();
+      return;
+    }
+    auto& table = block_stack_.back();
+    const bool sequential = separators == 2;
+    if ((sequential && table.udp_combinational) ||
+        (!sequential && table.udp_sequential)) {
+      recordGrammarFallback("mixed Annex A UDP table entry forms");
+      recoverMalformedLeaf(saved);
+      return;
+    }
+    const bool valid = consumeAnnexRule(
+        sequential ? "sequential_entry" : "combinational_entry", line_);
+    if (!valid || line_.tokens.empty() ||
+        line_.tokens.back().kind != TK::Semicolon) {
+      recordGrammarFallback("invalid Annex A UDP table entry");
+      recoverMalformedLeaf(saved);
+      return;
+    }
+    table.udp_sequential |= sequential;
+    table.udp_combinational |= !sequential;
+    table.udp_has_entry = true;
+    addLine();
   }
 
   [[nodiscard]] auto parseUdpPortDeclarationRule() -> bool {
