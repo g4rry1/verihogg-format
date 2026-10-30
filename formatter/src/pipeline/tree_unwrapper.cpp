@@ -2298,7 +2298,7 @@ class SVParser {
       case TK::ExternKeyword:
         if (at(TK::PrimitiveKeyword, 1)) {
           parsePrimitiveBlock();
-        } else {
+        } else if (!parseExternStructuralDeclarationRule()) {
           static_cast<void>(parseAnnexItem({"description"}, true));
         }
         return true;
@@ -2354,6 +2354,31 @@ class SVParser {
       return true;
     }
     return false;
+  }
+
+  // The extern alternatives of module_declaration, interface_declaration,
+  // and program_declaration contain only one ANSI or non-ANSI header.
+  auto parseExternStructuralDeclarationRule() -> bool {
+    std::vector<std::string_view> headers;
+    if (at(TK::ModuleKeyword, 1) || at(TK::MacromoduleKeyword, 1)) {
+      headers = {"module_nonansi_header", "module_ansi_header"};
+    } else if (at(TK::InterfaceKeyword, 1)) {
+      headers = {"interface_nonansi_header", "interface_ansi_header"};
+    } else if (at(TK::ProgramKeyword, 1)) {
+      headers = {"program_nonansi_header", "program_ansi_header"};
+    } else {
+      return false;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // extern
+    beginGrammar(std::move(headers));
+    parseGrammarLeaf(false, {}, true);
+    const AnnexState header = endGrammar();
+    if (header.failed || header.interrupted || !header.complete()) {
+      recordGrammarFallback("invalid Annex A extern declaration header");
+      recoverMalformedLeaf(saved);
+    }
+    return true;
   }
 
   // module_item ::= port_declaration ';' | non_port_module_item. Enter the
