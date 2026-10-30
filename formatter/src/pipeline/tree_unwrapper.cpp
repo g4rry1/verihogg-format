@@ -2336,11 +2336,9 @@ class SVParser {
       case TK::ConstraintKeyword:
         return parsePackageOrGenerateDeclarationRule();
       case TK::StaticKeyword:
-        return at(TK::ConstraintKeyword, 1) &&
-               parsePackageOrGenerateDeclarationRule();
+        return parsePackageItemRule();
       case TK::VirtualKeyword:
-        return at(TK::ClassKeyword, 1) &&
-               parsePackageOrGenerateDeclarationRule();
+        return parsePackageItemRule();
       case TK::BindKeyword:
         return parseModuleCommonLeafRule();
       default:
