@@ -4108,6 +4108,7 @@ class SVParser {
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
+          isCompilerDirective(token) ||
           token.kind == TK::MacroUsage ||
           (token.kind == TK::Directive &&
            !isCompilerDirective(token))) {
