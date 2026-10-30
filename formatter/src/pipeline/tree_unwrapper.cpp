@@ -8496,18 +8496,41 @@ class SVParser {
     return true;
   }
 
-  // coverage_spec ::= cover_point | cover_cross. The local header chart
-  // resolves optional labels and types. Once it reaches bins_or_empty or
-  // cross_body, that child enters its own production and emits its items.
+  // coverage_spec ::= cover_point | cover_cross. Direct headers enter their
+  // expression and body children; a chart remains for interrupted headers.
   auto parseDirectCoverageSpecRule() -> bool {
     const bool labeled = at(TK::Identifier) && at(TK::Colon, 1);
     const size_t keyword_offset = labeled ? 2 : 0;
-    const bool point = at(TK::CoverPointKeyword, keyword_offset);
+    bool point = at(TK::CoverPointKeyword, keyword_offset);
     const bool cross = at(TK::CrossKeyword, keyword_offset);
+    bool typed_point = false;
+    if (!point && !cross) {
+      ListDepth depth;
+      for (size_t i = pos_; i + 1 < tokens_.size(); ++i) {
+        if (depth.topLevel() && tokens_[i].kind == TK::Colon &&
+            tokens_[i + 1].kind == TK::CoverPointKeyword) {
+          typed_point = true;
+          break;
+        }
+        if (depth.topLevel() &&
+            (tokens_[i].kind == TK::Semicolon ||
+             tokens_[i].kind == TK::OpenBrace ||
+             tokens_[i].kind == TK::EndOfFile))
+          break;
+        advanceListDepth(depth, tokens_[i].kind);
+      }
+    }
+    point = point || typed_point;
     if (!point && !cross) return false;
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
-    if (labeled) {
+    if (typed_point) {
+      valid = consumeAnnexRule("data_type_or_implicit", line_);
+      if (valid)
+        valid = consumeAnnexRule("cover_point_identifier", line_);
+      if (valid && at(TK::Colon)) consumeInto(line_);
+      else valid = false;
+    } else if (labeled) {
       valid = consumeAnnexRule(point ? "cover_point_identifier"
                                      : "cross_identifier", line_);
       if (valid && at(TK::Colon)) consumeInto(line_);
