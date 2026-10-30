@@ -2911,6 +2911,9 @@ class SVParser {
       case TK::StructKeyword:
       case TK::TimeKeyword:
       case TK::UnionKeyword:
+      case TK::SignedKeyword:
+      case TK::UnsignedKeyword:
+      case TK::OpenBracket:
         break;
       case TK::VirtualKeyword:
         if (at(TK::ClassKeyword, 1) || at(TK::FunctionKeyword, 1) ||
@@ -2996,7 +2999,10 @@ class SVParser {
          at(TK::Equals, offset + 1) ||
          at(TK::Comma, offset + 1));
     if (!explicit_type(type_start) && type_start != TK::Identifier &&
-        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
+        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword &&
+        type_start != TK::SignedKeyword &&
+        type_start != TK::UnsignedKeyword &&
+        type_start != TK::OpenBracket)
       return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
