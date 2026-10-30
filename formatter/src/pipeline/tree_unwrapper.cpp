@@ -6243,6 +6243,89 @@ class SVParser {
                  : parseOrderedPortConnectionRule();
   }
 
+  // Module and checker connections share their punctuation. Only the actual
+  // argument differs: expression versus property_actual_arg. Keep a local
+  // grammar choice for that child and update the two enclosing alternatives.
+  [[nodiscard]] auto parseSharedPortActualRule(bool& module_possible,
+                                               bool& checker_possible)
+      -> bool {
+    std::vector<std::string_view> rules;
+    if (module_possible) rules.push_back("expression");
+    if (checker_possible) rules.push_back("property_actual_arg");
+    if (rules.empty()) return false;
+    beginGrammar(std::move(rules));
+    ListDepth depth;
+    while (!at(TK::EndOfFile)) {
+      if (depth.topLevel() &&
+          (at(TK::Comma) || at(TK::CloseParenthesis)))
+        break;
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      const auto& grammar = grammar_scopes_.back();
+      if (grammar.failed || grammar.interrupted ||
+          !grammar.accepts(peek().kind))
+        break;
+      switch (peek().kind) {
+        case TK::OpenParenthesis: ++depth.parens; break;
+        case TK::CloseParenthesis: --depth.parens; break;
+        case TK::OpenBracket: ++depth.brackets; break;
+        case TK::CloseBracket: --depth.brackets; break;
+        case TK::OpenBrace:
+        case TK::ApostropheOpenBrace: ++depth.braces; break;
+        case TK::CloseBrace: --depth.braces; break;
+        default: break;
+      }
+      consumeInto(line_);
+    }
+    const AnnexState actual = endGrammar(false);
+    if (actual.failed || actual.interrupted || !actual.complete())
+      return false;
+    module_possible &= actual.completed("expression");
+    checker_possible &= actual.completed("property_actual_arg");
+    return module_possible || checker_possible;
+  }
+
+  [[nodiscard]] auto parseSharedPortConnectionRule(
+      bool& named, bool& style_selected,
+      bool& module_possible, bool& checker_possible) -> bool {
+    parsePortConnectionDirectiveLines();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      parsePortConnectionDirectiveLines();
+    }
+    const bool item_named = at(TK::Dot);
+    if (!style_selected) {
+      named = item_named;
+      style_selected = true;
+    }
+    if (item_named != named) return false;
+    if (named) {
+      consumeInto(line_);  // '.'
+      parsePortConnectionDirectiveLines();
+      if (at(TK::Star)) {
+        consumeInto(line_);
+        return true;
+      }
+      if (!consumeAnnexRule("port_identifier", line_)) return false;
+      parsePortConnectionDirectiveLines();
+      if (!at(TK::OpenParenthesis)) return true;
+      consumeInto(line_);
+      parsePortConnectionDirectiveLines();
+      if (!at(TK::CloseParenthesis) &&
+          !parseSharedPortActualRule(module_possible, checker_possible))
+        return false;
+      parsePortConnectionDirectiveLines();
+      if (!at(TK::CloseParenthesis)) return false;
+      consumeInto(line_);
+      return true;
+    }
+    return at(TK::Comma) || at(TK::CloseParenthesis) ||
+           parseSharedPortActualRule(module_possible, checker_possible);
+  }
+
   [[nodiscard]] auto parseHierarchicalInstanceRule(bool allow_checker,
                                                     bool& checker_only,
                                                     bool& checker_viable) -> bool {
@@ -6272,43 +6355,15 @@ class SVParser {
       return true;
     }
     bool module_possible = true;
-    bool checker_possible = allow_checker;
+    bool checker_possible = true;
     if (!at(TK::CloseParenthesis)) {
       bool named = false;
       bool style_selected = false;
       do {
-        if (at(TK::Comma) || at(TK::CloseParenthesis)) {
-          if (style_selected && named) return false;
-          style_selected = true;
-        } else {
-          std::vector<std::string_view> roots;
-          if (module_possible) {
-            if (!style_selected || !named)
-              roots.push_back("ordered_port_connection");
-            if (!style_selected || named)
-              roots.push_back("named_port_connection");
-          }
-          if (checker_possible) {
-            if (!style_selected || !named)
-              roots.push_back("ordered_checker_port_connection");
-            if (!style_selected || named)
-              roots.push_back("named_checker_port_connection");
-          }
-          const AnnexState item = parseAnnexItem(std::move(roots), false, true);
-          if (item.failed || item.interrupted || !item.complete()) return false;
-          if (!style_selected) {
-            named = item.completed("named_port_connection") ||
-                    item.completed("named_checker_port_connection");
-            style_selected = true;
-          }
-          module_possible &=
-              item.completed(named ? "named_port_connection"
-                                   : "ordered_port_connection");
-          checker_possible &=
-              item.completed(named ? "named_checker_port_connection"
-                                   : "ordered_checker_port_connection");
-          if (!module_possible && !checker_possible) return false;
-        }
+        if (!parseSharedPortConnectionRule(named, style_selected,
+                                           module_possible, checker_possible))
+          return false;
+        parsePortConnectionDirectiveLines();
         if (!at(TK::Comma)) break;
         consumeInto(line_);
         addLine();
