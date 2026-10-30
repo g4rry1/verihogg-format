@@ -8638,8 +8638,10 @@ class SVParser {
     const bool untyped = at(TK::Identifier) &&
                          (at(TK::Colon, 1) ||
                           at(TK::OpenParenthesis, 1));
-    const bool typed = peek().kind != TK::Identifier &&
-                       annexCanStart("data_type_or_void", peek().kind);
+    const bool typed =
+        (peek().kind != TK::Identifier &&
+         annexCanStart("data_type_or_void", peek().kind)) ||
+        (at(TK::Identifier) && at(TK::Identifier, 1));
     if (untyped || typed) {
       bool valid = !typed || consumeAnnexRule("data_type_or_void", line_);
       if (valid)
