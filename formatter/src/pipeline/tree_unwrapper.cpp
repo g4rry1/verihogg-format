@@ -1063,14 +1063,17 @@ class SVParser {
 
   [[nodiscard]] auto consumeAnnexRule(std::string_view rule,
                                       Line& line,
-                                      std::optional<TK> stop = std::nullopt)
+                                      std::optional<TK> stop = std::nullopt,
+                                      std::function<bool()> should_stop = {})
       -> bool {
     beginGrammar({rule});
     while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
                                    isConditionalBoundaryDirective(peek()))) {
       const auto& grammar = grammar_scopes_.back();
       if (grammar.complete() &&
-          ((stop && at(*stop)) || !grammar.accepts(peek().kind))) {
+          ((stop && at(*stop)) ||
+           (should_stop && should_stop()) ||
+           !grammar.accepts(peek().kind))) {
         static_cast<void>(endGrammar());
         return true;
       }
@@ -7094,12 +7097,43 @@ class SVParser {
         return;
       }
       consumeInto(line_);
-      const AnnexState ports = parseAnnexItem(
-          {"udp_port_list", "udp_declaration_port_list"}, false, true);
-      nonansi = ports.completed("udp_port_list");
-      ansi = ports.completed("udp_declaration_port_list");
-      if (ports.failed || ports.interrupted || !ports.complete() ||
-          !at(TK::CloseParenthesis)) {
+      nonansi = at(TK::Identifier);
+      ansi = at(TK::OutputKeyword) || at(TK::OpenParenthesis);
+      bool valid = false;
+      if (nonansi) {
+        valid = consumeAnnexRule("output_port_identifier", line_, TK::Comma);
+        if (valid && at(TK::Comma)) {
+          consumeInto(line_);
+          valid = consumeAnnexRule("input_port_identifier", line_,
+                                   TK::Comma);
+        } else {
+          valid = false;
+        }
+        while (valid && at(TK::Comma)) {
+          consumeInto(line_);
+          valid = consumeAnnexRule("input_port_identifier", line_,
+                                   TK::Comma);
+        }
+      } else if (ansi) {
+        valid = consumeAnnexRule("udp_output_declaration", line_, TK::Comma);
+        if (valid && at(TK::Comma)) {
+          consumeInto(line_);
+        } else {
+          valid = false;
+        }
+        while (valid) {
+          valid = consumeAnnexRule(
+              "udp_input_declaration", line_, TK::CloseParenthesis,
+              [&] {
+                return at(TK::Comma) &&
+                       (at(TK::InputKeyword, 1) ||
+                        at(TK::OpenParenthesis, 1));
+              });
+          if (!valid || !at(TK::Comma)) break;
+          consumeInto(line_);
+        }
+      }
+      if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A UDP port list");
         recoverMalformedItem(saved);
         return;
