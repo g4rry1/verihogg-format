@@ -4156,6 +4156,7 @@ class SVParser {
     }
     const bool direct = at(TK::TypedefKeyword, 1) ||
                         at(TK::NetTypeKeyword, 1) ||
+                        (at(TK::Identifier, 1) && at(TK::Hash, 2)) ||
                         at(TK::ConstKeyword, 1) ||
                         at(TK::VarKeyword, 1) ||
                         at(TK::StaticKeyword, 1) ||
@@ -4193,7 +4194,8 @@ class SVParser {
     consumeInto(line_);  // rand
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseQualifiedDataDeclarationRule() ||
-        parseExplicitDataDeclarationRule())
+        parseExplicitDataDeclarationRule() ||
+        parseUserDataDeclarationRule())
       return true;
     recordGrammarFallback("invalid Annex A rand data declaration");
     recoverMalformedLeaf(saved);
