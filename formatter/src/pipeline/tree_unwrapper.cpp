@@ -4065,6 +4065,54 @@ class SVParser {
     }
   }
 
+  auto parseModportPortsDeclarationRule() -> bool {
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+    }
+    const bool simple = at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+                        at(TK::InOutKeyword) || at(TK::RefKeyword);
+    const bool tf = at(TK::ImportKeyword) || at(TK::ExportKeyword);
+    if (simple) {
+      if (!consumeAnnexRule("port_direction", line_) ||
+          !consumeAnnexRule("modport_simple_port", line_, TK::Comma))
+        return false;
+    } else if (tf) {
+      if (!consumeAnnexRule("import_export", line_) ||
+          !consumeAnnexRule("modport_tf_port", line_, TK::Comma))
+        return false;
+    } else if (at(TK::ClockingKeyword)) {
+      consumeInto(line_);
+      return consumeAnnexRule("clocking_identifier", line_);
+    } else {
+      return false;
+    }
+    const std::string_view port = simple ? "modport_simple_port"
+                                         : "modport_tf_port";
+    while (at(TK::Comma) &&
+           (at(TK::Identifier, 1) || at(TK::Dot, 1) ||
+            (tf && (at(TK::FunctionKeyword, 1) ||
+                    at(TK::TaskKeyword, 1))))) {
+      consumeInto(line_);
+      if (!consumeAnnexRule(port, line_, TK::Comma)) return false;
+    }
+    return true;
+  }
+
+  auto parseModportItemRule() -> bool {
+    if (!consumeAnnexRule("modport_identifier", line_) ||
+        !at(TK::OpenParenthesis))
+      return false;
+    consumeInto(line_);
+    if (!parseModportPortsDeclarationRule()) return false;
+    while (at(TK::Comma)) {
+      consumeInto(line_);
+      if (!parseModportPortsDeclarationRule()) return false;
+    }
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   auto parseModportDeclarationRule() -> bool {
     if (!at(TK::ModPortKeyword)) return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
@@ -4083,10 +4131,10 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // modport
-    bool valid = consumeAnnexRule("modport_item", line_, TK::Comma);
+    bool valid = parseModportItemRule();
     while (valid && at(TK::Comma)) {
       consumeInto(line_);
-      valid = consumeAnnexRule("modport_item", line_, TK::Comma);
+      valid = parseModportItemRule();
     }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A modport item list");
