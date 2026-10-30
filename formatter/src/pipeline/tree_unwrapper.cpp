@@ -3687,15 +3687,21 @@ class SVParser {
     }
     skip_directives();
     if (!extends && at(TK::OpenParenthesis)) {
-      if (at(TK::CloseParenthesis, 1)) {
-        consumeInto(line_);
-        consumeInto(line_);
-      } else if (!consumeAnnexDelimited(
-                     TK::OpenParenthesis, TK::CloseParenthesis,
-                     "tf_port_list", line_)) {
+      consumeInto(line_);
+      bool valid = true;
+      if (!at(TK::CloseParenthesis)) {
+        do {
+          valid = consumeAnnexRule("tf_port_item", line_, TK::Comma);
+          if (!valid || !at(TK::Comma)) break;
+          consumeInto(line_);
+        } while (!at(TK::EndOfFile));
+      }
+      if (!valid || !at(TK::CloseParenthesis)) {
+        recordGrammarFallback("invalid Annex A covergroup port list");
         recoverMalformedItem(saved);
         return;
       }
+      consumeInto(line_);
       skip_directives();
     }
     if (!extends && (at(TK::At) || at(TK::DoubleAt) ||
