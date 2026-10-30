@@ -6141,42 +6141,47 @@ class SVParser {
     return false;
   }
 
+  // named_parameter_assignment ::= '.' parameter_identifier '('
+  //                                 [ param_expression ] ')'.
+  [[nodiscard]] auto parseNamedParameterAssignmentRule() -> bool {
+    if (!at(TK::Dot)) return false;
+    consumeInto(line_);
+    if (!consumeAnnexRule("parameter_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::CloseParenthesis) &&
+        !consumeAnnexRule("param_expression", line_,
+                          TK::CloseParenthesis))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
+  // ordered_parameter_assignment ::= param_expression.
+  [[nodiscard]] auto parseOrderedParameterAssignmentRule() -> bool {
+    return consumeAnnexRule("param_expression", line_, TK::Comma);
+  }
+
   [[nodiscard]] auto parseParameterValueAssignmentRule() -> bool {
     if (!at(TK::Hash) || !at(TK::OpenParenthesis, 1)) return false;
     consumeInto(line_);
     consumeInto(line_);
     addLine();
-    const auto skip_directives = [&] {
-      while (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-    };
-    skip_directives();
+    parseGrammarChildDirectiveLines();
     if (!at(TK::CloseParenthesis)) {
       const bool named = at(TK::Dot);
       do {
-        skip_directives();
+        parseGrammarChildDirectiveLines();
         if (at(TK::Dot) != named) return false;
-        if (named) {
-          consumeInto(line_);
-          if (!consumeAnnexRule("parameter_identifier", line_)) return false;
-          skip_directives();
-          if (!at(TK::OpenParenthesis)) return false;
-          consumeInto(line_);
-          skip_directives();
-          if (!at(TK::CloseParenthesis) &&
-              !consumeAnnexRule("param_expression", line_,
-                                TK::CloseParenthesis))
-            return false;
-          skip_directives();
-          if (!at(TK::CloseParenthesis)) return false;
-          consumeInto(line_);
-        } else if (!consumeAnnexRule("param_expression", line_,
-                                     TK::Comma)) {
+        if (!(named ? parseNamedParameterAssignmentRule()
+                    : parseOrderedParameterAssignmentRule())) {
           return false;
         }
-        skip_directives();
+        parseGrammarChildDirectiveLines();
         if (!at(TK::Comma)) break;
         consumeInto(line_);
         addLine();
@@ -6188,7 +6193,7 @@ class SVParser {
     return true;
   }
 
-  auto parsePortConnectionDirectiveLines() -> void {
+  auto parseGrammarChildDirectiveLines() -> void {
     while (isCompilerDirective(peek())) {
       addLine();
       parseDirectiveLine();
@@ -6201,20 +6206,20 @@ class SVParser {
       bool& module_possible, bool& checker_possible) -> bool {
     if (!at(TK::Dot)) return false;
     consumeInto(line_);
-    parsePortConnectionDirectiveLines();
+    parseGrammarChildDirectiveLines();
     if (at(TK::Star)) {
       consumeInto(line_);
       return true;
     }
     if (!consumeAnnexRule("port_identifier", line_)) return false;
-    parsePortConnectionDirectiveLines();
+    parseGrammarChildDirectiveLines();
     if (!at(TK::OpenParenthesis)) return true;
     consumeInto(line_);
-    parsePortConnectionDirectiveLines();
+    parseGrammarChildDirectiveLines();
     if (!at(TK::CloseParenthesis) &&
         !parseSharedPortActualRule(module_possible, checker_possible))
       return false;
-    parsePortConnectionDirectiveLines();
+    parseGrammarChildDirectiveLines();
     if (!at(TK::CloseParenthesis)) return false;
     consumeInto(line_);
     return true;
@@ -6276,10 +6281,10 @@ class SVParser {
   [[nodiscard]] auto parseSharedPortConnectionRule(
       bool& named, bool& style_selected,
       bool& module_possible, bool& checker_possible) -> bool {
-    parsePortConnectionDirectiveLines();
+    parseGrammarChildDirectiveLines();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       if (!consumeAnnexRule("attribute_instance", line_)) return false;
-      parsePortConnectionDirectiveLines();
+      parseGrammarChildDirectiveLines();
     }
     const bool item_named = at(TK::Dot);
     if (!style_selected) {
@@ -6310,7 +6315,7 @@ class SVParser {
         if (!parseSharedPortConnectionRule(named, style_selected,
                                            module_possible, checker_possible))
           return false;
-        parsePortConnectionDirectiveLines();
+        parseGrammarChildDirectiveLines();
         if (!at(TK::Comma)) break;
         consumeInto(line_);
         addLine();
