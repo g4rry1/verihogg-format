@@ -8452,9 +8452,9 @@ class SVParser {
     return true;
   }
 
-  // The brace and default alternatives of bins_or_options have distinct
-  // right-hand starts. Select them after the common grammar prefix; the
-  // expression and transition alternatives still share a chart.
+  // The brace, default, named-coverpoint, and non-parenthesized expression
+  // alternatives have distinct right-hand starts after the common prefix.
+  // A parenthesized expression still shares its prefix with trans_list.
   auto parseBinsOrOptionsRule() -> bool {
     if (parseCoverageOptionRule()) return true;
     size_t next = pos_;
@@ -8485,7 +8485,15 @@ class SVParser {
     if (next + 1 >= tokens_.size() || tokens_[next].kind != TK::Equals)
       return false;
     const TK rhs = tokens_[next + 1].kind;
-    if (rhs != TK::OpenBrace && rhs != TK::DefaultKeyword) return false;
+    const bool named_coverpoint = rhs == TK::Identifier &&
+                                  next + 2 < tokens_.size() &&
+                                  tokens_[next + 2].kind == TK::WithKeyword;
+    const bool expression_rhs =
+        rhs != TK::OpenParenthesis &&
+        annexCanStart("set_covergroup_expression", rhs);
+    if (rhs != TK::OpenBrace && rhs != TK::DefaultKeyword &&
+        !named_coverpoint && !expression_rhs)
+      return false;
 
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
@@ -8512,13 +8520,24 @@ class SVParser {
                                       TK::CloseParenthesis,
                                       "with_covergroup_expression", line_);
       }
-    } else if (valid) {
+    } else if (valid && rhs == TK::DefaultKeyword) {
       valid = !wildcard;
       if (valid) consumeInto(line_);  // default
       if (valid && at(TK::SequenceKeyword)) {
         valid = !bracketed;
         if (valid) consumeInto(line_);
       }
+    } else if (valid && named_coverpoint) {
+      valid = consumeAnnexRule("cover_point_identifier", line_);
+      if (valid && at(TK::WithKeyword)) consumeInto(line_);
+      else valid = false;
+      if (valid)
+        valid = consumeAnnexDelimited(TK::OpenParenthesis,
+                                      TK::CloseParenthesis,
+                                      "with_covergroup_expression", line_);
+    } else if (valid) {
+      valid = consumeAnnexRule("set_covergroup_expression", line_,
+                               TK::IffKeyword);
     }
     if (valid && at(TK::IffKeyword)) {
       consumeInto(line_);
