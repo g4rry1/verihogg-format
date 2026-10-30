@@ -2433,7 +2433,8 @@ class SVParser {
         parseGenerateConstructRule()) {
       return true;
     }
-    if (parseStructuralInstantiationRule()) return true;
+    if (parseStructuralInstantiationRule() || parseUserDataDeclarationRule())
+      return true;
     if (parseClockingDeclarationRule()) return true;
     return parseProceduralConstructRule(true);
   }
@@ -2891,6 +2892,27 @@ class SVParser {
     parseAnnexSemicolonItem(at(TK::ParameterKeyword)
                                 ? "parameter_declaration"
                                 : "local_parameter_declaration");
+    return true;
+  }
+
+  // A pair of identifiers starts the Annex A data_type followed by the first
+  // variable_decl_assignment. Instance-shaped pairs are handled earlier by
+  // the instantiation production in contexts where it is permitted.
+  auto parseUserDataDeclarationRule() -> bool {
+    if (!at(TK::Identifier) || !at(TK::Identifier, 1) ||
+        at(TK::OpenParenthesis, 2))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (!consumeAnnexRule("data_type_or_implicit", line_) ||
+        !consumeAnnexRule("list_of_variable_decl_assignments", line_,
+                          TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A user-typed declaration");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
     return true;
   }
 
@@ -4052,7 +4074,8 @@ class SVParser {
     }
     if (parseProceduralConstructRule(true)) return true;
     if (parseClockingDeclarationRule()) return true;
-    if (parseStructuralInstantiationRule()) return true;
+    if (parseStructuralInstantiationRule() || parseUserDataDeclarationRule())
+      return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
@@ -4070,7 +4093,8 @@ class SVParser {
     }
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseExplicitDataDeclarationRule() || parseNetDeclarationRule())
+        parseExplicitDataDeclarationRule() || parseNetDeclarationRule() ||
+        parseUserDataDeclarationRule())
       return true;
     if (at(TK::GenerateKeyword)) {
       parseSimpleBlock(TK::EndGenerateKeyword);
@@ -4170,7 +4194,8 @@ class SVParser {
     }
     if (parseProceduralConstructRule(true)) return true;
     if (parseClockingDeclarationRule()) return true;
-    if (parseStructuralInstantiationRule()) return true;
+    if (parseStructuralInstantiationRule() || parseUserDataDeclarationRule())
+      return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
@@ -4181,7 +4206,7 @@ class SVParser {
     if (parseDefaultClockingOrDisableRule(true)) return true;
     if (parseRandCheckerDataDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseExplicitDataDeclarationRule())
+        parseExplicitDataDeclarationRule() || parseUserDataDeclarationRule())
       return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule(true) ||
@@ -4201,6 +4226,7 @@ class SVParser {
            parseNettypeDeclarationRule() ||
            parseExplicitDataDeclarationRule() ||
            parseNetDeclarationRule() ||
+           parseUserDataDeclarationRule() ||
            parsePackageOrGenerateDeclarationRule();
   }
 
@@ -4362,7 +4388,8 @@ class SVParser {
     }
     if (allow_tf_port && parseTfPortDeclarationRule()) return true;
     return parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-           parseExplicitDataDeclarationRule();
+           parseExplicitDataDeclarationRule() ||
+           parseUserDataDeclarationRule();
   }
 
   auto parseProceduralConstructRule(bool allow_always) -> bool {
