@@ -3941,6 +3941,64 @@ class SVParser {
     }
   }
 
+  // class_property ::= 'const' { class_item_qualifier } data_type
+  //                    const_identifier [ '=' constant_expression ] ';'.
+  // A qualifier after const identifies this alternative; unqualified const
+  // also begins data_declaration and stays with that alternative's parser.
+  auto parseQualifiedConstClassPropertyRule() -> bool {
+    if (!at(TK::ConstKeyword) ||
+        (!at(TK::StaticKeyword, 1) &&
+         !at(TK::ProtectedKeyword, 1) &&
+         !at(TK::LocalKeyword, 1)))
+      return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"class_property"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile)
+        break;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    consumeInto(line_);  // const
+    skip_directives();
+    bool valid = true;
+    while (valid && (at(TK::StaticKeyword) ||
+                     at(TK::ProtectedKeyword) ||
+                     at(TK::LocalKeyword))) {
+      valid = consumeAnnexRule("class_item_qualifier", line_);
+      skip_directives();
+    }
+    if (valid) valid = consumeAnnexRule("data_type", line_);
+    if (valid) valid = consumeAnnexRule("const_identifier", line_);
+    skip_directives();
+    if (valid && at(TK::Equals)) {
+      consumeInto(line_);
+      valid = consumeAnnexRule("constant_expression", line_,
+                               TK::Semicolon);
+    }
+    skip_directives();
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A qualified const property");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   auto parseExplicitClassPropertyRule() -> bool {
     size_t offset = 0;
     while (at(TK::RandKeyword, offset) || at(TK::RandCKeyword, offset) ||
@@ -4151,6 +4209,7 @@ class SVParser {
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseExplicitDataDeclarationRule())
       return true;
+    if (parseQualifiedConstClassPropertyRule()) return true;
     if (parseExplicitClassPropertyRule()) return true;
     if (parseClassMethodPrototypeRule()) return true;
     if (parseQualifiedClassMethodRule()) return true;
