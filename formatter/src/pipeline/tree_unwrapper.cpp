@@ -3949,6 +3949,11 @@ class SVParser {
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
+    if (at(TK::Semicolon)) {
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseExplicitDataDeclarationRule())
@@ -4290,6 +4295,11 @@ class SVParser {
   }
 
   auto parseCheckerItemRule() -> bool {
+    if (at(TK::Semicolon)) {
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     if (parseDefaultClockingOrDisableRule(true)) return true;
     if (parseRandCheckerDataDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
