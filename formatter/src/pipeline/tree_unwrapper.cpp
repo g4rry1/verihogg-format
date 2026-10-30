@@ -9373,13 +9373,34 @@ class SVParser {
   // [ '(' [ let_port_list ] ')' ] '=' expression ';'.
   auto parseLetDeclarationRule() -> bool {
     if (!at(TK::LetKeyword)) return false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive &&
+           !isCompilerDirective(token))) {
+        static_cast<void>(parseAnnexItem({"let_declaration"}, true));
+        return true;
+      }
+      if (token.kind == TK::Semicolon ||
+          token.kind == TK::EndOfFile)
+        break;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     consumeInto(line_);
+    skip_directives();
     if (!consumeAnnexRule("let_identifier", line_)) {
       recordGrammarFallback("invalid Annex A let identifier");
       recoverMalformedItem(saved);
       return true;
     }
+    skip_directives();
     if (at(TK::OpenParenthesis)) {
       if (at(TK::CloseParenthesis, 1)) {
         consumeInto(line_);
@@ -9391,12 +9412,14 @@ class SVParser {
         return true;
       }
     }
+    skip_directives();
     if (!at(TK::Equals)) {
       recordGrammarFallback("invalid Annex A let assignment");
       recoverMalformedItem(saved);
       return true;
     }
     consumeInto(line_);
+    skip_directives();
     if (!consumeAnnexRule("expression", line_, TK::Semicolon) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A let expression");
