@@ -8589,7 +8589,8 @@ class SVParser {
 
   // The brace, default, named-coverpoint, and non-parenthesized expression
   // alternatives have distinct right-hand starts after the common prefix.
-  // A parenthesized expression still shares its prefix with trans_list.
+  // A parenthesized expression still shares its prefix with trans_list; only
+  // that right-hand child keeps both Annex A alternatives live.
   auto parseBinsOrOptionsRule() -> bool {
     if (parseCoverageOptionRule()) return true;
     size_t next = pos_;
@@ -8607,8 +8608,11 @@ class SVParser {
     ++next;
     if (next >= tokens_.size()) return false;
     bool bracketed = false;
+    bool bracket_contents = false;
     if (tokens_[next].kind == TK::OpenBracket) {
       bracketed = true;
+      bracket_contents = next + 1 < tokens_.size() &&
+                         tokens_[next + 1].kind != TK::CloseBracket;
       int depth = 0;
       do {
         if (tokens_[next].kind == TK::OpenBracket) ++depth;
@@ -8627,6 +8631,7 @@ class SVParser {
         rhs != TK::OpenParenthesis &&
         annexCanStart("set_covergroup_expression", rhs);
     if (rhs != TK::OpenBrace && rhs != TK::DefaultKeyword &&
+        rhs != TK::OpenParenthesis &&
         !named_coverpoint && !expression_rhs)
       return false;
 
@@ -8670,6 +8675,12 @@ class SVParser {
         valid = consumeAnnexDelimited(TK::OpenParenthesis,
                                       TK::CloseParenthesis,
                                       "with_covergroup_expression", line_);
+    } else if (valid && rhs == TK::OpenParenthesis) {
+      const AnnexState value = parseAnnexItem(
+          {"set_covergroup_expression", "trans_list"}, false, true);
+      valid = !value.failed && !value.interrupted && value.complete() &&
+              (value.completed("set_covergroup_expression") ||
+               (!bracket_contents && value.completed("trans_list")));
     } else if (valid) {
       valid = consumeAnnexRule("set_covergroup_expression", line_,
                                TK::IffKeyword);
