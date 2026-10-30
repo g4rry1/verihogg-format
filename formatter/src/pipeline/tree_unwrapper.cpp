@@ -5021,6 +5021,18 @@ class SVParser {
   // Keep only those Annex A children live while emitting the statement.
   auto parseIdentifierStatementRule() -> bool {
     if (!at(TK::Identifier)) return false;
+    if (at(TK::Equals, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      if (!consumeAnnexRule("blocking_assignment", line_, TK::Semicolon) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A blocking assignment");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     const AnnexState item = parseAnnexItem(
         {"blocking_assignment", "nonblocking_assignment",
