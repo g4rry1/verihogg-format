@@ -2445,10 +2445,22 @@ class SVParser {
 
   auto parseParameterOverrideRule() -> bool {
     if (!at(TK::DefParamKeyword)) return false;
+    bool conditional = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      if (isConditionalStartDirective(tokens_[i])) {
+        conditional = true;
+        break;
+      }
+      if (tokens_[i].kind == TK::Semicolon ||
+          tokens_[i].kind == TK::EndOfFile)
+        break;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
-    if (!consumeAnnexRule("list_of_defparam_assignments", line_,
-                          TK::Semicolon) ||
+    if (!(conditional
+              ? consumeAnnexRule("list_of_defparam_assignments", line_,
+                                 TK::Semicolon)
+              : parseAnnexCommaListRule("defparam_assignment")) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A parameter override");
       recoverMalformedItem(saved);
@@ -2459,9 +2471,7 @@ class SVParser {
     return true;
   }
 
-  // specparam_declaration ::= specparam [packed_dimension]
-  //                             list_of_specparam_assignments ';'.
-  auto parseSpecparamAssignmentListRule() -> bool {
+  auto parseAnnexCommaListRule(std::string_view child) -> bool {
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek())) {
         addLine();
@@ -2470,13 +2480,19 @@ class SVParser {
     };
     do {
       skip_directives();
-      if (!consumeAnnexRule("specparam_assignment", line_, TK::Comma))
+      if (!consumeAnnexRule(child, line_, TK::Comma))
         return false;
       skip_directives();
       if (!at(TK::Comma)) break;
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
+  }
+
+  // specparam_declaration ::= specparam [packed_dimension]
+  //                             list_of_specparam_assignments ';'.
+  auto parseSpecparamAssignmentListRule() -> bool {
+    return parseAnnexCommaListRule("specparam_assignment");
   }
 
   auto parseSpecparamDeclarationRule() -> void {
@@ -2512,22 +2528,7 @@ class SVParser {
   }
 
   auto parseSpecifyOutputListRule() -> bool {
-    const auto skip_directives = [&] {
-      while (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-    };
-    do {
-      skip_directives();
-      if (!consumeAnnexRule("specify_output_terminal_descriptor", line_,
-                            TK::Comma))
-        return false;
-      skip_directives();
-      if (!at(TK::Comma)) break;
-      consumeInto(line_);
-    } while (!at(TK::EndOfFile));
-    return true;
+    return parseAnnexCommaListRule("specify_output_terminal_descriptor");
   }
 
   auto parseSpecifyItemRule() -> bool {
