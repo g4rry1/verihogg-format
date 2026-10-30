@@ -4088,8 +4088,40 @@ class SVParser {
   // interface_or_generate_item | checker_or_generate_item.
   auto parseRandCheckerDataDeclarationRule() -> bool {
     if (!at(TK::RandKeyword)) return false;
+    const bool implicit_identifier =
+        at(TK::Identifier, 1) &&
+        (at(TK::Semicolon, 2) || at(TK::Equals, 2) || at(TK::Comma, 2));
+    if (implicit_identifier ||
+        (at(TK::Identifier, 1) &&
+         (at(TK::Identifier, 2) || at(TK::DoubleColon, 2)))) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      consumeInto(line_);  // rand
+      bool valid = implicit_identifier ||
+                   consumeAnnexRule("data_type_or_implicit", line_);
+      if (valid)
+        valid = consumeAnnexRule("list_of_variable_decl_assignments", line_,
+                                 TK::Semicolon);
+      if (!valid || !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A rand data declaration");
+        recoverMalformedLeaf(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
     const bool direct = at(TK::TypedefKeyword, 1) ||
                         at(TK::NetTypeKeyword, 1) ||
+                        at(TK::ConstKeyword, 1) ||
+                        at(TK::VarKeyword, 1) ||
+                        at(TK::StaticKeyword, 1) ||
+                        at(TK::AutomaticKeyword, 1) ||
+                        at(TK::SignedKeyword, 1) ||
+                        at(TK::UnsignedKeyword, 1) ||
+                        at(TK::OpenBracket, 1) ||
+                        at(TK::VirtualKeyword, 1) ||
+                        (at(TK::TypeKeyword, 1) &&
+                         at(TK::OpenParenthesis, 2)) ||
                         at(TK::BitKeyword, 1) ||
                         at(TK::ByteKeyword, 1) ||
                         at(TK::CHandleKeyword, 1) ||
@@ -4113,9 +4145,15 @@ class SVParser {
           {"checker_or_generate_item_declaration"}, true));
       return true;
     }
+    const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // rand
-    return parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-           parseExplicitDataDeclarationRule();
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parseQualifiedDataDeclarationRule() ||
+        parseExplicitDataDeclarationRule())
+      return true;
+    recordGrammarFallback("invalid Annex A rand data declaration");
+    recoverMalformedLeaf(saved);
+    return true;
   }
 
   auto parseGenerateItemRule() -> bool {
