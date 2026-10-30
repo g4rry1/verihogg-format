@@ -2365,7 +2365,7 @@ class SVParser {
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
-      parseAnnexSemicolonItem("port_declaration");
+      parsePortDeclarationRule();
       return true;
     }
     if (parseParameterDeclarationRule()) return true;
@@ -3882,7 +3882,7 @@ class SVParser {
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
-      parseAnnexSemicolonItem("port_declaration");
+      parsePortDeclarationRule();
       return true;
     }
     if (parseParameterDeclarationRule()) return true;
@@ -3920,7 +3920,7 @@ class SVParser {
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
-      parseAnnexSemicolonItem("port_declaration");
+      parsePortDeclarationRule();
       return true;
     }
     if (parseParameterDeclarationRule()) return true;
@@ -6249,6 +6249,21 @@ class SVParser {
     if (!at(TK::Semicolon)) {
       recordGrammarFallback("missing Annex A parent semicolon");
       recoverMalformedItem(saved);
+      return;
+    }
+    consumeInto(line_);
+    addLine();
+  }
+
+  // module_item, interface_item, and program_item append ';' to the shared
+  // port_declaration production. The declaration child itself chooses among
+  // input, output, inout, and ref forms while tokens enter the output line.
+  auto parsePortDeclarationRule() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    if (!consumeAnnexRule("port_declaration", line_, TK::Semicolon) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A port declaration");
+      recoverMalformedLeaf(saved);
       return;
     }
     consumeInto(line_);
