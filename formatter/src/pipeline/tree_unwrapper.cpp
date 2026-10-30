@@ -4092,6 +4092,44 @@ class SVParser {
     return true;
   }
 
+  // class_method ::= { method_qualifier } task_declaration |
+  //                  { method_qualifier } function_declaration | ... .
+  // The declaration keyword selects the child after the qualifier prefix.
+  auto parseQualifiedClassMethodRule() -> bool {
+    size_t offset = 0;
+    while (true) {
+      if (at(TK::StaticKeyword, offset) ||
+          at(TK::ProtectedKeyword, offset) ||
+          at(TK::LocalKeyword, offset) ||
+          at(TK::VirtualKeyword, offset)) {
+        ++offset;
+      } else if (at(TK::PureKeyword, offset) &&
+                 at(TK::VirtualKeyword, offset + 1)) {
+        offset += 2;
+      } else {
+        break;
+      }
+    }
+    if (offset == 0 ||
+        (!at(TK::FunctionKeyword, offset) &&
+         !at(TK::TaskKeyword, offset)))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    while (pos_ < saved.pos + offset) {
+      if (!consumeAnnexRule("method_qualifier", line_)) {
+        recordGrammarFallback("invalid Annex A class method qualifier");
+        recoverMalformedItem(saved);
+        return true;
+      }
+    }
+    const TK close = at(TK::FunctionKeyword)
+                         ? TK::EndFunctionKeyword : TK::EndTaskKeyword;
+    if (close != TK::EndFunctionKeyword ||
+        !parseClassConstructorRule())
+      parseNamedBlock(close);
+    return true;
+  }
+
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
@@ -4106,6 +4144,7 @@ class SVParser {
       return true;
     if (parseExplicitClassPropertyRule()) return true;
     if (parseClassMethodPrototypeRule()) return true;
+    if (parseQualifiedClassMethodRule()) return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
       parseConstraintBlock({"class_constraint"});
@@ -4114,42 +4153,6 @@ class SVParser {
     if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
       return parsePackageOrGenerateDeclarationRule();
     }
-    if (at(TK::VirtualKeyword) || at(TK::StaticKeyword) ||
-        at(TK::ProtectedKeyword) ||
-        at(TK::LocalKeyword)) {
-      AnnexState method({"class_method"});
-      for (size_t prefix = 0; pos_ + prefix < tokens_.size(); ++prefix) {
-        const TK next = peek(prefix).kind;
-        // A pure virtual method can be a prototype ending in ';'. Its
-        // declaration/prototype choice remains with the full item grammar.
-        if (next == TK::PureKeyword) break;
-        const bool method_body =
-            (next == TK::FunctionKeyword &&
-             (method.hasActiveRule("function_declaration") ||
-              method.hasActiveRule("class_constructor_declaration"))) ||
-            (next == TK::TaskKeyword &&
-             method.hasActiveRule("task_declaration"));
-        if (method_body) {
-          beginGrammar({"class_method"});
-          for (size_t i = 0; i < prefix; ++i) consumeInto(line_);
-          const AnnexState qualifier = endGrammar(false);
-          if (qualifier.failed || qualifier.interrupted ||
-              !qualifier.hasViableRule("class_method")) {
-            recordGrammarFallback("invalid Annex A class method qualifier");
-            consumeUntilSemi();
-            return true;
-          }
-          if (!parseClassConstructorRule()) {
-            parseNamedBlock(next == TK::FunctionKeyword
-                                ? TK::EndFunctionKeyword
-                                : TK::EndTaskKeyword);
-          }
-          return true;
-        }
-        if (!method.accepts(next)) break;
-        method.advance(peek(prefix));
-      }
-    }
     if (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
         at(TK::ConstKeyword)) {
       static_cast<void>(parseAnnexItem({"class_property"}, true));
@@ -4157,22 +4160,8 @@ class SVParser {
     }
     if (at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
         at(TK::LocalKeyword)) {
-      // A class_item_qualifier also starts a method or constraint. Advance a
-      // local Annex A choice only through the common prefix, then enter the
-      // property rule when the other alternatives have been ruled out.
-      AnnexState choice({"class_property", "class_method",
-                         "class_constraint"});
-      for (size_t offset = 0; pos_ + offset < tokens_.size() &&
-                              choice.accepts(peek(offset).kind);
-           ++offset) {
-        choice.advance(peek(offset));
-        if (choice.hasViableRule("class_property") &&
-            !choice.hasViableRule("class_method") &&
-            !choice.hasViableRule("class_constraint")) {
-          static_cast<void>(parseAnnexItem({"class_property"}, true));
-          return true;
-        }
-      }
+      static_cast<void>(parseAnnexItem({"class_property"}, true));
+      return true;
     }
     switch (peek().kind) {
       case TK::TaskKeyword:
