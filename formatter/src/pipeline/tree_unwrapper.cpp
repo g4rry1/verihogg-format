@@ -8099,6 +8099,42 @@ class SVParser {
   // production remains live while each rs_rule is parsed as a child.
   auto parseRsProductionRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
+    const bool untyped = at(TK::Identifier) &&
+                         (at(TK::Colon, 1) ||
+                          at(TK::OpenParenthesis, 1));
+    const bool typed = peek().kind != TK::Identifier &&
+                       annexCanStart("data_type_or_void", peek().kind);
+    if (untyped || typed) {
+      bool valid = !typed || consumeAnnexRule("data_type_or_void", line_);
+      if (valid)
+        valid = consumeAnnexRule("rs_production_identifier", line_);
+      if (valid && at(TK::OpenParenthesis)) {
+        if (at(TK::CloseParenthesis, 1)) {
+          consumeInto(line_);
+          consumeInto(line_);
+        } else {
+          valid = consumeAnnexDelimited(
+              TK::OpenParenthesis, TK::CloseParenthesis,
+              "tf_port_list", line_);
+        }
+      }
+      if (valid && at(TK::Colon)) consumeInto(line_);
+      else valid = false;
+      if (valid) valid = consumeAnnexRule("rs_rule", line_, TK::Or);
+      while (valid && at(TK::Or)) {
+        consumeInto(line_);
+        addLine();
+        valid = consumeAnnexRule("rs_rule", line_, TK::Or);
+      }
+      if (!valid || !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A randsequence production");
+        recoverMalformedItem(saved);
+        return;
+      }
+      consumeInto(line_);
+      addLine();
+      return;
+    }
     beginGrammar({"rs_production"});
     while (!at(TK::EndOfFile) &&
            !grammar_scopes_.back().hasActiveRule("rs_rule")) {
