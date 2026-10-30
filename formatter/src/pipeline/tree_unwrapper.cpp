@@ -2868,16 +2868,7 @@ class SVParser {
   }
 
   auto parseTypeAssignmentRule() -> bool {
-    if (!at(TK::Identifier)) return false;
-    consumeInto(line_);
-    while (isCompilerDirective(peek())) {
-      addLine();
-      parseDirectiveLine();
-    }
-    if (!at(TK::Equals)) return true;
-    consumeInto(line_);
-    return consumeAnnexRule("data_type_or_incomplete_class_scoped_type",
-                            line_, TK::Comma);
+    return consumeAnnexRule("type_assignment", line_, TK::Comma);
   }
 
   auto parseTypeAssignmentListRule() -> bool {
