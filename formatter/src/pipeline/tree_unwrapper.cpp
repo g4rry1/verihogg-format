@@ -2916,8 +2916,7 @@ class SVParser {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // parameter / localparam
       if (!consumeAnnexRule("data_type_or_implicit", line_) ||
-          !consumeAnnexRule("list_of_param_assignments", line_,
-                            TK::Semicolon) ||
+          !parseAnnexCommaListRule("param_assignment") ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A parameter declaration");
         recoverMalformedLeaf(saved);
@@ -2946,8 +2945,7 @@ class SVParser {
         const LeafCheckpoint saved = leafCheckpoint();
         consumeInto(line_);  // parameter / localparam
         if (!consumeAnnexRule("implicit_data_type", line_) ||
-            !consumeAnnexRule("list_of_param_assignments", line_,
-                              TK::Semicolon) ||
+            !parseAnnexCommaListRule("param_assignment") ||
             !at(TK::Semicolon)) {
           recordGrammarFallback("invalid Annex A implicit parameter type");
           recoverMalformedLeaf(saved);
@@ -2977,8 +2975,7 @@ class SVParser {
       if (!interrupted) {
         const LeafCheckpoint saved = leafCheckpoint();
         consumeInto(line_);  // parameter / localparam
-        if (!consumeAnnexRule("list_of_param_assignments", line_,
-                              TK::Semicolon) ||
+        if (!parseAnnexCommaListRule("param_assignment") ||
             !at(TK::Semicolon)) {
           recordGrammarFallback("invalid Annex A implicit parameter");
           recoverMalformedLeaf(saved);
