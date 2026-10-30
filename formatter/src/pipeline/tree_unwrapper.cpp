@@ -5971,9 +5971,49 @@ class SVParser {
         closeKw == TK::EndPropertyKeyword ? "property_spec" : "sequence_expr";
     const std::vector<std::string_view> body_rules = {
         "assertion_variable_declaration", expression_rule};
-    const bool body_started = complete;
+    const auto explicit_type = [](TK kind) {
+      switch (kind) {
+        case TK::BitKeyword:
+        case TK::ByteKeyword:
+        case TK::CHandleKeyword:
+        case TK::EnumKeyword:
+        case TK::EventKeyword:
+        case TK::IntKeyword:
+        case TK::IntegerKeyword:
+        case TK::LogicKeyword:
+        case TK::LongIntKeyword:
+        case TK::RealKeyword:
+        case TK::RealTimeKeyword:
+        case TK::RegKeyword:
+        case TK::ShortIntKeyword:
+        case TK::ShortRealKeyword:
+        case TK::StringKeyword:
+        case TK::StructKeyword:
+        case TK::TimeKeyword:
+        case TK::UnionKeyword:
+          return true;
+        default:
+          return false;
+      }
+    };
     if (complete) {
       ++indent_level_;
+      while (explicit_type(peek().kind) ||
+             (at(TK::VarKeyword) &&
+              explicit_type(peek(1).kind))) {
+        if (!consumeAnnexRule("var_data_type", line_) ||
+            !consumeAnnexRule("list_of_variable_decl_assignments", line_,
+                              TK::Semicolon) ||
+            !at(TK::Semicolon)) {
+          complete = false;
+          break;
+        }
+        consumeInto(line_);
+        addLine();
+      }
+    }
+    const bool body_started = complete;
+    if (complete) {
       beginGrammar(body_rules);
     }
     while (!at(TK::EndOfFile) &&
