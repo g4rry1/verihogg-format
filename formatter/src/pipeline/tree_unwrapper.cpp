@@ -8576,8 +8576,18 @@ class SVParser {
         !at(TK::IgnoreBinsKeyword))
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
-    if (!consumeAnnexRule("bins_selection", line_, TK::Semicolon) ||
-        !at(TK::Semicolon)) {
+    bool valid = consumeAnnexRule("bins_keyword", line_);
+    if (valid) valid = consumeAnnexRule("bin_identifier", line_);
+    if (valid && at(TK::Equals)) consumeInto(line_);
+    else valid = false;
+    if (valid)
+      valid = consumeAnnexRule("select_expression", line_, TK::IffKeyword);
+    if (valid && at(TK::IffKeyword)) {
+      consumeInto(line_);
+      valid = consumeAnnexDelimited(TK::OpenParenthesis,
+                                    TK::CloseParenthesis, "expression", line_);
+    }
+    if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A cross bins selection");
       recoverMalformedLeaf(saved);
       return true;
