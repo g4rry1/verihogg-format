@@ -6129,6 +6129,61 @@ class SVParser {
     return true;
   }
 
+  auto parsePortConnectionDirectiveLines() -> void {
+    while (isCompilerDirective(peek())) {
+      addLine();
+      parseDirectiveLine();
+    }
+  }
+
+  // named_port_connection ::= { attribute_instance } '.' port_identifier
+  // [ '(' [ expression ] ')' ] | { attribute_instance } '.*'.
+  [[nodiscard]] auto parseNamedPortConnectionRule() -> bool {
+    if (!at(TK::Dot)) return false;
+    consumeInto(line_);
+    parsePortConnectionDirectiveLines();
+    if (at(TK::Star)) {
+      consumeInto(line_);
+      return true;
+    }
+    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    parsePortConnectionDirectiveLines();
+    if (!at(TK::OpenParenthesis)) return true;
+    consumeInto(line_);
+    parsePortConnectionDirectiveLines();
+    if (!at(TK::CloseParenthesis) &&
+        !consumeAnnexRule("expression", line_, TK::CloseParenthesis))
+      return false;
+    parsePortConnectionDirectiveLines();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
+  // ordered_port_connection ::= { attribute_instance } [ expression ].
+  [[nodiscard]] auto parseOrderedPortConnectionRule() -> bool {
+    return at(TK::Comma) || at(TK::CloseParenthesis) ||
+           consumeAnnexRule("expression", line_, TK::Comma);
+  }
+
+  [[nodiscard]] auto parseModulePortConnectionRule(bool& named,
+                                                   bool& style_selected)
+      -> bool {
+    parsePortConnectionDirectiveLines();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      parsePortConnectionDirectiveLines();
+    }
+    const bool item_named = at(TK::Dot);
+    if (!style_selected) {
+      named = item_named;
+      style_selected = true;
+    }
+    if (item_named != named) return false;
+    return named ? parseNamedPortConnectionRule()
+                 : parseOrderedPortConnectionRule();
+  }
+
   [[nodiscard]] auto parseHierarchicalInstanceRule(bool allow_checker,
                                                     bool& checker_only,
                                                     bool& checker_viable) -> bool {
@@ -6136,6 +6191,27 @@ class SVParser {
         !at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
     addLine();
+    if (!allow_checker) {
+      parsePortConnectionDirectiveLines();
+      if (!at(TK::CloseParenthesis)) {
+        bool named = false;
+        bool style_selected = false;
+        do {
+          if (!parseModulePortConnectionRule(named, style_selected))
+            return false;
+          parsePortConnectionDirectiveLines();
+          if (!at(TK::Comma)) break;
+          consumeInto(line_);
+          addLine();
+        } while (!at(TK::EndOfFile));
+      }
+      if (!at(TK::CloseParenthesis)) return false;
+      addLine();
+      consumeInto(line_);
+      checker_only = false;
+      checker_viable = false;
+      return true;
+    }
     bool module_possible = true;
     bool checker_possible = allow_checker;
     if (!at(TK::CloseParenthesis)) {
