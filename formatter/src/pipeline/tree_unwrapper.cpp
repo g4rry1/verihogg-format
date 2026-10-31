@@ -2429,6 +2429,8 @@ class SVParser {
       parsePortDeclarationRule();
       return true;
     }
+    if (allow_port_declaration && parseQualifiedInterfacePortDeclarationRule())
+      return true;
     if (parseParameterDeclarationRule()) return true;
     switch (peek().kind) {
       case TK::GenerateKeyword:
@@ -5244,6 +5246,8 @@ class SVParser {
       parsePortDeclarationRule();
       return true;
     }
+    if (allow_port_declaration && parseQualifiedInterfacePortDeclarationRule())
+      return true;
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseExplicitDataDeclarationRule() || parseNetDeclarationRule())
@@ -5283,6 +5287,8 @@ class SVParser {
       parsePortDeclarationRule();
       return true;
     }
+    if (allow_port_declaration && parseQualifiedInterfacePortDeclarationRule())
+      return true;
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseExplicitDataDeclarationRule() || parseNetDeclarationRule() ||
@@ -8488,6 +8494,42 @@ class SVParser {
     }
     consumeInto(line_);
     addLine();
+  }
+
+  // interface_port_declaration ::= interface_identifier '.'
+  // modport_identifier list_of_interface_identifiers. The qualified prefix
+  // distinguishes this port declaration from a user-typed data declaration.
+  auto parseQualifiedInterfacePortDeclarationRule() -> bool {
+    if (!at(TK::Identifier) || !at(TK::Dot, 1) ||
+        !at(TK::Identifier, 2) || !at(TK::Identifier, 3))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = consumeAnnexRule("interface_identifier", line_);
+    parseGrammarChildDirectiveLines();
+    if (valid && at(TK::Dot)) consumeInto(line_);
+    else valid = false;
+    parseGrammarChildDirectiveLines();
+    if (valid) valid = consumeAnnexRule("modport_identifier", line_);
+    do {
+      if (!valid) break;
+      parseGrammarChildDirectiveLines();
+      valid = consumeAnnexRule("interface_identifier", line_);
+      parseGrammarChildDirectiveLines();
+      while (valid && at(TK::OpenBracket)) {
+        valid = consumeAnnexRule("unpacked_dimension", line_);
+        parseGrammarChildDirectiveLines();
+      }
+      if (!valid || !at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A interface port declaration");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
   }
 
   // module_item, interface_item, and program_item append ';' to the shared
