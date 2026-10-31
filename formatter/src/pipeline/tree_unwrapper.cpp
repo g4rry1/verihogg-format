@@ -2763,6 +2763,33 @@ class SVParser {
     return true;
   }
 
+  // A.7.5.3: reference_event and data_event are timing_check_event;
+  // controlled_reference_event requires its event control. The descriptor
+  // child keeps the input/output terminal ambiguity local.
+  [[nodiscard]] auto parseTimingCheckEventRule(bool controlled) -> bool {
+    parseGrammarChildDirectiveLines();
+    const bool has_control = at(TK::PosEdgeKeyword) ||
+                             at(TK::NegEdgeKeyword) || at(TK::EdgeKeyword);
+    if (controlled && !has_control) return false;
+    if (has_control &&
+        !consumeAnnexRule("timing_check_event_control", line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("specify_terminal_descriptor", line_, TK::Comma,
+                          [&] { return at(TK::TripleAnd) ||
+                                       at(TK::CloseParenthesis); }))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (at(TK::TripleAnd)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("timing_check_condition", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
   // A.7.5.1 selects a timing-check production by its system identifier. The
   // argument slots below follow that production; each nonempty slot invokes
   // its A.7.5.2 child while tokens are emitted.
@@ -2812,8 +2839,15 @@ class SVParser {
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
       }
-      if (!consumeAnnexRule(required[i], line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+      const std::string_view child = required[i];
+      const bool event = child == "data_event" ||
+                         child == "reference_event" ||
+                         child == "controlled_reference_event";
+      if (!(event
+                ? parseTimingCheckEventRule(
+                      child == "controlled_reference_event")
+                : consumeAnnexRule(child, line_, TK::Comma,
+                                   [&] { return at(TK::CloseParenthesis); })))
         return false;
     }
     for (const auto child : optional) {
