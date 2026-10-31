@@ -2540,15 +2540,19 @@ class SVParser {
   }
 
   [[nodiscard]] auto hasAnnexListInterruption(
-      size_t start, bool conditional_members) const -> bool {
+      size_t start, bool conditional_members,
+      TK terminator = TK::Semicolon) const -> bool {
+    ListDepth depth;
     for (size_t i = start; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if ((isConditionalStartDirective(token) && !conditional_members) ||
           token.kind == TK::MacroUsage ||
           (token.kind == TK::Directive && !isCompilerDirective(token)))
         return true;
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+      if ((token.kind == terminator && depth.topLevel()) ||
+          token.kind == TK::EndOfFile)
         break;
+      advanceListDepth(depth, token.kind);
     }
     return false;
   }
@@ -3888,9 +3892,19 @@ class SVParser {
     if (valid && at(TK::OpenParenthesis)) {
       consumeInto(line_);
       skip_directives();
-      if (!at(TK::CloseParenthesis))
-        valid = consumeAnnexRule("class_constructor_arg_list", line_,
-                                 TK::CloseParenthesis);
+      if (!at(TK::CloseParenthesis)) {
+        const bool conditional_members = hasConditionalListMember(
+            pos_, TK::CloseParenthesis);
+        valid = hasAnnexListInterruption(pos_, conditional_members,
+                                         TK::CloseParenthesis)
+                    ? consumeAnnexRule("class_constructor_arg_list", line_,
+                                       TK::CloseParenthesis)
+                    : conditional_members
+                        ? parseConditionalAnnexCommaListRule(
+                              "class_constructor_arg_list",
+                              "class_constructor_arg", TK::CloseParenthesis)
+                        : parseAnnexCommaListRule("class_constructor_arg");
+      }
       skip_directives();
       if (valid && at(TK::CloseParenthesis)) consumeInto(line_);
       else valid = false;
