@@ -9193,6 +9193,48 @@ class SVParser {
             tokens_[next].kind == TK::Dot);
   }
 
+  // parameter_port_declaration can select type_parameter_declaration when
+  // its 'type' terminal is present. The enclosing list handles further type
+  // assignments after commas, so this function emits its first child now.
+  [[nodiscard]] auto parseTypeParameterPortDeclarationRule() -> bool {
+    if (at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) {
+      if (!at(TK::TypeKeyword, 1)) return false;
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+    }
+    if (!at(TK::TypeKeyword)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (annexCanStart("forward_type", peek().kind) &&
+        !consumeAnnexRule("forward_type", line_))
+      return false;
+    return parseParameterAssignmentRule(true);
+  }
+
+  // The parameter/localparam alternatives and an explicit built-in data_type
+  // have a distinct prefix. A user-defined type keeps the local declaration
+  // chart because it shares an identifier start with a bare assignment.
+  [[nodiscard]] auto parseDataParameterPortDeclarationRule() -> bool {
+    const bool keyword = at(TK::ParameterKeyword) ||
+                         at(TK::LocalParamKeyword);
+    if (keyword) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1))
+        return false;
+      if (!(at(TK::Identifier) &&
+            !startsParameterPortDeclaration()) &&
+          !consumeAnnexRule("data_type_or_implicit", line_))
+        return false;
+    } else {
+      if (at(TK::Identifier) || at(TK::UnitSystemName) ||
+          !annexCanStart("data_type", peek().kind) ||
+          !consumeAnnexRule("data_type", line_))
+        return false;
+    }
+    return parseParameterAssignmentRule(false);
+  }
+
   [[nodiscard]] auto parseParameterPortListRule() -> bool {
     if (!at(TK::Hash) || !at(TK::OpenParenthesis, 1)) return false;
     consumeInto(line_);
@@ -9208,17 +9250,35 @@ class SVParser {
             !bare_assignments && startsParameterPortDeclaration();
         if (declaration) {
           assignment =
-              at(TK::TypeKeyword) ||
+              (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) ||
                       ((at(TK::ParameterKeyword) ||
                         at(TK::LocalParamKeyword)) &&
-                       at(TK::TypeKeyword, 1))
+                       at(TK::TypeKeyword, 1) &&
+                       !at(TK::OpenParenthesis, 2))
                   ? "type_assignment"
                   : "param_assignment";
         }
-        const std::string_view child =
-            declaration ? "parameter_port_declaration" : assignment;
-        if (!consumeAnnexRule(child, line_, TK::Comma,
-                              [&] { return at(TK::CloseParenthesis); }))
+        const bool type_declaration = declaration &&
+            ((at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) ||
+             ((at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) &&
+              at(TK::TypeKeyword, 1) &&
+              !at(TK::OpenParenthesis, 2)));
+        const bool data_declaration = declaration &&
+            ((at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) ||
+             (!at(TK::Identifier) && !at(TK::UnitSystemName) &&
+              annexCanStart("data_type", peek().kind)));
+        const bool valid =
+            type_declaration
+                ? parseTypeParameterPortDeclarationRule()
+                : data_declaration
+                    ? parseDataParameterPortDeclarationRule()
+                : declaration
+                    ? consumeAnnexRule("parameter_port_declaration", line_,
+                                       TK::Comma,
+                                       [&] { return at(TK::CloseParenthesis); })
+                    : parseParameterAssignmentRule(
+                          assignment == "type_assignment");
+        if (!valid)
           return false;
         bare_assignments = false;
         parseGrammarChildDirectiveLines();
