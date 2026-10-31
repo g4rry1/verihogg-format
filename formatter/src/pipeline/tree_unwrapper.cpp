@@ -3332,11 +3332,41 @@ class SVParser {
                : parseAnnexCommaListRule("variable_decl_assignment");
   }
 
+  // net_decl_assignment ::= net_identifier { unpacked_dimension }
+  // [ '=' expression ].
+  [[nodiscard]] auto parseNetAssignmentRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("net_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule("unpacked_dimension", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("expression", line_, TK::Comma,
+                            [&] { return at(TK::Semicolon); }))
+        return false;
+    }
+    return true;
+  }
+
+  [[nodiscard]] auto parseNetAssignmentItemsRule() -> bool {
+    do {
+      if (!parseNetAssignmentRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseNetAssignmentListRule(bool conditional_members) -> bool {
     return conditional_members
                ? parseConditionalAnnexCommaListRule(
                      "list_of_net_decl_assignments", "net_decl_assignment")
-               : parseAnnexCommaListRule("net_decl_assignment");
+               : parseNetAssignmentItemsRule();
   }
 
   auto parseParameterDeclarationRule() -> bool {
