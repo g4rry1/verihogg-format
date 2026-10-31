@@ -5028,6 +5028,36 @@ class SVParser {
     }
   }
 
+  // modport_simple_port ::= port_identifier |
+  // '.' port_identifier '(' [ expression ] ')'.
+  [[nodiscard]] auto parseModportSimplePortRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    const bool named = at(TK::Dot);
+    if (named) consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    if (!named) return true;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::CloseParenthesis) &&
+        !consumeAnnexRule("expression", line_, TK::CloseParenthesis))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
+  // modport_tf_port ::= method_prototype | tf_identifier.
+  [[nodiscard]] auto parseModportTfPortRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    return consumeAnnexRule(
+        at(TK::FunctionKeyword) || at(TK::TaskKeyword)
+            ? "method_prototype" : "tf_identifier", line_, TK::Comma);
+  }
+
   auto parseModportPortsDeclarationRule() -> bool {
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek())) {
@@ -5045,15 +5075,16 @@ class SVParser {
     const bool tf = at(TK::ImportKeyword) || at(TK::ExportKeyword);
     if (simple) {
       if (!consumeAnnexRule("port_direction", line_) ||
-          !consumeAnnexRule("modport_simple_port", line_, TK::Comma))
+          !parseModportSimplePortRule())
         return false;
     } else if (tf) {
       if (!consumeAnnexRule("import_export", line_) ||
-          !consumeAnnexRule("modport_tf_port", line_, TK::Comma))
+          !parseModportTfPortRule())
         return false;
     } else if (at(TK::ClockingKeyword)) {
-      return consumeAnnexRule("modport_clocking_declaration", line_,
-                              TK::Comma);
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      return consumeAnnexRule("clocking_identifier", line_);
     } else {
       return false;
     }
@@ -5076,8 +5107,8 @@ class SVParser {
     while (at(TK::Comma) && next_port_after_comma()) {
       consumeInto(line_);
       skip_directives();
-      if (!consumeAnnexRule(simple ? "modport_simple_port"
-                                   : "modport_tf_port", line_, TK::Comma))
+      if (!(simple ? parseModportSimplePortRule()
+                  : parseModportTfPortRule()))
         return false;
       skip_directives();
     }
@@ -6043,13 +6074,13 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     if (!interrupted) {
-      if (!consumeAnnexRule("subroutine_call_statement", line_) ||
-          line_.tokens.empty() ||
-          line_.tokens.back().kind != TK::Semicolon) {
+      if (!consumeAnnexRule("subroutine_call", line_, TK::Semicolon) ||
+          !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A subroutine call statement");
         recoverMalformedItem(saved);
         return true;
       }
+      consumeInto(line_);
       addLine();
       return true;
     }
