@@ -4433,6 +4433,37 @@ class SVParser {
     parseDelimitedBody(TK::EndCheckerKeyword, "checker_or_generate_item");
   }
 
+  // coverage_event ::= clocking_event | with function sample '(' [ tf_port_list ]
+  // ')' | '@@' '(' block_event_expression ')'.
+  [[nodiscard]] auto parseCoverageEventRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    if (at(TK::At)) return consumeAnnexRule("clocking_event", line_);
+    if (at(TK::DoubleAt)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      return consumeAnnexDelimited(TK::OpenParenthesis,
+                                   TK::CloseParenthesis,
+                                   "block_event_expression", line_);
+    }
+    if (!at(TK::WithKeyword)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::FunctionKeyword)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (peek().rawText() != "sample") return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::CloseParenthesis) && !parseTfPortListRule()) return false;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   auto parseCovergroupBlockRule() -> void {
     const bool conditional_ports =
         at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
@@ -4479,7 +4510,7 @@ class SVParser {
     }
     if (!extends && (at(TK::At) || at(TK::DoubleAt) ||
                      at(TK::WithKeyword))) {
-      if (!consumeAnnexRule("coverage_event", line_)) {
+      if (!parseCoverageEventRule()) {
         recordGrammarFallback("invalid Annex A coverage event");
         recoverMalformedItem(saved);
         return;
