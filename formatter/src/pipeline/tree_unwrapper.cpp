@@ -4548,11 +4548,9 @@ class SVParser {
   }
 
   auto parseTfPortDeclarationRule() -> bool {
-    const bool direction = at(TK::InputKeyword) ||
-                           at(TK::OutputKeyword) ||
-                           at(TK::InOutKeyword) || at(TK::RefKeyword) ||
-                           (at(TK::ConstKeyword) &&
-                            at(TK::RefKeyword, 1));
+    const bool direction =
+        annexCanStart("tf_port_direction", peek().kind) &&
+        (!at(TK::ConstKeyword) || at(TK::RefKeyword, 1));
     if (!direction) return false;
     size_t offset = at(TK::ConstKeyword) ? 2 : 1;
     if (at(TK::StaticKeyword, offset) &&
@@ -9363,9 +9361,8 @@ class SVParser {
       return parseLetDeclarationRule();
     }
     const bool default_item = at(TK::DefaultKeyword);
-    const bool direction_item = at(TK::InputKeyword) ||
-                                at(TK::OutputKeyword) ||
-                                at(TK::InOutKeyword);
+    const bool direction_item =
+        annexCanStart("clocking_direction", peek().kind);
     if (!default_item && !direction_item) return false;
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
