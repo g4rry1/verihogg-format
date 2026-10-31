@@ -2506,24 +2506,6 @@ class SVParser {
     return true;
   }
 
-  auto parseAnnexCommaListRule(std::string_view child) -> bool {
-    const auto skip_directives = [&] {
-      while (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-    };
-    do {
-      skip_directives();
-      if (!consumeAnnexRule(child, line_, TK::Comma))
-        return false;
-      skip_directives();
-      if (!at(TK::Comma)) break;
-      consumeInto(line_);
-    } while (!at(TK::EndOfFile));
-    return true;
-  }
-
   // defparam_assignment and the ordinary specparam_assignment alternative
   // share '= constant_mintypmax_expression' after their identifier child.
   [[nodiscard]] auto parseConstantParameterAssignmentRule(
@@ -5667,6 +5649,19 @@ class SVParser {
     addLine();
   }
 
+  // list_of_genvar_identifiers ::= genvar_identifier
+  // { ',' genvar_identifier }.
+  [[nodiscard]] auto parseGenvarIdentifierListRule() -> bool {
+    do {
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("genvar_identifier", line_)) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   // module_common_item has distinct leading terminals for these leaf
   // productions. Program and checker items include continuous_assign and
   // elaboration_severity_system_task, but not net_alias or bind_directive.
@@ -5699,7 +5694,7 @@ class SVParser {
                 : conditional_members
                     ? parseConditionalAnnexCommaListRule(
                           "list_of_genvar_identifiers", "genvar_identifier")
-                    : parseAnnexCommaListRule("genvar_identifier")) ||
+                    : parseGenvarIdentifierListRule()) ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A genvar declaration");
         recoverMalformedItem(saved);
@@ -9365,6 +9360,19 @@ class SVParser {
     addLine();
   }
 
+  // list_of_udp_port_identifiers ::= port_identifier
+  // { ',' port_identifier }.
+  [[nodiscard]] auto parseUdpPortIdentifierListRule() -> bool {
+    do {
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("port_identifier", line_)) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   [[nodiscard]] auto parseUdpPortDeclarationRule() -> bool {
     if (!at(TK::OutputKeyword) && !at(TK::InputKeyword) &&
         !at(TK::RegKeyword))
@@ -9382,7 +9390,7 @@ class SVParser {
       }
     } else if (at(TK::InputKeyword)) {
       consumeInto(line_);
-      valid = parseAnnexCommaListRule("port_identifier");
+      valid = parseUdpPortIdentifierListRule();
     } else {
       consumeInto(line_);
       valid = consumeAnnexRule("variable_identifier", line_);
