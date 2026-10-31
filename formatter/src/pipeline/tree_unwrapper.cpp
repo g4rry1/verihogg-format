@@ -5434,6 +5434,19 @@ class SVParser {
       }
     }
     if (!at(TK::OpenParenthesis)) {
+      if (at(TK::ForkKeyword) && grammarAllows(TK::ForkKeyword)) {
+        consumeInto(line_);
+        const bool valid = at(TK::Semicolon) && grammarAllows(TK::Semicolon);
+        if (valid) consumeInto(line_);
+        const AnnexState wait = endGrammar(false);
+        if (!valid || wait.failed || wait.interrupted || !wait.complete()) {
+          recordGrammarFallback("invalid Annex A conditional wait fork");
+          recoverMalformedItem(saved);
+        } else {
+          addLine();
+        }
+        return true;
+      }
       parseGrammarLeaf(true, saved);
       static_cast<void>(endGrammar());
       return true;
