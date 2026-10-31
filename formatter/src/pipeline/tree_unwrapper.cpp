@@ -7075,18 +7075,8 @@ class SVParser {
     return true;
   }
 
-  [[nodiscard]] auto parseAssertionDeclarationHeaderRule(TK closeKw) -> bool {
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage) {
-        return false;
-      }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
-        break;
-      }
-    }
+  [[nodiscard]] auto parseAssertionDeclarationHeaderRule(
+      TK closeKw, bool conditional_ports) -> bool {
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek())) {
         addLine();
@@ -7099,6 +7089,9 @@ class SVParser {
     const std::string_view port_item =
         closeKw == TK::EndPropertyKeyword ? "property_port_item"
                                            : "sequence_port_item";
+    const std::string_view port_list =
+        closeKw == TK::EndPropertyKeyword ? "property_port_list"
+                                           : "sequence_port_list";
     consumeInto(line_);  // property / sequence
     skip_directives();
     if (!consumeAnnexRule(identifier_rule, line_)) return false;
@@ -7106,13 +7099,11 @@ class SVParser {
     if (at(TK::OpenParenthesis)) {
       consumeInto(line_);
       bool valid = true;
-      if (!at(TK::CloseParenthesis)) {
-        do {
-          valid = consumeAnnexRule(port_item, line_, TK::Comma);
-          if (!valid || !at(TK::Comma)) break;
-          consumeInto(line_);
-        } while (!at(TK::EndOfFile));
-      }
+      if (!at(TK::CloseParenthesis))
+        valid = conditional_ports
+                    ? parseConditionalAnnexCommaListRule(
+                          port_list, port_item, TK::CloseParenthesis)
+                    : parseAnnexCommaListRule(port_item);
       if (!valid || !at(TK::CloseParenthesis)) return false;
       consumeInto(line_);
       skip_directives();
@@ -7159,22 +7150,31 @@ class SVParser {
   auto parseAnnexWholeBlock(TK closeKw,
                             std::string_view declarationRule) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
+    const bool conditional_ports =
+        at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
+        hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
+    ListDepth header_depth;
     bool direct_header = true;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage) {
+      if ((isConditionalStartDirective(token) &&
+           !(conditional_ports && header_depth.parens == 1 &&
+             header_depth.brackets == 0 && header_depth.braces == 0)) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         direct_header = false;
         break;
       }
-      if (token.kind == TK::Semicolon ||
+      if ((token.kind == TK::Semicolon && header_depth.topLevel()) ||
           token.kind == TK::EndOfFile) {
         break;
       }
+      advanceListDepth(header_depth, token.kind);
     }
     bool complete;
     if (direct_header) {
-      complete = parseAssertionDeclarationHeaderRule(closeKw);
+      complete = parseAssertionDeclarationHeaderRule(closeKw,
+                                                   conditional_ports);
     } else {
       beginGrammar({declarationRule});
       consumeGrammarHeader(closeKw, {declarationRule});
