@@ -8995,7 +8995,7 @@ class SVParser {
     }
     skip_directives();
     if (at(TK::Hash)) {
-      if (!consumeAnnexRule("parameter_port_list", line_)) {
+      if (!parseParameterPortListRule()) {
         recordGrammarFallback("invalid Annex A class parameter list");
         recoverMalformedItem(saved);
         return true;
