@@ -2445,6 +2445,7 @@ class SVParser {
 
   auto parseParameterOverrideRule() -> bool {
     if (!at(TK::DefParamKeyword)) return false;
+    const bool conditional_members = hasConditionalListMember(pos_);
     bool conditional = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       if (isConditionalStartDirective(tokens_[i])) {
@@ -2457,10 +2458,15 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
-    if (!(conditional
-              ? consumeAnnexRule("list_of_defparam_assignments", line_,
-                                 TK::Semicolon)
-              : parseAnnexCommaListRule("defparam_assignment")) ||
+    const bool valid = conditional_members
+                           ? parseConditionalAnnexCommaListRule(
+                                 "list_of_defparam_assignments",
+                                 "defparam_assignment")
+                       : conditional
+                           ? consumeAnnexRule("list_of_defparam_assignments",
+                                              line_, TK::Semicolon)
+                           : parseAnnexCommaListRule("defparam_assignment");
+    if (!valid ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A parameter override");
       recoverMalformedItem(saved);
@@ -2489,6 +2495,82 @@ class SVParser {
     return true;
   }
 
+  // A conditional after a list separator can contribute complete members to
+  // either branch. Other interrupted positions stay with the parent rule's
+  // diagnostic path because they may split an individual grammar child.
+  [[nodiscard]] auto hasConditionalListMember(size_t start) const -> bool {
+    ListDepth depth;
+    int conditionals = 0;
+    bool found = false;
+    std::optional<TK> branch_last;
+    for (size_t i = start; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token)) {
+        if (conditionals != 0 || i == start ||
+            tokens_[i - 1].kind != TK::Comma || !depth.topLevel())
+          return false;
+        ++conditionals;
+        found = true;
+        branch_last.reset();
+        continue;
+      }
+      if (isConditionalAlternativeDirective(token) && conditionals > 0) {
+        if (branch_last != TK::Comma) return false;
+        branch_last.reset();
+        continue;
+      }
+      if (isConditionalEndDirective(token)) {
+        if (conditionals == 0 || branch_last != TK::Comma)
+          return false;
+        --conditionals;
+        branch_last = TK::Comma;
+        continue;
+      }
+      if (token.kind == TK::Semicolon && depth.topLevel()) {
+        if (conditionals > 0) return false;
+        break;
+      }
+      if (token.kind == TK::EndOfFile) break;
+      if (conditionals > 0 && depth.topLevel())
+        branch_last = token.kind;
+      advanceListDepth(depth, token.kind);
+    }
+    return found && conditionals == 0;
+  }
+
+  // Keep the list production live when a branch supplies comma-separated
+  // children. Ordinary members still enter their own Annex A child rule;
+  // parseAnnexConditional advances the same list state through each branch.
+  auto parseConditionalAnnexCommaListRule(std::string_view list,
+                                          std::string_view child) -> bool {
+    beginGrammar({list});
+    bool valid = true;
+    while (!at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (grammar_scopes_.back().complete() && at(TK::Semicolon)) break;
+      if (isConditionalStartDirective(peek())) {
+        bool ended = true;
+        valid = parseAnnexConditional(TK::EndOfFile, ended, indent_level_);
+      } else if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      } else if (at(TK::Comma)) {
+        valid = grammar_scopes_.back().accepts(TK::Comma);
+        if (valid) consumeInto(line_);
+      } else {
+        valid = grammar_scopes_.back().accepts(peek().kind) &&
+                consumeAnnexRule(child, line_, TK::Comma);
+      }
+      if (!valid || grammar_scopes_.back().failed ||
+          grammar_scopes_.back().interrupted)
+        break;
+    }
+    const AnnexState result = endGrammar(false);
+    return valid && !result.failed && !result.interrupted &&
+           result.complete() && at(TK::Semicolon);
+  }
+
   // specparam_declaration ::= specparam [packed_dimension]
   //                             list_of_specparam_assignments ';'.
   auto parseSpecparamAssignmentListRule() -> bool {
@@ -2497,6 +2579,7 @@ class SVParser {
 
   auto parseSpecparamDeclarationRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
+    const bool conditional_members = hasConditionalListMember(pos_);
     bool conditional = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       if (isConditionalStartDirective(tokens_[i])) {
@@ -2514,10 +2597,15 @@ class SVParser {
       recoverMalformedItem(saved);
       return;
     }
-    if (!(conditional
-              ? consumeAnnexRule("list_of_specparam_assignments", line_,
-                                 TK::Semicolon)
-              : parseSpecparamAssignmentListRule()) ||
+    const bool valid = conditional_members
+                           ? parseConditionalAnnexCommaListRule(
+                                 "list_of_specparam_assignments",
+                                 "specparam_assignment")
+                       : conditional
+                           ? consumeAnnexRule("list_of_specparam_assignments",
+                                              line_, TK::Semicolon)
+                           : parseSpecparamAssignmentListRule();
+    if (!valid ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A specparam assignment list");
       recoverMalformedItem(saved);
@@ -2881,35 +2969,20 @@ class SVParser {
     return true;
   }
 
-  auto parseTypeAssignmentRule() -> bool {
-    return consumeAnnexRule("type_assignment", line_, TK::Comma);
-  }
-
   auto parseTypeAssignmentListRule() -> bool {
-    do {
-      while (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-      if (!parseTypeAssignmentRule()) return false;
-      while (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-      }
-      if (!at(TK::Comma)) break;
-      consumeInto(line_);
-    } while (!at(TK::EndOfFile));
-    return true;
+    return parseAnnexCommaListRule("type_assignment");
   }
 
   auto parseParameterDeclarationRule() -> bool {
     if (!at(TK::ParameterKeyword) && !at(TK::LocalParamKeyword))
       return false;
     if (at(TK::TypeKeyword, 1)) {
+      const bool conditional_members = hasConditionalListMember(pos_);
       bool interrupted = false;
       for (size_t i = pos_; i < tokens_.size(); ++i) {
         const auto& token = tokens_[i];
-        if (isConditionalStartDirective(token) ||
+        if ((isConditionalStartDirective(token) &&
+             !conditional_members) ||
             token.kind == TK::MacroUsage ||
             (token.kind == TK::Directive &&
              !isCompilerDirective(token))) {
@@ -2946,7 +3019,11 @@ class SVParser {
                             at(TK::ClassKeyword, 1));
       bool valid = !forward || consumeAnnexRule("forward_type", line_);
       skip_directives();
-      if (!valid || !parseTypeAssignmentListRule() ||
+      if (!valid ||
+          !(conditional_members
+                ? parseConditionalAnnexCommaListRule(
+                      "list_of_type_assignments", "type_assignment")
+                : parseTypeAssignmentListRule()) ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A type parameter declaration");
         recoverMalformedItem(saved);
@@ -2964,98 +3041,49 @@ class SVParser {
          !at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1) &&
          !at(TK::SignedKeyword, 1) && !at(TK::UnsignedKeyword, 1) &&
          !at(TK::OpenBracket, 1));
-    if (explicit_type) {
-      for (size_t i = pos_; i < tokens_.size(); ++i) {
-        const auto& token = tokens_[i];
-        if (isConditionalStartDirective(token) ||
-            token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
-          parseAnnexSemicolonItem(at(TK::ParameterKeyword)
-                                      ? "parameter_declaration"
-                                      : "local_parameter_declaration");
-          return true;
-        }
-        if (token.kind == TK::Semicolon ||
-            token.kind == TK::EndOfFile)
-          break;
-      }
-      const LeafCheckpoint saved = leafCheckpoint();
-      consumeInto(line_);  // parameter / localparam
-      if (!consumeAnnexRule("data_type_or_implicit", line_) ||
-          !parseAnnexCommaListRule("param_assignment") ||
-          !at(TK::Semicolon)) {
-        recordGrammarFallback("invalid Annex A parameter declaration");
-        recoverMalformedLeaf(saved);
-        return true;
-      }
-      consumeInto(line_);
-      addLine();
+    const bool implicit_type = at(TK::SignedKeyword, 1) ||
+                               at(TK::UnsignedKeyword, 1) ||
+                               at(TK::OpenBracket, 1);
+    const bool bare_assignment =
+        at(TK::Identifier, 1) &&
+        (at(TK::Equals, 2) || at(TK::Comma, 2) ||
+         at(TK::Semicolon, 2));
+    const auto declaration = at(TK::ParameterKeyword)
+                                 ? "parameter_declaration"
+                                 : "local_parameter_declaration";
+    if (!explicit_type && !implicit_type && !bare_assignment) {
+      parseAnnexSemicolonItem(declaration);
       return true;
     }
-    if (at(TK::SignedKeyword, 1) || at(TK::UnsignedKeyword, 1) ||
-        at(TK::OpenBracket, 1)) {
-      bool interrupted = false;
-      for (size_t i = pos_; i < tokens_.size(); ++i) {
-        const auto& token = tokens_[i];
-        if (isConditionalStartDirective(token) ||
-            token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
-          interrupted = true;
-          break;
-        }
-        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-          break;
-      }
-      if (!interrupted) {
-        const LeafCheckpoint saved = leafCheckpoint();
-        consumeInto(line_);  // parameter / localparam
-        if (!consumeAnnexRule("implicit_data_type", line_) ||
-            !parseAnnexCommaListRule("param_assignment") ||
-            !at(TK::Semicolon)) {
-          recordGrammarFallback("invalid Annex A implicit parameter type");
-          recoverMalformedLeaf(saved);
-          return true;
-        }
-        consumeInto(line_);
-        addLine();
+    const bool conditional_members = hasConditionalListMember(pos_);
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if ((isConditionalStartDirective(token) &&
+           !conditional_members) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
+        parseAnnexSemicolonItem(declaration);
         return true;
       }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
     }
-    if (at(TK::Identifier, 1) &&
-        (at(TK::Equals, 2) || at(TK::Comma, 2) ||
-         at(TK::Semicolon, 2))) {
-      bool interrupted = false;
-      for (size_t i = pos_; i < tokens_.size(); ++i) {
-        const auto& token = tokens_[i];
-        if (isConditionalStartDirective(token) ||
-            token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
-          interrupted = true;
-          break;
-        }
-        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-          break;
-      }
-      if (!interrupted) {
-        const LeafCheckpoint saved = leafCheckpoint();
-        consumeInto(line_);  // parameter / localparam
-        if (!parseAnnexCommaListRule("param_assignment") ||
-            !at(TK::Semicolon)) {
-          recordGrammarFallback("invalid Annex A implicit parameter");
-          recoverMalformedLeaf(saved);
-          return true;
-        }
-        consumeInto(line_);
-        addLine();
-        return true;
-      }
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);  // parameter / localparam
+    const std::string_view type_rule =
+        explicit_type ? "data_type_or_implicit"
+                      : implicit_type ? "implicit_data_type" : "";
+    if ((!type_rule.empty() && !consumeAnnexRule(type_rule, line_)) ||
+        !(conditional_members
+              ? parseConditionalAnnexCommaListRule(
+                    "list_of_param_assignments", "param_assignment")
+              : parseAnnexCommaListRule("param_assignment")) ||
+        !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A parameter declaration");
+      recoverMalformedLeaf(saved);
+      return true;
     }
-    parseAnnexSemicolonItem(at(TK::ParameterKeyword)
-                                ? "parameter_declaration"
-                                : "local_parameter_declaration");
+    consumeInto(line_);
+    addLine();
     return true;
   }
 
