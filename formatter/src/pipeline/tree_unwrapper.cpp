@@ -4795,6 +4795,32 @@ class SVParser {
     return true;
   }
 
+  // list_of_net_assignments and list_of_variable_assignments both consist of
+  // comma-separated assignment children. Keep the alternatives that complete
+  // each child, so a list cannot switch production halfway through.
+  [[nodiscard]] auto parseContinuousAssignmentListRule(
+      bool net_possible, bool variable_possible) -> bool {
+    do {
+      parseGrammarChildDirectiveLines();
+      std::vector<std::string_view> children;
+      if (net_possible) children.push_back("net_assignment");
+      if (variable_possible) children.push_back("variable_assignment");
+      if (children.empty()) return false;
+      const AnnexState assignment = parseAnnexItem(std::move(children),
+                                                    false, true);
+      if (assignment.failed || assignment.interrupted ||
+          !assignment.complete())
+        return false;
+      net_possible &= assignment.completed("net_assignment");
+      variable_possible &= assignment.completed("variable_assignment");
+      if (!net_possible && !variable_possible) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return net_possible || variable_possible;
+  }
+
   // module_common_item has distinct leading terminals for these three leaf
   // productions. Program and checker items include continuous_assign, but
   // neither includes net_alias or bind_directive.
@@ -4852,19 +4878,15 @@ class SVParser {
           recoverMalformedLeaf(saved);
           return true;
         }
-        std::vector<std::string_view> assignments;
-        if (delay.completed("delay3"))
-          assignments.push_back("list_of_net_assignments");
-        if (delay.completed("delay_control"))
-          assignments.push_back("list_of_variable_assignments");
-        if (assignments.empty()) {
+        const bool net_possible = delay.completed("delay3");
+        const bool variable_possible = delay.completed("delay_control");
+        if (!net_possible && !variable_possible) {
           recordGrammarFallback("unresolved Annex A continuous assign delay");
           recoverMalformedLeaf(saved);
           return true;
         }
-        const AnnexState items = parseAnnexItem(std::move(assignments),
-                                                false, true);
-        if (items.failed || items.interrupted || !items.complete() ||
+        if (!parseContinuousAssignmentListRule(net_possible,
+                                               variable_possible) ||
             !at(TK::Semicolon)) {
           recordGrammarFallback("invalid Annex A delayed assignment");
           recoverMalformedLeaf(saved);
@@ -4880,9 +4902,7 @@ class SVParser {
         bool valid = consumeAnnexRule("drive_strength", line_);
         if (valid && at(TK::Hash))
           valid = consumeAnnexRule("delay3", line_);
-        if (valid)
-          valid = consumeAnnexRule("list_of_net_assignments", line_,
-                                   TK::Semicolon);
+        if (valid) valid = parseContinuousAssignmentListRule(true, false);
         if (!valid || !at(TK::Semicolon)) {
           recordGrammarFallback("invalid Annex A driven assignment");
           recoverMalformedLeaf(saved);
@@ -4894,11 +4914,8 @@ class SVParser {
       }
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // assign
-      const AnnexState assignments = parseAnnexItem(
-          {"list_of_net_assignments", "list_of_variable_assignments"},
-          false, true);
-      if (assignments.failed || assignments.interrupted ||
-          !assignments.complete() || !at(TK::Semicolon)) {
+      if (!parseContinuousAssignmentListRule(true, true) ||
+          !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A continuous assignment");
         recoverMalformedItem(saved);
         return true;
