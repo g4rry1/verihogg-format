@@ -4269,6 +4269,19 @@ class SVParser {
     return true;
   }
 
+  // class_constructor_arg ::= tf_port_item | default.
+  [[nodiscard]] auto parseClassConstructorArgListRule() -> bool {
+    do {
+      parseGrammarChildDirectiveLines();
+      if (at(TK::DefaultKeyword)) consumeInto(line_);
+      else if (!parseTfPortItemRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   // checker_declaration ::= checker checker_identifier
   // [ '(' [ checker_port_list ] ')' ] ';' { checker_or_generate_item }
   // endchecker [ ':' checker_identifier ].
@@ -4438,7 +4451,7 @@ class SVParser {
                         ? parseConditionalAnnexCommaListRule(
                               "class_constructor_arg_list",
                               "class_constructor_arg", TK::CloseParenthesis)
-                        : parseAnnexCommaListRule("class_constructor_arg");
+                        : parseClassConstructorArgListRule();
       }
       skip_directives();
       if (valid && at(TK::CloseParenthesis)) consumeInto(line_);
