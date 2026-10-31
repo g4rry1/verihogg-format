@@ -2493,7 +2493,8 @@ class SVParser {
                        : conditional
                            ? consumeAnnexRule("list_of_defparam_assignments",
                                               line_, TK::Semicolon)
-                           : parseAnnexCommaListRule("defparam_assignment");
+                           : parseConstantParameterAssignmentListRule(
+                                 "hierarchical_parameter_identifier");
     if (!valid ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A parameter override");
@@ -2517,6 +2518,42 @@ class SVParser {
       if (!consumeAnnexRule(child, line_, TK::Comma))
         return false;
       skip_directives();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
+  // defparam_assignment and the ordinary specparam_assignment alternative
+  // share '= constant_mintypmax_expression' after their identifier child.
+  [[nodiscard]] auto parseConstantParameterAssignmentRule(
+      std::string_view identifier) -> bool {
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule(identifier, line_, TK::Comma,
+                          [&] { return at(TK::Equals); }))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::Equals)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    return consumeAnnexRule("constant_mintypmax_expression", line_,
+                            TK::Comma,
+                            [&] { return at(TK::Semicolon); });
+  }
+
+  [[nodiscard]] auto parseConstantParameterAssignmentListRule(
+      std::string_view identifier, bool pulse_control = false) -> bool {
+    do {
+      parseGrammarChildDirectiveLines();
+      const bool pulse = pulse_control && at(TK::Identifier) &&
+                         peek().rawText().starts_with("PATHPULSE$");
+      const bool valid = pulse
+                             ? consumeAnnexRule("pulse_control_specparam",
+                                                line_, TK::Comma)
+                             : parseConstantParameterAssignmentRule(
+                                   identifier);
+      if (!valid) return false;
+      parseGrammarChildDirectiveLines();
       if (!at(TK::Comma)) break;
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
@@ -2642,7 +2679,8 @@ class SVParser {
   // specparam_declaration ::= specparam [packed_dimension]
   //                             list_of_specparam_assignments ';'.
   auto parseSpecparamAssignmentListRule() -> bool {
-    return parseAnnexCommaListRule("specparam_assignment");
+    return parseConstantParameterAssignmentListRule(
+        "specparam_identifier", true);
   }
 
   auto parseSpecparamDeclarationRule() -> void {
