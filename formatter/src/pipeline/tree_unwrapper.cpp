@@ -4838,17 +4838,20 @@ class SVParser {
           return false;
         continue;
       }
-      std::vector<std::string_view> children;
-      if (net_possible) children.push_back("net_assignment");
-      if (variable_possible) children.push_back("variable_assignment");
-      if (children.empty()) return false;
-      const AnnexState assignment = parseAnnexItem(std::move(children),
-                                                    false, true);
-      if (assignment.failed || assignment.interrupted ||
-          !assignment.complete())
+      if (!net_possible && !variable_possible) return false;
+      if (net_possible && variable_possible) {
+        const AnnexState assignment = parseAnnexItem(
+            {"net_assignment", "variable_assignment"}, false, true);
+        if (assignment.failed || assignment.interrupted ||
+            !assignment.complete())
+          return false;
+        net_possible = assignment.completed("net_assignment");
+        variable_possible = assignment.completed("variable_assignment");
+      } else if (!consumeAnnexRule(net_possible ? "net_assignment"
+                                               : "variable_assignment",
+                                   line_, TK::Comma)) {
         return false;
-      net_possible &= assignment.completed("net_assignment");
-      variable_possible &= assignment.completed("variable_assignment");
+      }
       if (!net_possible && !variable_possible) return false;
       skip_directives();
       if (!at(TK::Comma)) break;
