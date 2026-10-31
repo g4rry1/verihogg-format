@@ -7417,12 +7417,16 @@ class SVParser {
         recoverMalformedLeaf(saved);
         return;
     }
+    const bool directional = at(TK::InputKeyword) || at(TK::OutputKeyword);
+    const bool explicit_net =
+        directional &&
+        (annexCanStart("net_type", peek(1).kind) ||
+         at(TK::InterconnectKeyword, 1));
     if (at(TK::RefKeyword) || at(TK::InOutKeyword) ||
-        ((at(TK::InputKeyword) || at(TK::OutputKeyword)) &&
-         at(TK::VarKeyword, 1))) {
+        (directional && at(TK::VarKeyword, 1)) || explicit_net) {
       const bool conditional_members = hasConditionalListMember(pos_);
       if (!hasAnnexListInterruption(pos_, conditional_members)) {
-        const bool net = at(TK::InOutKeyword);
+        const bool net = at(TK::InOutKeyword) || explicit_net;
         const bool output_variable = at(TK::OutputKeyword);
         consumeInto(line_);
         // The type can be implicit. Once an identifier and its dimensions
