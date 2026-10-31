@@ -4439,6 +4439,39 @@ class SVParser {
     return true;
   }
 
+  // The first class_property alternative is a qualifier list followed by
+  // data_declaration. Its data child retains local alternatives when a
+  // user-defined type makes the declaration prefix ambiguous.
+  auto parseQualifiedClassPropertyRule() -> bool {
+    if (!at(TK::RandKeyword) && !at(TK::RandCKeyword) &&
+        !at(TK::StaticKeyword) && !at(TK::ProtectedKeyword) &&
+        !at(TK::LocalKeyword))
+      return false;
+    const bool conditional_members = hasConditionalListMember(pos_);
+    if (hasAnnexListInterruption(pos_, conditional_members)) {
+      static_cast<void>(parseAnnexItem({"class_property"}, true));
+      return true;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = true;
+    do {
+      valid = consumeAnnexRule("property_qualifier", line_);
+      parseGrammarChildDirectiveLines();
+    } while (valid && (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
+                       at(TK::StaticKeyword) ||
+                       at(TK::ProtectedKeyword) || at(TK::LocalKeyword)));
+    if (valid)
+      valid = consumeAnnexRule("data_declaration", line_);
+    if (!valid || line_.tokens.empty() ||
+        line_.tokens.back().kind != TK::Semicolon) {
+      recordGrammarFallback("invalid Annex A qualified class property");
+      recoverMalformedLeaf(saved);
+      return true;
+    }
+    addLine();
+    return true;
+  }
+
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
@@ -4466,13 +4499,13 @@ class SVParser {
     }
     if (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
         at(TK::ConstKeyword)) {
+      if (parseQualifiedClassPropertyRule()) return true;
       static_cast<void>(parseAnnexItem({"class_property"}, true));
       return true;
     }
     if (at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
         at(TK::LocalKeyword)) {
-      static_cast<void>(parseAnnexItem({"class_property"}, true));
-      return true;
+      return parseQualifiedClassPropertyRule();
     }
     switch (peek().kind) {
       case TK::TaskKeyword:
@@ -4790,13 +4823,16 @@ class SVParser {
         (at(TK::ImportKeyword) && parsePackageImportExportRule()) ||
         parseUserDataDeclarationRule())
       return true;
-    lines_.resize(saved.output_size);
-    line_ = saved.line;
-    preserved_source_end_ = saved.preserved_source_end;
-    indent_level_ = saved.indent_level;
-    pos_ = saved.pos;
-    static_cast<void>(parseAnnexItem(
-        {"checker_or_generate_item_declaration"}, true));
+    // The only checker declaration with a leading rand is [rand]
+    // data_declaration. Keep the ambiguous data child local to that rule.
+    if (!consumeAnnexRule("data_declaration", line_) ||
+        line_.tokens.empty() ||
+        line_.tokens.back().kind != TK::Semicolon) {
+      recordGrammarFallback("invalid Annex A rand data declaration");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    addLine();
     return true;
   }
 
