@@ -8724,6 +8724,20 @@ class SVParser {
 
   // constraint_expression chooses its Annex A alternative while reading the
   // source, then calls the corresponding child production.
+  // range_list ::= value_range { ',' value_range }.
+  [[nodiscard]] auto parseRangeListRule(TK terminator) -> bool {
+    do {
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("value_range", line_, TK::Comma,
+                            [&] { return at(terminator); }))
+        return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseConstraintExpressionRule() -> bool {
     if ((at(TK::IfKeyword) || at(TK::ForeachKeyword) ||
          at(TK::UniqueKeyword) || at(TK::SoftKeyword) ||
@@ -8772,11 +8786,22 @@ class SVParser {
         recoverMalformedItem(saved);
         return true;
       }
-      consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace, "range_list",
-                            line_);
-      if (line_.tokens.empty() ||
-          line_.tokens.back().kind != TK::CloseBrace ||
-          !at(TK::Semicolon)) {
+      const bool conditional_members =
+          hasConditionalListMember(pos_ + 1, TK::CloseBrace);
+      const bool interrupted =
+          hasAnnexListInterruption(pos_ + 1, conditional_members,
+                                   TK::CloseBrace) || conditional_members;
+      bool valid = true;
+      if (interrupted) {
+        valid = consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace,
+                                      "range_list", line_);
+      } else {
+        consumeInto(line_);
+        valid = parseRangeListRule(TK::CloseBrace) &&
+                at(TK::CloseBrace);
+        if (valid) consumeInto(line_);
+      }
+      if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("incomplete Annex A uniqueness constraint");
         recoverMalformedItem(saved);
         return true;
@@ -11651,7 +11676,7 @@ class SVParser {
           valid = consumeAnnexRule("expression", line_, TK::Colon);
         }
       } else if (item_rule == "case_inside_item") {
-        valid = consumeAnnexRule("range_list", line_, TK::Colon);
+        valid = parseRangeListRule(TK::Colon);
       } else if (item_rule == "randcase_item") {
         valid = consumeAnnexRule("expression", line_, TK::Colon);
       } else if (item_rule == "case_generate_item") {
