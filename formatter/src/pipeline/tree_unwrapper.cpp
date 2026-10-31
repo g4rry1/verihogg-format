@@ -2973,6 +2973,21 @@ class SVParser {
     return parseAnnexCommaListRule("type_assignment");
   }
 
+  auto parseVariableAssignmentListRule(bool conditional_members) -> bool {
+    return conditional_members
+               ? parseConditionalAnnexCommaListRule(
+                     "list_of_variable_decl_assignments",
+                     "variable_decl_assignment")
+               : parseAnnexCommaListRule("variable_decl_assignment");
+  }
+
+  auto parseNetAssignmentListRule(bool conditional_members) -> bool {
+    return conditional_members
+               ? parseConditionalAnnexCommaListRule(
+                     "list_of_net_decl_assignments", "net_decl_assignment")
+               : parseAnnexCommaListRule("net_decl_assignment");
+  }
+
   auto parseParameterDeclarationRule() -> bool {
     if (!at(TK::ParameterKeyword) && !at(TK::LocalParamKeyword))
       return false;
@@ -3115,9 +3130,24 @@ class SVParser {
         at(TK::OpenParenthesis, variable + 1))
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
+    const bool conditional_members = hasConditionalListMember(pos_);
+    bool interrupted = false;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if ((isConditionalStartDirective(token) &&
+           !conditional_members) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
+        interrupted = true;
+        break;
+      }
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
     if (!consumeAnnexRule("data_type_or_implicit", line_) ||
-        !consumeAnnexRule("list_of_variable_decl_assignments", line_,
-                          TK::Semicolon) ||
+        !(interrupted
+              ? consumeAnnexRule("list_of_variable_decl_assignments", line_,
+                                 TK::Semicolon)
+              : parseVariableAssignmentListRule(conditional_members)) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A user-typed declaration");
       recoverMalformedItem(saved);
@@ -3138,9 +3168,11 @@ class SVParser {
       return false;
     if (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1))
       return false;
+    const bool conditional_members = hasConditionalListMember(pos_);
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
+      if ((isConditionalStartDirective(token) &&
+           !conditional_members) ||
           token.kind == TK::MacroUsage ||
           (token.kind == TK::Directive &&
            !isCompilerDirective(token))) {
@@ -3154,8 +3186,7 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     if (!consumeAnnexRule("data_type_or_implicit", line_) ||
-        !consumeAnnexRule("list_of_variable_decl_assignments", line_,
-                          TK::Semicolon) ||
+        !parseVariableAssignmentListRule(conditional_members) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A built-in data declaration");
       recoverMalformedItem(saved);
@@ -3187,9 +3218,11 @@ class SVParser {
          at(TK::Comma, offset + 1));
     if (!annexCanStart("data_type_or_implicit", type_start))
       return false;
+    const bool conditional_members = hasConditionalListMember(pos_);
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
+      if ((isConditionalStartDirective(token) &&
+           !conditional_members) ||
           token.kind == TK::MacroUsage ||
           (token.kind == TK::Directive &&
            !isCompilerDirective(token))) {
@@ -3208,8 +3241,7 @@ class SVParser {
     if (valid && !implicit_type)
       valid = consumeAnnexRule("data_type_or_implicit", line_);
     if (valid)
-      valid = consumeAnnexRule("list_of_variable_decl_assignments", line_,
-                               TK::Semicolon);
+      valid = parseVariableAssignmentListRule(conditional_members);
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A qualified data declaration");
       recoverMalformedLeaf(saved);
@@ -3264,10 +3296,12 @@ class SVParser {
       return true;
     }
     if (!annexCanStart("net_type", peek().kind)) return false;
+    const bool conditional_members = hasConditionalListMember(pos_);
     bool ambiguous = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
+      if ((isConditionalStartDirective(token) &&
+           !conditional_members) ||
           token.kind == TK::MacroUsage ||
           (token.kind == TK::Directive &&
            !isCompilerDirective(token))) {
@@ -3326,8 +3360,7 @@ class SVParser {
     if (valid && at(TK::Hash))
       valid = consumeAnnexRule("delay3", line_);
     if (valid)
-      valid = consumeAnnexRule("list_of_net_decl_assignments", line_,
-                               TK::Semicolon);
+      valid = parseNetAssignmentListRule(conditional_members);
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A net declaration");
       recoverMalformedItem(saved);
