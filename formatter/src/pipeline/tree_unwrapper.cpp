@@ -9894,30 +9894,33 @@ class SVParser {
     return true;
   }
 
-  // The leading net_type / interconnect or var selects the corresponding
-  // ansi_port_declaration alternative. Its header can contain an implicit
-  // type, so stop before the identifier that ends this list member.
+  [[nodiscard]] auto ansiIdentifierEndsMember(size_t offset = 0) const
+      -> bool {
+    if (!at(TK::Identifier, offset)) return false;
+    size_t next = pos_ + offset + 1;
+    while (next < tokens_.size() && tokens_[next].kind == TK::OpenBracket) {
+      int depth = 0;
+      do {
+        if (tokens_[next].kind == TK::OpenBracket) ++depth;
+        if (tokens_[next].kind == TK::CloseBracket) --depth;
+        ++next;
+      } while (depth > 0 && next < tokens_.size());
+      if (depth != 0) return false;
+    }
+    return next < tokens_.size() &&
+           (tokens_[next].kind == TK::Comma ||
+            tokens_[next].kind == TK::CloseParenthesis ||
+            tokens_[next].kind == TK::Equals);
+  }
+
+  // The selected ansi_port_declaration alternative enters its header rule.
+  // A net header can be empty. Stop it before the identifier that ends this
+  // member, including when the identifier has unpacked dimensions.
   [[nodiscard]] auto parseTypedAnsiPortRule(bool variable) -> bool {
-    const auto identifier_ends_member = [&] {
-      if (!at(TK::Identifier)) return false;
-      size_t next = pos_ + 1;
-      while (next < tokens_.size() && tokens_[next].kind == TK::OpenBracket) {
-        int depth = 0;
-        do {
-          if (tokens_[next].kind == TK::OpenBracket) ++depth;
-          if (tokens_[next].kind == TK::CloseBracket) --depth;
-          ++next;
-        } while (depth > 0 && next < tokens_.size());
-        if (depth != 0) return false;
-      }
-      return next < tokens_.size() &&
-             (tokens_[next].kind == TK::Comma ||
-              tokens_[next].kind == TK::CloseParenthesis ||
-              tokens_[next].kind == TK::Equals);
-    };
     if (!consumeAnnexRule(variable ? "variable_port_header"
                                    : "net_port_header",
-                          line_, std::nullopt, identifier_ends_member))
+                          line_, std::nullopt,
+                          [&] { return ansiIdentifierEndsMember(); }))
       return false;
     parseGrammarChildDirectiveLines();
     if (!consumeAnnexRule("port_identifier", line_)) return false;
@@ -9977,7 +9980,11 @@ class SVParser {
              !at(TK::Identifier, type_offset) &&
              !at(TK::UnitSystemName, type_offset));
         if (variable_type || at(TK::InterconnectKeyword, type_offset) ||
-            annexCanStart("net_type", peek(type_offset).kind)) {
+            annexCanStart("net_type", peek(type_offset).kind) ||
+            at(TK::SignedKeyword, type_offset) ||
+            at(TK::UnsignedKeyword, type_offset) ||
+            at(TK::OpenBracket, type_offset) ||
+            ansiIdentifierEndsMember(type_offset)) {
           if (!parseTypedAnsiPortRule(variable_type))
             return false;
         } else if (!consumeAnnexRule("ansi_port_declaration", line_,
