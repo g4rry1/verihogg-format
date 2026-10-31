@@ -4966,7 +4966,33 @@ class SVParser {
       addLine();
       return true;
     }
-    if (!interrupted && at(TK::Equals, 1)) {
+    const auto blocking_operator = [](TK kind) {
+      return annexCanStart("assignment_operator", kind) ||
+             annexCanStart("inc_or_dec_operator", kind);
+    };
+    bool blocking = !interrupted && blocking_operator(peek(1).kind);
+    if (!interrupted && !blocking &&
+        (at(TK::OpenBracket, 1) || at(TK::Dot, 1) ||
+         at(TK::DoubleColon, 1))) {
+      ListDepth depth;
+      for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
+        const TK kind = tokens_[i].kind;
+        if (depth.topLevel() && blocking_operator(kind)) {
+          blocking = true;
+          break;
+        }
+        if (depth.topLevel() &&
+            (kind == TK::Semicolon || kind == TK::EndOfFile))
+          break;
+        if (depth.topLevel() &&
+            std::ranges::any_of(block_stack_, [kind](const BlockFrame& frame) {
+              return matchesBlockClose(frame.close_kind, kind);
+            }))
+          break;
+        advanceListDepth(depth, kind);
+      }
+    }
+    if (blocking) {
       const LeafCheckpoint saved = leafCheckpoint();
       if (!consumeAnnexRule("blocking_assignment", line_, TK::Semicolon) ||
           !at(TK::Semicolon)) {
