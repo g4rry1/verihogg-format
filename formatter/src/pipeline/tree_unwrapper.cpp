@@ -2721,8 +2721,30 @@ class SVParser {
     addLine();
   }
 
+  // specify_{input,output}_terminal_descriptor ::= identifier
+  // [ '[' constant_range_expression ']' ].
+  [[nodiscard]] auto parseSpecifyTerminalDescriptorRule(bool output)
+      -> bool {
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule(output ? "output_identifier"
+                                 : "input_identifier", line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (at(TK::OpenBracket) &&
+        !consumeAnnexDelimited(TK::OpenBracket, TK::CloseBracket,
+                               "constant_range_expression", line_))
+      return false;
+    return true;
+  }
+
   auto parseSpecifyOutputListRule() -> bool {
-    return parseAnnexCommaListRule("specify_output_terminal_descriptor");
+    do {
+      if (!parseSpecifyTerminalDescriptorRule(true)) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
   }
 
   // A.7.2: the path operator selects the parallel or full production. Parse
@@ -2736,15 +2758,13 @@ class SVParser {
                       annexCanStart("edge_identifier", peek().kind);
     if (edge && !consumeAnnexRule("edge_identifier", line_)) return false;
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("specify_input_terminal_descriptor", line_,
-                          TK::Comma)) return false;
+    if (!parseSpecifyTerminalDescriptorRule(false)) return false;
     size_t inputs = 1;
     parseGrammarChildDirectiveLines();
     while (at(TK::Comma)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexRule("specify_input_terminal_descriptor", line_,
-                            TK::Comma)) return false;
+      if (!parseSpecifyTerminalDescriptorRule(false)) return false;
       ++inputs;
       parseGrammarChildDirectiveLines();
     }
@@ -2763,15 +2783,13 @@ class SVParser {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
     }
-    if (!consumeAnnexRule("specify_output_terminal_descriptor", line_,
-                          TK::Comma)) return false;
+    if (!parseSpecifyTerminalDescriptorRule(true)) return false;
     parseGrammarChildDirectiveLines();
     if (!parallel) {
       while (at(TK::Comma)) {
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
-        if (!consumeAnnexRule("specify_output_terminal_descriptor", line_,
-                              TK::Comma)) return false;
+        if (!parseSpecifyTerminalDescriptorRule(true)) return false;
         parseGrammarChildDirectiveLines();
       }
     }
