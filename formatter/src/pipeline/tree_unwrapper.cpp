@@ -2573,16 +2573,36 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = false;
     if (path) {
-      const AnnexState declaration = parseAnnexItem(
-          at(TK::OpenParenthesis)
-              ? std::vector<std::string_view>{"simple_path_declaration",
-                                              "edge_sensitive_path_declaration"}
-              : std::vector<std::string_view>{
-                    "state_dependent_path_declaration"},
-          false, true);
-      valid = !declaration.failed && !declaration.interrupted &&
-              declaration.complete() && at(TK::Semicolon);
-      if (valid) consumeInto(line_);
+      const bool ifnone = at(TK::IfNoneKeyword);
+      if (at(TK::IfKeyword)) {
+        consumeInto(line_);
+        valid = consumeAnnexDelimited(TK::OpenParenthesis,
+                                      TK::CloseParenthesis,
+                                      "module_path_expression", line_);
+      } else {
+        if (ifnone) consumeInto(line_);
+        valid = true;
+      }
+      if (valid) {
+        std::vector<std::string_view> descriptions{
+            "parallel_path_description", "full_path_description"};
+        if (!ifnone) {
+          descriptions.push_back("parallel_edge_sensitive_path_description");
+          descriptions.push_back("full_edge_sensitive_path_description");
+        }
+        const AnnexState description = parseAnnexItem(
+            std::move(descriptions), false, true);
+        valid = !description.failed && !description.interrupted &&
+                description.complete();
+      }
+      if (valid && at(TK::Equals)) {
+        consumeInto(line_);
+        valid = consumeAnnexRule("path_delay_value", line_, TK::Semicolon);
+      } else {
+        valid = false;
+      }
+      if (valid && at(TK::Semicolon)) consumeInto(line_);
+      else valid = false;
     } else {
       valid = consumeAnnexRule("system_timing_check", line_);
     }
