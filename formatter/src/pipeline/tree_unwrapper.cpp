@@ -3414,6 +3414,47 @@ class SVParser {
     return true;
   }
 
+  // The package import/export productions own their final ';', so keep that
+  // production active while conditional branches contribute import items.
+  auto parseConditionalPackageImportExportRule(
+      std::string_view declaration) -> bool {
+    beginGrammar({declaration});
+    bool valid = grammarAllows(peek().kind);
+    if (valid) consumeInto(line_);  // import / export
+    bool ended = false;
+    while (valid && !at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        valid = parseAnnexConditional(TK::EndOfFile, header_ended,
+                                      indent_level_);
+      } else if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      } else if (at(TK::Semicolon)) {
+        valid = grammarAllows(TK::Semicolon);
+        if (valid) {
+          consumeInto(line_);
+          ended = true;
+        }
+        break;
+      } else if (at(TK::Comma)) {
+        valid = grammarAllows(TK::Comma);
+        if (valid) consumeInto(line_);
+      } else {
+        valid = grammarAllows(peek().kind) &&
+                consumeAnnexRule("package_import_item", line_, TK::Comma);
+      }
+      if (grammar_scopes_.back().failed ||
+          grammar_scopes_.back().interrupted)
+        valid = false;
+    }
+    const AnnexState result = endGrammar(false);
+    return valid && ended && !result.failed && !result.interrupted &&
+           result.complete();
+  }
+
   auto parsePackageImportExportRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
         at(TK::StringLiteral, 1))
@@ -3421,6 +3462,18 @@ class SVParser {
     const bool import = at(TK::ImportKeyword);
     const auto rule = import ? "package_import_declaration"
                              : "package_export_declaration";
+    const bool conditional_members = hasConditionalListMember(pos_);
+    if (conditional_members &&
+        !hasAnnexListInterruption(pos_, conditional_members)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      if (!parseConditionalPackageImportExportRule(rule)) {
+        recordGrammarFallback("invalid Annex A conditional package items");
+        recoverMalformedLeaf(saved);
+      } else {
+        addLine();
+      }
+      return true;
+    }
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token)) {
@@ -9411,6 +9464,11 @@ class SVParser {
         annexCanStart("clocking_direction", peek().kind);
     if (!default_item && !direction_item) return false;
     const LeafCheckpoint saved = leafCheckpoint();
+    const bool conditional_members =
+        direction_item && hasConditionalListMember(pos_);
+    const bool interrupted = direction_item &&
+                             hasAnnexListInterruption(pos_,
+                                                      conditional_members);
     bool valid = true;
     if (default_item) {
       consumeInto(line_);
@@ -9418,8 +9476,14 @@ class SVParser {
     } else {
       valid = consumeAnnexRule("clocking_direction", line_);
       if (valid)
-        valid = consumeAnnexRule("list_of_clocking_decl_assign", line_,
-                                 TK::Semicolon);
+        valid = interrupted
+                    ? consumeAnnexRule("list_of_clocking_decl_assign", line_,
+                                       TK::Semicolon)
+                    : conditional_members
+                        ? parseConditionalAnnexCommaListRule(
+                              "list_of_clocking_decl_assign",
+                              "clocking_decl_assign")
+                        : parseAnnexCommaListRule("clocking_decl_assign");
     }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A clocking item");
