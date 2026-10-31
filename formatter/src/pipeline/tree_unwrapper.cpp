@@ -2835,6 +2835,25 @@ class SVParser {
     return true;
   }
 
+  // path_delay_value ::= list_of_path_delay_expressions |
+  //                      '(' list_of_path_delay_expressions ')'.
+  [[nodiscard]] auto parseSpecifyPathDelayRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    const bool parenthesized = at(TK::OpenParenthesis);
+    if (parenthesized) consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("list_of_path_delay_expressions", line_,
+                          parenthesized ? TK::CloseParenthesis
+                                        : TK::Semicolon))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (parenthesized) {
+      if (!at(TK::CloseParenthesis)) return false;
+      consumeInto(line_);
+    }
+    return true;
+  }
+
   auto parseSpecifyItemRule() -> bool {
     if (at(TK::SpecParamKeyword)) {
       parseSpecparamDeclarationRule();
@@ -2904,7 +2923,7 @@ class SVParser {
       }
       if (valid && at(TK::Equals)) {
         consumeInto(line_);
-        valid = consumeAnnexRule("path_delay_value", line_, TK::Semicolon);
+        valid = parseSpecifyPathDelayRule();
       } else {
         valid = false;
       }
@@ -7699,6 +7718,47 @@ class SVParser {
     return consumeAnnexRule("property_expr", line_, TK::Semicolon);
   }
 
+  // assertion_variable_declaration ::= var_data_type
+  //   list_of_variable_decl_assignments ';'. The optional implicit type is
+  // available only after 'var'; an identifier immediately followed by the
+  // list boundary is therefore the first assignment name.
+  [[nodiscard]] auto parseAssertionVariableDeclarationRule() -> bool {
+    const bool var = at(TK::VarKeyword);
+    if (var) consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    size_t after_identifier = 1;
+    if (var && at(TK::Identifier)) {
+      while (at(TK::OpenBracket, after_identifier)) {
+        int depth = 0;
+        do {
+          if (at(TK::OpenBracket, after_identifier)) ++depth;
+          if (at(TK::CloseBracket, after_identifier)) --depth;
+          ++after_identifier;
+        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
+        if (depth != 0) break;
+      }
+    }
+    const bool implicit_type = var && at(TK::Identifier) &&
+                               (at(TK::Semicolon, after_identifier) ||
+                                at(TK::Equals, after_identifier) ||
+                                at(TK::Comma, after_identifier));
+    if (!implicit_type &&
+        !consumeAnnexRule(var ? "data_type_or_implicit" : "data_type",
+                          line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    const bool conditional_members = hasConditionalListMember(pos_);
+    if (!(hasAnnexListInterruption(pos_, conditional_members)
+              ? consumeAnnexRule("list_of_variable_decl_assignments", line_,
+                                 TK::Semicolon)
+              : parseVariableAssignmentListRule(conditional_members)))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::Semicolon)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   // Annex A gives property and sequence declarations a header, repeated local
   // declarations, and one final expression. Advance both possible body rules
   // together because a user-defined data type and an expression may both
@@ -7734,7 +7794,7 @@ class SVParser {
              (at(TK::Identifier) && at(TK::Identifier, 1)) ||
              (at(TK::Identifier) && at(TK::DoubleColon, 1) &&
               at(TK::Identifier, 2) && at(TK::Identifier, 3))) {
-        if (!consumeAnnexRule("assertion_variable_declaration", line_)) {
+        if (!parseAssertionVariableDeclarationRule()) {
           complete = false;
           break;
         }
