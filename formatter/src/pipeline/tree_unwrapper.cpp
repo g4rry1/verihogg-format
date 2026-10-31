@@ -9894,6 +9894,51 @@ class SVParser {
     return true;
   }
 
+  // The leading net_type / interconnect or var selects the corresponding
+  // ansi_port_declaration alternative. Its header can contain an implicit
+  // type, so stop before the identifier that ends this list member.
+  [[nodiscard]] auto parseTypedAnsiPortRule(bool variable) -> bool {
+    const auto identifier_ends_member = [&] {
+      if (!at(TK::Identifier)) return false;
+      size_t next = pos_ + 1;
+      while (next < tokens_.size() && tokens_[next].kind == TK::OpenBracket) {
+        int depth = 0;
+        do {
+          if (tokens_[next].kind == TK::OpenBracket) ++depth;
+          if (tokens_[next].kind == TK::CloseBracket) --depth;
+          ++next;
+        } while (depth > 0 && next < tokens_.size());
+        if (depth != 0) return false;
+      }
+      return next < tokens_.size() &&
+             (tokens_[next].kind == TK::Comma ||
+              tokens_[next].kind == TK::CloseParenthesis ||
+              tokens_[next].kind == TK::Equals);
+    };
+    if (!consumeAnnexRule(variable ? "variable_port_header"
+                                   : "net_port_header",
+                          line_, std::nullopt, identifier_ends_member))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule(variable ? "variable_dimension"
+                                     : "unpacked_dimension",
+                            line_))
+        return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("constant_expression", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
   [[nodiscard]] auto parseAnsiStructuralPortListRule() -> bool {
     if (!at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
@@ -9920,9 +9965,25 @@ class SVParser {
         if (!parseModportSimplePortRule()) return false;
       } else if (at(TK::InterfaceKeyword)) {
         if (!parseExplicitInterfaceAnsiPortRule()) return false;
-      } else if (!consumeAnnexRule("ansi_port_declaration", line_,
-                                   TK::Comma)) {
-        return false;
+      } else {
+        const size_t type_offset =
+            at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+                    at(TK::InOutKeyword) || at(TK::RefKeyword)
+                ? 1
+                : 0;
+        const bool variable_type =
+            at(TK::VarKeyword, type_offset) ||
+            (annexCanStart("data_type", peek(type_offset).kind) &&
+             !at(TK::Identifier, type_offset) &&
+             !at(TK::UnitSystemName, type_offset));
+        if (variable_type || at(TK::InterconnectKeyword, type_offset) ||
+            annexCanStart("net_type", peek(type_offset).kind)) {
+          if (!parseTypedAnsiPortRule(variable_type))
+            return false;
+        } else if (!consumeAnnexRule("ansi_port_declaration", line_,
+                                     TK::Comma)) {
+          return false;
+        }
       }
       skip_directives();
       if (!at(TK::Comma)) break;
