@@ -4134,6 +4134,141 @@ class SVParser {
     return true;
   }
 
+  // property_port_item / sequence_port_item. Their formal type may be the
+  // empty data_type_or_implicit production; in that case the first identifier
+  // is the port name, followed only by dimensions and an optional default.
+  [[nodiscard]] auto parseAssertionPortItemRule(bool property) -> bool {
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::LocalKeyword)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (at(TK::InputKeyword) ||
+          (!property && (at(TK::InOutKeyword) || at(TK::OutputKeyword)))) {
+        if (!consumeAnnexRule(property ? "property_lvar_port_direction"
+                                       : "sequence_lvar_port_direction",
+                              line_))
+          return false;
+        parseGrammarChildDirectiveLines();
+      }
+    }
+    size_t after_identifier = 1;
+    if (at(TK::Identifier)) {
+      while (at(TK::OpenBracket, after_identifier)) {
+        int depth = 0;
+        do {
+          if (at(TK::OpenBracket, after_identifier)) ++depth;
+          if (at(TK::CloseBracket, after_identifier)) --depth;
+          ++after_identifier;
+        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
+        if (depth != 0) break;
+      }
+    }
+    const bool implicit_type = at(TK::Identifier) &&
+        (at(TK::Comma, after_identifier) ||
+         at(TK::CloseParenthesis, after_identifier) ||
+         at(TK::Equals, after_identifier));
+    if (!implicit_type &&
+        !consumeAnnexRule(property ? "property_formal_type"
+                                   : "sequence_formal_type", line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("formal_port_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule(property ? "property_actual_arg"
+                                     : "sequence_actual_arg", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
+  [[nodiscard]] auto parseAssertionPortListRule(bool property) -> bool {
+    do {
+      if (!parseAssertionPortItemRule(property)) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
+  // tf_port_item ::= { attribute_instance } [ tf_port_direction ] [ var ]
+  // data_type_or_implicit [ port_identifier { variable_dimension }
+  // [ '=' expression ] ].
+  [[nodiscard]] auto parseTfPortItemRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+        at(TK::InOutKeyword) || at(TK::RefKeyword) ||
+        at(TK::ConstKeyword)) {
+      if (!consumeAnnexRule("tf_port_direction", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::VarKeyword)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+    }
+    size_t after_identifier = 1;
+    if (at(TK::Identifier)) {
+      while (at(TK::OpenBracket, after_identifier)) {
+        int depth = 0;
+        do {
+          if (at(TK::OpenBracket, after_identifier)) ++depth;
+          if (at(TK::CloseBracket, after_identifier)) --depth;
+          ++after_identifier;
+        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
+        if (depth != 0) break;
+      }
+    }
+    const bool implicit_type = at(TK::Identifier) &&
+        (at(TK::Comma, after_identifier) ||
+         at(TK::CloseParenthesis, after_identifier) ||
+         at(TK::Equals, after_identifier));
+    if (!implicit_type &&
+        !consumeAnnexRule("data_type_or_implicit", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    if (at(TK::Identifier)) {
+      if (!consumeAnnexRule("port_identifier", line_)) return false;
+      parseGrammarChildDirectiveLines();
+      while (at(TK::OpenBracket)) {
+        if (!consumeAnnexRule("variable_dimension", line_)) return false;
+        parseGrammarChildDirectiveLines();
+      }
+      if (at(TK::Equals)) {
+        consumeInto(line_);
+        parseGrammarChildDirectiveLines();
+        if (!consumeAnnexRule("expression", line_, TK::Comma,
+                              [&] { return at(TK::CloseParenthesis); }))
+          return false;
+      }
+    }
+    return true;
+  }
+
+  [[nodiscard]] auto parseTfPortListRule() -> bool {
+    do {
+      if (!parseTfPortItemRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   // checker_declaration ::= checker checker_identifier
   // [ '(' [ checker_port_list ] ')' ] ';' { checker_or_generate_item }
   // endchecker [ ':' checker_identifier ].
@@ -4224,7 +4359,7 @@ class SVParser {
                     ? parseConditionalAnnexCommaListRule(
                           "tf_port_list", "tf_port_item",
                           TK::CloseParenthesis)
-                    : parseAnnexCommaListRule("tf_port_item");
+                    : parseTfPortListRule();
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A covergroup port list");
         recoverMalformedItem(saved);
@@ -7916,7 +8051,8 @@ class SVParser {
         valid = conditional_ports
                     ? parseConditionalAnnexCommaListRule(
                           port_list, port_item, TK::CloseParenthesis)
-                    : parseAnnexCommaListRule(port_item);
+                    : parseAssertionPortListRule(
+                          closeKw == TK::EndPropertyKeyword);
       if (!valid || !at(TK::CloseParenthesis)) return false;
       consumeInto(line_);
       skip_directives();
@@ -9756,13 +9892,7 @@ class SVParser {
   [[nodiscard]] auto parseTfHeaderPortListRule() -> bool {
     if (!at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
-    if (!at(TK::CloseParenthesis)) {
-      do {
-        if (!consumeAnnexRule("tf_port_item", line_, TK::Comma)) return false;
-        if (!at(TK::Comma)) break;
-        consumeInto(line_);
-      } while (!at(TK::EndOfFile));
-    }
+    if (!at(TK::CloseParenthesis) && !parseTfPortListRule()) return false;
     if (!at(TK::CloseParenthesis)) return false;
     consumeInto(line_);
     return true;
@@ -10581,7 +10711,7 @@ class SVParser {
         consumeInto(line_);
         valid = !at(TK::CloseParenthesis);
         while (valid) {
-          valid = consumeAnnexRule("tf_port_item", line_, TK::Comma);
+          valid = parseTfPortItemRule();
           if (!valid || !at(TK::Comma)) break;
           consumeInto(line_);
         }
@@ -10766,6 +10896,59 @@ class SVParser {
     return true;
   }
 
+  // let_port_item ::= { attribute_instance } let_formal_type
+  // formal_port_identifier { variable_dimension } [ '=' expression ].
+  [[nodiscard]] auto parseLetPortItemRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    size_t after_identifier = 1;
+    if (at(TK::Identifier)) {
+      while (at(TK::OpenBracket, after_identifier)) {
+        int depth = 0;
+        do {
+          if (at(TK::OpenBracket, after_identifier)) ++depth;
+          if (at(TK::CloseBracket, after_identifier)) --depth;
+          ++after_identifier;
+        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
+        if (depth != 0) break;
+      }
+    }
+    const bool implicit_type = at(TK::Identifier) &&
+        (at(TK::Comma, after_identifier) ||
+         at(TK::CloseParenthesis, after_identifier) ||
+         at(TK::Equals, after_identifier));
+    if (!implicit_type && !consumeAnnexRule("let_formal_type", line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("formal_port_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("expression", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
+  [[nodiscard]] auto parseLetPortListRule() -> bool {
+    do {
+      if (!parseLetPortItemRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   // let_declaration ::= let let_identifier
   // [ '(' [ let_port_list ] ')' ] '=' expression ';'.
   auto parseLetDeclarationRule() -> bool {
@@ -10802,7 +10985,7 @@ class SVParser {
                   ? parseConditionalAnnexCommaListRule(
                         "let_port_list", "let_port_item",
                         TK::CloseParenthesis)
-                  : parseAnnexCommaListRule("let_port_item")) ||
+                  : parseLetPortListRule()) ||
             !at(TK::CloseParenthesis)) {
           recordGrammarFallback("invalid Annex A let port list");
           recoverMalformedItem(saved);
