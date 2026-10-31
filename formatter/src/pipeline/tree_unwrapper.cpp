@@ -2886,13 +2886,13 @@ class SVParser {
       if (tokens_[i].kind == TK::WithKeyword) has_resolver = true;
     }
     // An unqualified identifier can begin either Annex A alternative. The
-    // resolver suffix selects the data_type alternative; otherwise the alias
-    // branch retains the shared spelling. All other type starters come from
-    // the imported data_type first set.
+    // resolver suffix or parameterized type selects the data_type alternative;
+    // otherwise the alias branch retains the shared spelling. All other type
+    // starters come from the imported data_type first set.
     const bool explicit_type =
         annexCanStart("data_type", peek(1).kind) &&
-        (has_resolver || (!at(TK::Identifier, 1) &&
-                          !at(TK::UnitSystemName, 1)));
+        (has_resolver || (at(TK::Identifier, 1) && at(TK::Hash, 2)) ||
+         (!at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1)));
     if (explicit_type) {
       for (size_t i = pos_; i < tokens_.size(); ++i) {
         const auto& token = tokens_[i];
@@ -3303,27 +3303,6 @@ class SVParser {
         break;
       }
     }
-    size_t after_net_type = 1;
-    if (at(TK::OpenParenthesis, after_net_type)) {
-      while (pos_ + after_net_type < tokens_.size() &&
-             !at(TK::CloseParenthesis, after_net_type) &&
-             !at(TK::Semicolon, after_net_type) &&
-             !at(TK::EndOfFile, after_net_type))
-        ++after_net_type;
-      if (at(TK::CloseParenthesis, after_net_type))
-        ++after_net_type;
-    }
-    if (at(TK::VectoredKeyword, after_net_type) ||
-        at(TK::ScalaredKeyword, after_net_type)) {
-      ++after_net_type;
-    }
-    if (at(TK::Identifier, after_net_type) &&
-        at(TK::Identifier, after_net_type + 1)) {
-      ambiguous = true;
-    }
-    if (at(TK::Identifier, after_net_type) &&
-        at(TK::Hash, after_net_type + 1))
-      ambiguous = true;
     if (ambiguous) {
       static_cast<void>(parseAnnexItem({"net_declaration"}, true));
       return true;
@@ -3341,12 +3320,20 @@ class SVParser {
                   at(TK::ScalaredKeyword))) {
       consumeInto(line_);
     }
-    // A bare identifier is also the first net_identifier in the implicit
-    // form. Shared identifier prefixes were routed through net_declaration
-    // above; distinct data types can use the Annex A first set here.
+    // After the net_type and its optional strength/scaling, an identifier
+    // followed by a type continuation is the data_type child. A lone
+    // identifier starts the first net_decl_assignment after an implicit type.
+    const bool user_type =
+        (at(TK::Identifier) &&
+         (at(TK::Identifier, 1) || at(TK::DoubleColon, 1) ||
+          at(TK::Hash, 1))) ||
+        (at(TK::UnitSystemName) && at(TK::DoubleColon, 1));
     if (valid && annexCanStart("data_type_or_implicit", peek().kind) &&
-        !at(TK::Identifier) && !at(TK::UnitSystemName))
-      valid = consumeAnnexRule("data_type_or_implicit", line_);
+        (user_type || (!at(TK::Identifier) &&
+                       !at(TK::UnitSystemName))))
+      valid = consumeAnnexRule(
+          "data_type_or_implicit", line_, std::nullopt,
+          [&] { return at(TK::Hash) && !at(TK::OpenParenthesis, 1); });
     if (valid && at(TK::Hash))
       valid = consumeAnnexRule("delay3", line_);
     if (valid)
