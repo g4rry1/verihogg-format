@@ -4716,6 +4716,71 @@ class SVParser {
            result.complete() && at(TK::Semicolon);
   }
 
+  // These port list productions repeat an unnamed identifier and dimension
+  // sequence. Keep the parent live across complete conditional members,
+  // while ordinary members enter their Annex A child rules directly.
+  auto parsePortIdentifierWithDimensionsRule(std::string_view identifier,
+                                             std::string_view dimension,
+                                             bool default_value)
+      -> bool {
+    if (!consumeAnnexRule(identifier, line_)) return false;
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule(dimension, line_)) return false;
+    }
+    if (default_value && at(TK::Equals)) {
+      consumeInto(line_);
+      if (!consumeAnnexRule("constant_expression", line_, TK::Comma))
+        return false;
+    }
+    return true;
+  }
+
+  auto parsePortIdentifierDimensionListRule(
+      std::string_view list, std::string_view identifier,
+      std::string_view dimension, bool default_value,
+      bool conditional_members) -> bool {
+    if (!conditional_members) {
+      do {
+        parseGrammarChildDirectiveLines();
+        if (!parsePortIdentifierWithDimensionsRule(identifier, dimension,
+                                                   default_value))
+          return false;
+        parseGrammarChildDirectiveLines();
+        if (!at(TK::Comma)) break;
+        consumeInto(line_);
+      } while (!at(TK::EndOfFile));
+      return true;
+    }
+    beginGrammar({list});
+    bool valid = true;
+    while (!at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (grammar_scopes_.back().complete() && at(TK::Semicolon)) break;
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        valid = parseAnnexConditional(TK::EndOfFile, header_ended,
+                                      indent_level_);
+      } else if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      } else if (at(TK::Comma)) {
+        valid = grammarAllows(TK::Comma);
+        if (valid) consumeInto(line_);
+      } else {
+        valid = grammarAllows(peek().kind) &&
+                parsePortIdentifierWithDimensionsRule(identifier, dimension,
+                                                      default_value);
+      }
+      if (!valid || grammar_scopes_.back().failed ||
+          grammar_scopes_.back().interrupted)
+        break;
+    }
+    const AnnexState result = endGrammar(false);
+    return valid && !result.failed && !result.interrupted &&
+           result.complete() && at(TK::Semicolon);
+  }
+
   auto parseTfPortDeclarationRule() -> bool {
     const bool direction =
         annexCanStart("tf_port_direction", peek().kind) &&
@@ -7351,6 +7416,60 @@ class SVParser {
         recordGrammarFallback("invalid Annex A port declaration start");
         recoverMalformedLeaf(saved);
         return;
+    }
+    if (at(TK::RefKeyword) || at(TK::InOutKeyword) ||
+        ((at(TK::InputKeyword) || at(TK::OutputKeyword)) &&
+         at(TK::VarKeyword, 1))) {
+      const bool conditional_members = hasConditionalListMember(pos_);
+      if (!hasAnnexListInterruption(pos_, conditional_members)) {
+        const bool net = at(TK::InOutKeyword);
+        const bool output_variable = at(TK::OutputKeyword);
+        consumeInto(line_);
+        // The type can be implicit. Once an identifier and its dimensions
+        // reach a list separator, that identifier begins the next production.
+        // This also resolves net_port_type's nettype_identifier alternative.
+        const auto identifier_ends_member = [&] {
+          if (!at(TK::Identifier)) return false;
+          size_t next = pos_ + 1;
+          while (next < tokens_.size() &&
+                 tokens_[next].kind == TK::OpenBracket) {
+            int depth = 0;
+            do {
+              if (tokens_[next].kind == TK::OpenBracket) ++depth;
+              if (tokens_[next].kind == TK::CloseBracket) --depth;
+              ++next;
+            } while (depth > 0 && next < tokens_.size());
+            if (depth != 0) return false;
+          }
+          return next < tokens_.size() &&
+                 (tokens_[next].kind == TK::Semicolon ||
+                  tokens_[next].kind == TK::Comma ||
+                  (output_variable && tokens_[next].kind == TK::Equals));
+        };
+        const bool empty_net_type = net && identifier_ends_member();
+        const bool valid =
+            (empty_net_type ||
+             consumeAnnexRule(net ? "net_port_type" : "variable_port_type",
+                              line_, std::nullopt,
+                              identifier_ends_member)) &&
+            parsePortIdentifierDimensionListRule(
+                net ? "list_of_port_identifiers"
+                    : output_variable ? "list_of_variable_port_identifiers"
+                                      : "list_of_variable_identifiers",
+                net || output_variable ? "port_identifier"
+                                       : "variable_identifier",
+                net ? "unpacked_dimension" : "variable_dimension",
+                output_variable,
+                conditional_members);
+        if (!valid || !at(TK::Semicolon)) {
+          recordGrammarFallback("invalid Annex A port declaration");
+          recoverMalformedLeaf(saved);
+          return;
+        }
+        consumeInto(line_);
+        addLine();
+        return;
+      }
     }
     if (!consumeAnnexRule(declaration, line_, TK::Semicolon) ||
         !at(TK::Semicolon)) {
