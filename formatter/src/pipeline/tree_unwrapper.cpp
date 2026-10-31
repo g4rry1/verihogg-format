@@ -8574,7 +8574,9 @@ class SVParser {
       const bool direct_ansi =
           at(TK::InputKeyword, 1) || at(TK::OutputKeyword, 1) ||
           at(TK::InOutKeyword, 1) || at(TK::RefKeyword, 1) ||
-          at(TK::InterfaceKeyword, 1);
+          at(TK::InterfaceKeyword, 1) ||
+          (annexCanStart("data_type", peek(1).kind) &&
+           !at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1));
       if (direct_ansi) {
         if (!parseAnsiStructuralPortListRule()) {
           recordGrammarFallback("invalid Annex A ANSI structural port list");
