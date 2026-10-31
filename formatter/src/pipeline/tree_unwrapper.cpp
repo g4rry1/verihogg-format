@@ -2687,6 +2687,82 @@ class SVParser {
     return parseAnnexCommaListRule("specify_output_terminal_descriptor");
   }
 
+  // A.7.2: the path operator selects the parallel or full production. Parse
+  // its terminal descriptors as children while emitting the same flat line.
+  [[nodiscard]] auto parseSpecifyPathDescriptionRule(bool allow_edge)
+      -> bool {
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    const bool edge = allow_edge &&
+                      annexCanStart("edge_identifier", peek().kind);
+    if (edge && !consumeAnnexRule("edge_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("specify_input_terminal_descriptor", line_,
+                          TK::Comma)) return false;
+    size_t inputs = 1;
+    parseGrammarChildDirectiveLines();
+    while (at(TK::Comma)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("specify_input_terminal_descriptor", line_,
+                            TK::Comma)) return false;
+      ++inputs;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::Plus) || at(TK::Minus)) {
+      if (!consumeAnnexRule("polarity_operator", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    const bool parallel = at(TK::EqualsArrow);
+    if (!parallel && !at(TK::StarArrow)) return false;
+    if (parallel && inputs != 1) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    const bool data_source = at(TK::OpenParenthesis);
+    if (data_source) {
+      if (!allow_edge) return false;
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+    }
+    if (!consumeAnnexRule("specify_output_terminal_descriptor", line_,
+                          TK::Comma)) return false;
+    parseGrammarChildDirectiveLines();
+    if (!parallel) {
+      while (at(TK::Comma)) {
+        consumeInto(line_);
+        parseGrammarChildDirectiveLines();
+        if (!consumeAnnexRule("specify_output_terminal_descriptor", line_,
+                              TK::Comma)) return false;
+        parseGrammarChildDirectiveLines();
+      }
+    }
+    if (data_source) {
+      // slang lexes the adjacent Annex A polarity and ':' terminals as one
+      // token in the common +: / -: spelling.
+      const bool combined_polarity = at(TK::PlusColon) || at(TK::MinusColon);
+      if (combined_polarity) {
+        consumeInto(line_);
+      } else if (at(TK::Plus) || at(TK::Minus)) {
+        if (!consumeAnnexRule("polarity_operator", line_)) return false;
+        parseGrammarChildDirectiveLines();
+      }
+      if (!combined_polarity) {
+        if (!at(TK::Colon)) return false;
+        consumeInto(line_);
+      }
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("data_source_expression", line_,
+                            TK::CloseParenthesis)) return false;
+      if (!at(TK::CloseParenthesis)) return false;
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+    }
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   auto parseSpecifyItemRule() -> bool {
     if (at(TK::SpecParamKeyword)) {
       parseSpecparamDeclarationRule();
@@ -2727,6 +2803,7 @@ class SVParser {
     bool valid = false;
     if (path) {
       const bool ifnone = at(TK::IfNoneKeyword);
+      const bool interrupted = hasAnnexListInterruption(pos_, false);
       if (at(TK::IfKeyword)) {
         consumeInto(line_);
         valid = consumeAnnexDelimited(TK::OpenParenthesis,
@@ -2737,16 +2814,21 @@ class SVParser {
         valid = true;
       }
       if (valid) {
-        std::vector<std::string_view> descriptions{
-            "parallel_path_description", "full_path_description"};
-        if (!ifnone) {
-          descriptions.push_back("parallel_edge_sensitive_path_description");
-          descriptions.push_back("full_edge_sensitive_path_description");
+        if (interrupted) {
+          std::vector<std::string_view> descriptions{
+              "parallel_path_description", "full_path_description"};
+          if (!ifnone) {
+            descriptions.push_back(
+                "parallel_edge_sensitive_path_description");
+            descriptions.push_back("full_edge_sensitive_path_description");
+          }
+          const AnnexState description = parseAnnexItem(
+              std::move(descriptions), false, true);
+          valid = !description.failed && !description.interrupted &&
+                  description.complete();
+        } else {
+          valid = parseSpecifyPathDescriptionRule(!ifnone);
         }
-        const AnnexState description = parseAnnexItem(
-            std::move(descriptions), false, true);
-        valid = !description.failed && !description.interrupted &&
-                description.complete();
       }
       if (valid && at(TK::Equals)) {
         consumeInto(line_);
@@ -5123,11 +5205,23 @@ class SVParser {
         if (instance_target) valid = false;
         else {
           consumeInto(line_);
-          valid = consumeAnnexRule("bind_target_instance_list", line_);
+          do {
+            parseGrammarChildDirectiveLines();
+            valid = consumeAnnexRule("bind_target_instance", line_,
+                                     TK::Comma);
+            parseGrammarChildDirectiveLines();
+            if (!valid || !at(TK::Comma)) break;
+            consumeInto(line_);
+          } while (!at(TK::EndOfFile));
         }
       }
-      if (valid)
-        valid = consumeAnnexRule("bind_instantiation", line_);
+      if (valid) {
+        bool instantiation_valid = false;
+        const bool recognized = parseStructuralInstantiationRule(
+            false, &instantiation_valid);
+        if (recognized && !instantiation_valid) return true;
+        valid = recognized && instantiation_valid;
+      }
       // Annex A appends a semicolon to bind_instantiation, whose own
       // alternatives already include one. Preserve that literal production.
       if (!valid || !at(TK::Semicolon)) {
@@ -6570,7 +6664,9 @@ class SVParser {
            tokens_[index].kind == TK::OpenParenthesis;
   }
 
-  auto parseScopedCheckerInstantiationRule() -> bool {
+  auto parseScopedCheckerInstantiationRule(bool finish_line = true,
+                                          bool* valid_result = nullptr) -> bool {
+    if (valid_result) *valid_result = false;
     if (!at(TK::Identifier) || !at(TK::DoubleColon, 1) ||
         !at(TK::Identifier, 2) || !hasInstanceShape(pos_ + 3))
       return false;
@@ -6585,7 +6681,8 @@ class SVParser {
       return true;
     }
     consumeInto(line_);
-    addLine();
+    if (finish_line) addLine();
+    if (valid_result) *valid_result = true;
     return true;
   }
 
@@ -6789,10 +6886,12 @@ class SVParser {
     return true;
   }
 
-  auto parseStructuralInstantiationRule() -> bool {
+  auto parseStructuralInstantiationRule(bool finish_line = true,
+                                        bool* valid_result = nullptr) -> bool {
+    if (valid_result) *valid_result = false;
     if (!at(TK::Identifier)) return false;
     if (at(TK::DoubleColon, 1))
-      return parseScopedCheckerInstantiationRule();
+      return parseScopedCheckerInstantiationRule(finish_line, valid_result);
     bool instance_shape = hasInstanceShape(pos_ + 1);
     if (at(TK::Hash, 1) && at(TK::OpenParenthesis, 2)) {
       int depth = 0;
@@ -6886,7 +6985,8 @@ class SVParser {
       return true;
     }
     consumeInto(line_);
-    addLine();
+    if (finish_line) addLine();
+    if (valid_result) *valid_result = true;
     return true;
   }
 
