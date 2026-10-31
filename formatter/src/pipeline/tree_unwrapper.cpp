@@ -2760,18 +2760,14 @@ class SVParser {
         break;
       if (tokens_[i].kind == TK::WithKeyword) has_resolver = true;
     }
+    // An unqualified identifier can begin either Annex A alternative. The
+    // resolver suffix selects the data_type alternative; otherwise the alias
+    // branch retains the shared spelling. All other type starters come from
+    // the imported data_type first set.
     const bool explicit_type =
-        (has_resolver && annexCanStart("data_type", peek(1).kind)) ||
-        at(TK::VirtualKeyword, 1) || at(TK::TypeKeyword, 1) ||
-        at(TK::BitKeyword, 1) || at(TK::ByteKeyword, 1) ||
-        at(TK::CHandleKeyword, 1) || at(TK::EnumKeyword, 1) ||
-        at(TK::EventKeyword, 1) || at(TK::IntKeyword, 1) ||
-        at(TK::IntegerKeyword, 1) || at(TK::LogicKeyword, 1) ||
-        at(TK::LongIntKeyword, 1) || at(TK::RealKeyword, 1) ||
-        at(TK::RealTimeKeyword, 1) || at(TK::RegKeyword, 1) ||
-        at(TK::ShortIntKeyword, 1) || at(TK::ShortRealKeyword, 1) ||
-        at(TK::StringKeyword, 1) || at(TK::StructKeyword, 1) ||
-        at(TK::TimeKeyword, 1) || at(TK::UnionKeyword, 1);
+        annexCanStart("data_type", peek(1).kind) &&
+        (has_resolver || (!at(TK::Identifier, 1) &&
+                          !at(TK::UnitSystemName, 1)));
     if (explicit_type) {
       for (size_t i = pos_; i < tokens_.size(); ++i) {
         const auto& token = tokens_[i];
