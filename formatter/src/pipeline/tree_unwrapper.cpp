@@ -3283,8 +3283,45 @@ class SVParser {
     return true;
   }
 
+  // param_assignment ::= parameter_identifier { variable_dimension }
+  //                      [ '=' constant_param_expression ].
+  [[nodiscard]] auto parseParameterAssignmentRule(bool type) -> bool {
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule(type ? "type_identifier"
+                               : "parameter_identifier", line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!type) {
+      while (at(TK::OpenBracket)) {
+        if (!consumeAnnexRule("variable_dimension", line_)) return false;
+        parseGrammarChildDirectiveLines();
+      }
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule(
+              type ? "data_type_or_incomplete_class_scoped_type"
+                   : "constant_param_expression", line_, TK::Comma,
+              [&] { return at(TK::Semicolon) ||
+                           at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
+  [[nodiscard]] auto parseParameterAssignmentListRule(bool type) -> bool {
+    do {
+      if (!parseParameterAssignmentRule(type)) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseTypeAssignmentListRule() -> bool {
-    return parseAnnexCommaListRule("type_assignment");
+    return parseParameterAssignmentListRule(true);
   }
 
   auto parseVariableAssignmentListRule(bool conditional_members) -> bool {
@@ -3386,7 +3423,7 @@ class SVParser {
         !(conditional_members
               ? parseConditionalAnnexCommaListRule(
                     "list_of_param_assignments", "param_assignment")
-              : parseAnnexCommaListRule("param_assignment")) ||
+              : parseParameterAssignmentListRule(false)) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A parameter declaration");
       recoverMalformedLeaf(saved);
