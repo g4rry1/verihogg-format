@@ -3485,10 +3485,36 @@ class SVParser {
       addLine();
       return true;
     }
+    const auto declaration = at(TK::ParameterKeyword)
+                                 ? "parameter_declaration"
+                                 : "local_parameter_declaration";
+    size_t after_identifier = 2;
+    bool interrupted_dimension = false;
+    if (at(TK::Identifier, 1)) {
+      while (at(TK::OpenBracket, after_identifier)) {
+        int depth = 0;
+        do {
+          if (at(TK::MacroUsage, after_identifier) ||
+              at(TK::Directive, after_identifier)) {
+            interrupted_dimension = true;
+            break;
+          }
+          if (at(TK::OpenBracket, after_identifier)) ++depth;
+          if (at(TK::CloseBracket, after_identifier)) --depth;
+          ++after_identifier;
+        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
+        if (depth != 0 || interrupted_dimension) break;
+      }
+    }
+    if (interrupted_dimension) {
+      parseAnnexSemicolonItem(declaration);
+      return true;
+    }
     const bool explicit_type =
         (at(TK::Identifier, 1) &&
-         (at(TK::Identifier, 2) || at(TK::DoubleColon, 2) ||
-          at(TK::Hash, 2))) ||
+         (at(TK::Identifier, after_identifier) ||
+          at(TK::DoubleColon, after_identifier) ||
+          at(TK::Hash, after_identifier))) ||
         (annexCanStart("data_type", peek(1).kind) &&
          !at(TK::Identifier, 1) &&
          !at(TK::SignedKeyword, 1) && !at(TK::UnsignedKeyword, 1) &&
@@ -3498,11 +3524,9 @@ class SVParser {
                                at(TK::OpenBracket, 1);
     const bool bare_assignment =
         at(TK::Identifier, 1) &&
-        (at(TK::Equals, 2) || at(TK::Comma, 2) ||
-         at(TK::Semicolon, 2));
-    const auto declaration = at(TK::ParameterKeyword)
-                                 ? "parameter_declaration"
-                                 : "local_parameter_declaration";
+        (at(TK::Equals, after_identifier) ||
+         at(TK::Comma, after_identifier) ||
+         at(TK::Semicolon, after_identifier));
     if (!explicit_type && !implicit_type && !bare_assignment) {
       parseAnnexSemicolonItem(declaration);
       return true;
@@ -3532,12 +3556,17 @@ class SVParser {
     return true;
   }
 
-  // A pair of identifiers starts the Annex A data_type followed by the first
+  // A user type, optionally scoped and packed, precedes the first Annex A
   // variable_decl_assignment. Instance-shaped pairs are handled earlier by
   // the instantiation production in contexts where it is permitted.
   auto parseUserDataDeclarationRule() -> bool {
-    if (!at(TK::Identifier)) return false;
+    if (!at(TK::Identifier) && !at(TK::UnitSystemName)) return false;
     size_t variable = 1;
+    if (at(TK::UnitSystemName)) {
+      if (!at(TK::DoubleColon, 1) || !at(TK::Identifier, 2))
+        return false;
+      variable = 3;
+    }
     while (true) {
       if (at(TK::Hash, variable) &&
           at(TK::OpenParenthesis, variable + 1)) {
@@ -3555,6 +3584,18 @@ class SVParser {
           !at(TK::Identifier, variable + 1))
         break;
       variable += 2;
+    }
+    while (at(TK::OpenBracket, variable)) {
+      int depth = 0;
+      do {
+        if (at(TK::MacroUsage, variable) ||
+            at(TK::Directive, variable))
+          return false;
+        if (at(TK::OpenBracket, variable)) ++depth;
+        if (at(TK::CloseBracket, variable)) --depth;
+        ++variable;
+      } while (depth > 0 && pos_ + variable < tokens_.size());
+      if (depth != 0) return false;
     }
     if (!at(TK::Identifier, variable) ||
         at(TK::OpenParenthesis, variable + 1))
