@@ -2708,10 +2708,8 @@ class SVParser {
     size_t identifier_offset = 1;
     const bool interface_class = at(TK::InterfaceKeyword, 1) &&
                                  at(TK::ClassKeyword, 2);
-    const bool forward = interface_class || at(TK::EnumKeyword, 1) ||
-                         at(TK::StructKeyword, 1) ||
-                         at(TK::UnionKeyword, 1) ||
-                         at(TK::ClassKeyword, 1);
+    const bool forward = annexCanStart("forward_type", peek(1).kind) &&
+                         (!at(TK::InterfaceKeyword, 1) || interface_class);
     if (forward) identifier_offset += interface_class ? 2 : 1;
     if (at(TK::Identifier, identifier_offset) &&
         at(TK::Semicolon, identifier_offset + 1)) {
@@ -2943,9 +2941,8 @@ class SVParser {
         }
       };
       skip_directives();
-      const bool forward = at(TK::EnumKeyword) || at(TK::StructKeyword) ||
-                           at(TK::UnionKeyword) || at(TK::ClassKeyword) ||
-                           (at(TK::InterfaceKeyword) &&
+      const bool forward = annexCanStart("forward_type", peek().kind) &&
+                           (!at(TK::InterfaceKeyword) ||
                             at(TK::ClassKeyword, 1));
       bool valid = !forward || consumeAnnexRule("forward_type", line_);
       skip_directives();
