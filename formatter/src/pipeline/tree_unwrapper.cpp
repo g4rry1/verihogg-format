@@ -5156,12 +5156,19 @@ class SVParser {
              annexCanStart("inc_or_dec_operator", kind);
     };
     bool blocking = !interrupted && blocking_operator(peek(1).kind);
-    if (!interrupted && !blocking &&
+    bool nonblocking = !interrupted && at(TK::LessThanEquals, 1);
+    size_t assignment_offset = nonblocking ? 1 : 0;
+    if (!interrupted && !blocking && !nonblocking &&
         (at(TK::OpenBracket, 1) || at(TK::Dot, 1) ||
          at(TK::DoubleColon, 1))) {
       ListDepth depth;
       for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
         const TK kind = tokens_[i].kind;
+        if (depth.topLevel() && kind == TK::LessThanEquals) {
+          nonblocking = true;
+          assignment_offset = i - pos_;
+          break;
+        }
         if (depth.topLevel() && blocking_operator(kind)) {
           blocking = true;
           break;
@@ -5176,6 +5183,22 @@ class SVParser {
           break;
         advanceListDepth(depth, kind);
       }
+    }
+    if (nonblocking) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      const std::string_view rule =
+          at(TK::DoubleHash, assignment_offset + 1)
+              ? "clocking_drive"
+              : "nonblocking_assignment";
+      if (!consumeAnnexRule(rule, line_, TK::Semicolon) ||
+          !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A nonblocking statement");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      consumeInto(line_);
+      addLine();
+      return true;
     }
     if (blocking) {
       const LeafCheckpoint saved = leafCheckpoint();
