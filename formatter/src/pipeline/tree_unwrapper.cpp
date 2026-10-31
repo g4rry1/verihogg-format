@@ -9510,9 +9510,9 @@ class SVParser {
           return header.hasActiveRule(rule) && annexCanStart(rule, next);
         });
     if (has_delay_control && !compound_statement) {
-      beginGrammar(body_roots);
-      parseGrammarLeaf();
-      static_cast<void>(endGrammar());
+      grammar_contexts_.push_back({block_stack_.size(), body_roots});
+      parseStatement();
+      grammar_contexts_.pop_back();
       return;
     }
     addLine();
@@ -9586,9 +9586,9 @@ class SVParser {
         next == TK::UniqueKeyword || next == TK::Unique0Keyword ||
         next == TK::PriorityKeyword;
     if (delay_control && !compound_statement) {
-      beginGrammar(body_roots);
-      parseGrammarLeaf();
-      static_cast<void>(endGrammar());
+      grammar_contexts_.push_back({block_stack_.size(), body_roots});
+      parseStatement();
+      grammar_contexts_.pop_back();
       return;
     }
     addLine();
