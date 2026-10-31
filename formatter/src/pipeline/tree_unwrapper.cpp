@@ -8417,6 +8417,29 @@ class SVParser {
   }
 
   // list_of_port_declarations ::= '(' [ { attribute_instance }
+  // list_of_ports ::= '(' port { ',' port } ')'. A leading named port or
+  // concatenation selects this non-ANSI alternative unambiguously.
+  [[nodiscard]] auto parseNonAnsiStructuralPortListRule() -> bool {
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    addLine();
+    do {
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma) && !at(TK::CloseParenthesis) &&
+          !consumeAnnexRule("port", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+      addLine();
+    } while (!at(TK::EndOfFile));
+    addLine();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   // ansi_port_declaration { ',' { attribute_instance }
   // ansi_port_declaration } ] ')'. The caller selects this rule only when
   // its first port keyword excludes the non-ANSI list_of_ports alternative.
@@ -8559,6 +8582,12 @@ class SVParser {
           return true;
         }
         body_rule = non_port_body_rule;
+      } else if (at(TK::Dot, 1) || at(TK::OpenBrace, 1)) {
+        if (!parseNonAnsiStructuralPortListRule()) {
+          recordGrammarFallback("invalid Annex A non-ANSI structural port list");
+          recoverMalformedStructuralHeader(saved, closeKw, external);
+          return true;
+        }
       } else {
         beginGrammar({"list_of_ports", "list_of_port_declarations"});
         static_cast<void>(parseParenthesizedListInto(line_, closeKw));
