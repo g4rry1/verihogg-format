@@ -4332,8 +4332,7 @@ class SVParser {
       }
     };
     skip_directives();
-    if (!at(TK::Identifier)) return false;
-    consumeInto(line_);
+    if (!consumeAnnexRule("modport_identifier", line_)) return false;
     skip_directives();
     if (!at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
