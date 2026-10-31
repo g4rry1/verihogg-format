@@ -8479,18 +8479,54 @@ class SVParser {
     return true;
   }
 
-  // list_of_ports ::= '(' port { ',' port } ')'. A leading named port or
-  // concatenation selects this non-ANSI alternative unambiguously.
-  [[nodiscard]] auto parseNonAnsiStructuralPortListRule() -> bool {
+  // list_of_ports and list_of_port_declarations can both contain a leading
+  // named port or a bare identifier. Parse each member once, retaining both
+  // viable Annex A alternatives until a later member resolves the choice.
+  [[nodiscard]] auto parseSharedStructuralPortListRule(bool& nonansi)
+      -> bool {
     if (!at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
     addLine();
+    bool ansi = true;
+    nonansi = true;
     do {
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma) && !at(TK::CloseParenthesis) &&
-          !consumeAnnexRule("port", line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
-        return false;
+      while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+        if (!ansi || !consumeAnnexRule("attribute_instance", line_))
+          return false;
+        nonansi = false;
+        parseGrammarChildDirectiveLines();
+      }
+      if (at(TK::Comma) || at(TK::CloseParenthesis)) {
+        // port ::= [ port_expression ] has an empty alternative.
+        if (!nonansi) return false;
+        ansi = false;
+      } else {
+        std::vector<std::string_view> roots;
+        if (nonansi) roots.push_back("port");
+        if (ansi) roots.push_back("ansi_port_declaration");
+        beginGrammar(std::move(roots));
+        while (!at(TK::EndOfFile)) {
+          const auto& grammar = grammar_scopes_.back();
+          if (grammar.complete() &&
+              (at(TK::Comma) || at(TK::CloseParenthesis)))
+            break;
+          if (isCompilerDirective(peek())) {
+            addLine();
+            parseDirectiveLine();
+            continue;
+          }
+          if (grammar.failed || grammar.interrupted ||
+              !grammar.accepts(peek().kind))
+            break;
+          consumeInto(line_);
+        }
+        const AnnexState item = endGrammar(false);
+        if (item.failed || item.interrupted) return false;
+        nonansi &= item.completed("port");
+        ansi &= item.completed("ansi_port_declaration");
+        if (!nonansi && !ansi) return false;
+      }
       parseGrammarChildDirectiveLines();
       if (!at(TK::Comma)) break;
       consumeInto(line_);
@@ -8643,23 +8679,14 @@ class SVParser {
           return true;
         }
         body_rule = non_port_body_rule;
-      } else if (at(TK::Dot, 1) || at(TK::OpenBrace, 1)) {
-        if (!parseNonAnsiStructuralPortListRule()) {
-          recordGrammarFallback("invalid Annex A non-ANSI structural port list");
-          recoverMalformedStructuralHeader(saved, closeKw, external);
-          return true;
-        }
       } else {
-        beginGrammar({"list_of_ports", "list_of_port_declarations"});
-        static_cast<void>(parseParenthesizedListInto(line_, closeKw));
-        const AnnexState ports = endGrammar();
-        if (ports.failed || ports.interrupted || !ports.complete()) {
+        bool nonansi = false;
+        if (!parseSharedStructuralPortListRule(nonansi)) {
           recordGrammarFallback("invalid Annex A structural port list");
           recoverMalformedStructuralHeader(saved, closeKw, external);
           return true;
         }
-        if (ports.completed("list_of_port_declarations") &&
-            !ports.completed("list_of_ports")) {
+        if (!nonansi) {
           body_rule = non_port_body_rule;
         }
       }
