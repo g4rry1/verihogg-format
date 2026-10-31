@@ -3490,7 +3490,7 @@ class SVParser {
          (at(TK::Identifier, 2) || at(TK::DoubleColon, 2) ||
           at(TK::Hash, 2))) ||
         (annexCanStart("data_type", peek(1).kind) &&
-         !at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1) &&
+         !at(TK::Identifier, 1) &&
          !at(TK::SignedKeyword, 1) && !at(TK::UnsignedKeyword, 1) &&
          !at(TK::OpenBracket, 1));
     const bool implicit_type = at(TK::SignedKeyword, 1) ||
@@ -3580,7 +3580,10 @@ class SVParser {
 
   auto parseExplicitDataDeclarationRule() -> bool {
     if (!annexCanStart("data_type_or_implicit", peek().kind) ||
-        at(TK::Identifier) || at(TK::UnitSystemName))
+        at(TK::Identifier) ||
+        (at(TK::UnitSystemName) &&
+         !(at(TK::DoubleColon, 1) && at(TK::Identifier, 2) &&
+           at(TK::Identifier, 3))))
       return false;
     if (at(TK::VirtualKeyword) &&
         (at(TK::ClassKeyword, 1) || at(TK::FunctionKeyword, 1) ||
