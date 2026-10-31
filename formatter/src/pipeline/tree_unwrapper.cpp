@@ -3238,23 +3238,7 @@ class SVParser {
       addLine();
       return true;
     }
-    switch (peek().kind) {
-      case TK::Supply0Keyword:
-      case TK::Supply1Keyword:
-      case TK::TriKeyword:
-      case TK::Tri0Keyword:
-      case TK::Tri1Keyword:
-      case TK::TriAndKeyword:
-      case TK::TriOrKeyword:
-      case TK::TriRegKeyword:
-      case TK::UWireKeyword:
-      case TK::WAndKeyword:
-      case TK::WireKeyword:
-      case TK::WOrKeyword:
-        break;
-      default:
-        return false;
-    }
+    if (!annexCanStart("net_type", peek().kind)) return false;
     bool ambiguous = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
