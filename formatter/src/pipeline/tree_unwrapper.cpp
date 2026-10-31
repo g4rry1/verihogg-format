@@ -8196,6 +8196,39 @@ class SVParser {
     static_cast<void>(parseAnnexItem(grammarRoots()));
   }
 
+  [[nodiscard]] auto udpSymbolMatches(std::string_view rule) const -> bool {
+    AnnexState symbol({rule});
+    symbol.advance(peek());
+    return symbol.complete();
+  }
+
+  // seq_input_list ::= level_input_list | edge_input_list. The first form
+  // also serves combinational_entry; the edge indicator selects the second.
+  [[nodiscard]] auto parseUdpInputListRule(bool& level_input) -> bool {
+    bool has_level = false;
+    bool has_edge = false;
+    while (!at(TK::Colon) && !at(TK::EndOfFile) &&
+           !at(TK::Semicolon) && !at(TK::EndTableKeyword) &&
+           !at(TK::EndPrimitiveKeyword)) {
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      } else if (!has_edge &&
+                 (at(TK::OpenParenthesis) ||
+                  udpSymbolMatches("@lexer_edge_symbol"))) {
+        if (!consumeAnnexRule("edge_indicator", line_)) return false;
+        has_edge = true;
+      } else if (udpSymbolMatches("@lexer_level_symbol")) {
+        if (!consumeAnnexRule("@lexer_level_symbol", line_)) return false;
+        has_level = true;
+      } else {
+        return false;
+      }
+    }
+    level_input = !has_edge && has_level;
+    return has_edge || has_level;
+  }
+
   auto parseUdpTableEntryRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     bool interrupted = false;
@@ -8223,25 +8256,19 @@ class SVParser {
       return;
     }
     auto& table = block_stack_.back();
-    const AnnexState input = parseAnnexItem(
-        {"level_input_list", "seq_input_list"}, false, true);
-    bool valid = !input.failed && !input.interrupted &&
-                 input.complete() && at(TK::Colon);
+    bool level_input = false;
+    bool valid = parseUdpInputListRule(level_input) && at(TK::Colon);
     if (valid) consumeInto(line_);
-    std::optional<AnnexState> state;
+    bool output_symbol = false;
     if (valid) {
-      state = parseAnnexItem(
-          {"@lexer_output_symbol", "current_state"}, false, true);
-      valid = !state->failed && !state->interrupted && state->complete();
+      output_symbol = udpSymbolMatches("@lexer_output_symbol");
+      valid = consumeAnnexRule("current_state", line_);
     }
     const bool sequential = valid && at(TK::Colon);
     if (valid) {
       valid = sequential
-                  ? input.completed("seq_input_list") &&
-                        state->completed("current_state")
-                  : at(TK::Semicolon) &&
-                        input.completed("level_input_list") &&
-                        state->completed("@lexer_output_symbol");
+                  ? true
+                  : at(TK::Semicolon) && level_input && output_symbol;
     }
     if (valid && ((sequential && table.udp_combinational) ||
                   (!sequential && table.udp_sequential))) {
@@ -8266,23 +8293,28 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseUdpPortDeclarationRule() -> bool {
-    std::string_view rule;
-    switch (peek().kind) {
-      case TK::OutputKeyword:
-        rule = "udp_output_declaration";
-        break;
-      case TK::InputKeyword:
-        rule = "udp_input_declaration";
-        break;
-      case TK::RegKeyword:
-        rule = "udp_reg_declaration";
-        break;
-      default:
-        return false;
-    }
+    if (!at(TK::OutputKeyword) && !at(TK::InputKeyword) &&
+        !at(TK::RegKeyword))
+      return false;
     const LeafCheckpoint saved = leafCheckpoint();
-    if (!consumeAnnexRule(rule, line_, TK::Semicolon) ||
-        !at(TK::Semicolon)) {
+    bool valid = true;
+    if (at(TK::OutputKeyword)) {
+      consumeInto(line_);
+      const bool registered = at(TK::RegKeyword);
+      if (registered) consumeInto(line_);
+      valid = consumeAnnexRule("port_identifier", line_);
+      if (valid && registered && at(TK::Equals)) {
+        consumeInto(line_);
+        valid = consumeAnnexRule("constant_expression", line_, TK::Semicolon);
+      }
+    } else if (at(TK::InputKeyword)) {
+      consumeInto(line_);
+      valid = parseAnnexCommaListRule("port_identifier");
+    } else {
+      consumeInto(line_);
+      valid = consumeAnnexRule("variable_identifier", line_);
+    }
+    if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A UDP port declaration");
       recoverMalformedItem(saved);
       return false;
