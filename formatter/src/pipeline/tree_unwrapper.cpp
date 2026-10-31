@@ -4733,9 +4733,25 @@ class SVParser {
   // comma-separated assignment children. Keep the alternatives that complete
   // each child, so a list cannot switch production halfway through.
   [[nodiscard]] auto parseContinuousAssignmentListRule(
-      bool net_possible, bool variable_possible) -> bool {
-    do {
-      parseGrammarChildDirectiveLines();
+      bool net_possible, bool variable_possible,
+      bool conditional_members = false) -> bool {
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek()) &&
+             (!conditional_members ||
+              !isConditionalStartDirective(peek()))) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    while (!at(TK::EndOfFile)) {
+      skip_directives();
+      if (conditional_members && isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                   indent_level_))
+          return false;
+        continue;
+      }
       std::vector<std::string_view> children;
       if (net_possible) children.push_back("net_assignment");
       if (variable_possible) children.push_back("variable_assignment");
@@ -4748,11 +4764,46 @@ class SVParser {
       net_possible &= assignment.completed("net_assignment");
       variable_possible &= assignment.completed("variable_assignment");
       if (!net_possible && !variable_possible) return false;
-      parseGrammarChildDirectiveLines();
+      skip_directives();
       if (!at(TK::Comma)) break;
       consumeInto(line_);
-    } while (!at(TK::EndOfFile));
+    }
     return net_possible || variable_possible;
+  }
+
+  auto parseConditionalContinuousAssignmentRule() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"continuous_assign"});
+    bool valid = grammarAllows(TK::AssignKeyword);
+    if (valid) consumeInto(line_);
+    bool net_possible = true;
+    bool variable_possible = true;
+    if (valid && at(TK::OpenParenthesis)) {
+      valid = consumeAnnexRule("drive_strength", line_);
+      if (valid && at(TK::Hash))
+        valid = consumeAnnexRule("delay3", line_);
+      variable_possible = false;
+    } else if (valid && at(TK::Hash)) {
+      const AnnexState delay =
+          parseAnnexItem({"delay3", "delay_control"}, false, true);
+      valid = !delay.failed && !delay.interrupted && delay.complete();
+      net_possible = delay.completed("delay3");
+      variable_possible = delay.completed("delay_control");
+    }
+    if (valid)
+      valid = parseContinuousAssignmentListRule(net_possible,
+                                                 variable_possible, true);
+    if (valid && at(TK::Semicolon) && grammarAllows(TK::Semicolon))
+      consumeInto(line_);
+    else
+      valid = false;
+    const AnnexState result = endGrammar(false);
+    if (!valid || result.failed || result.interrupted || !result.complete()) {
+      recordGrammarFallback("invalid Annex A conditional assignment list");
+      recoverMalformedItem(saved);
+      return;
+    }
+    addLine();
   }
 
   // module_common_item has distinct leading terminals for these three leaf
@@ -4782,23 +4833,13 @@ class SVParser {
       return true;
     }
     if (at(TK::AssignKeyword)) {
-      bool interrupted_header = false;
-      for (size_t i = pos_; i < tokens_.size(); ++i) {
-        const auto& token = tokens_[i];
-        if (isConditionalStartDirective(token) ||
-            token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
-          interrupted_header = true;
-          break;
-        }
-        if (token.kind == TK::Semicolon ||
-            token.kind == TK::EndOfFile) {
-          break;
-        }
-      }
-      if (interrupted_header) {
+      const bool conditional_members = hasConditionalListMember(pos_);
+      if (hasAnnexListInterruption(pos_, conditional_members)) {
         static_cast<void>(parseAnnexItem({"continuous_assign"}, true));
+        return true;
+      }
+      if (conditional_members) {
+        parseConditionalContinuousAssignmentRule();
         return true;
       }
       if (at(TK::Hash, 1)) {
