@@ -4729,15 +4729,6 @@ class SVParser {
   // neither includes net_alias or bind_directive.
   auto parseModuleCommonLeafRule(bool continuous_only = false) -> bool {
     if (at(TK::GenVarKeyword)) {
-      for (size_t i = pos_; i < tokens_.size(); ++i) {
-        if (isConditionalStartDirective(tokens_[i])) {
-          static_cast<void>(parseAnnexItem({"genvar_declaration"}, true));
-          return true;
-        }
-        if (tokens_[i].kind == TK::Semicolon ||
-            tokens_[i].kind == TK::EndOfFile)
-          break;
-      }
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
       if (!consumeAnnexRule("list_of_genvar_identifiers", line_,
