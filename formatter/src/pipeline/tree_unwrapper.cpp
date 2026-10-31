@@ -10429,6 +10429,71 @@ class SVParser {
   // clocking_item ::= default default_skew ';'
   //                | clocking_direction list_of_clocking_decl_assign ';'
   //                | { attribute_instance } assertion_item_declaration.
+  // clocking_skew ::= edge_identifier [ delay_control ] | delay_control.
+  [[nodiscard]] auto parseClockingSkewRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    const bool edge = annexCanStart("edge_identifier", peek().kind);
+    if (edge && !consumeAnnexRule("edge_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    if (at(TK::Hash)) return consumeAnnexRule("delay_control", line_);
+    return edge;
+  }
+
+  // default_skew requires a skew after each direction; clocking_direction
+  // permits it to be absent and also has the single 'inout' alternative.
+  [[nodiscard]] auto parseClockingDirectionRule(bool require_skew) -> bool {
+    parseGrammarChildDirectiveLines();
+    if (at(TK::InOutKeyword) && !require_skew) {
+      consumeInto(line_);
+      return true;
+    }
+    if (!at(TK::InputKeyword) && !at(TK::OutputKeyword)) return false;
+    const bool input = at(TK::InputKeyword);
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (require_skew || at(TK::Hash) ||
+        annexCanStart("edge_identifier", peek().kind)) {
+      if (!parseClockingSkewRule()) return false;
+    }
+    parseGrammarChildDirectiveLines();
+    if (input && at(TK::OutputKeyword)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (require_skew || at(TK::Hash) ||
+          annexCanStart("edge_identifier", peek().kind))
+        return parseClockingSkewRule();
+    }
+    return true;
+  }
+
+  // clocking_decl_assign ::= signal_identifier [ '=' expression ].
+  [[nodiscard]] auto parseClockingDeclAssignRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("signal_identifier", line_, TK::Comma,
+                          [&] { return at(TK::Equals) ||
+                                       at(TK::Semicolon); }))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("expression", line_, TK::Comma,
+                            [&] { return at(TK::Semicolon); }))
+        return false;
+    }
+    return true;
+  }
+
+  [[nodiscard]] auto parseClockingDeclAssignListRule() -> bool {
+    do {
+      if (!parseClockingDeclAssignRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseClockingItemRule() -> bool {
     if (at(TK::PropertyKeyword) || at(TK::SequenceKeyword))
       return parsePackageOrGenerateDeclarationRule();
@@ -10442,15 +10507,18 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool conditional_members =
         direction_item && hasConditionalListMember(pos_);
-    const bool interrupted = direction_item &&
-                             hasAnnexListInterruption(pos_,
-                                                      conditional_members);
+    const bool interrupted =
+        hasAnnexListInterruption(pos_, conditional_members);
     bool valid = true;
     if (default_item) {
       consumeInto(line_);
-      valid = consumeAnnexRule("default_skew", line_, TK::Semicolon);
+      valid = interrupted
+                  ? consumeAnnexRule("default_skew", line_, TK::Semicolon)
+                  : parseClockingDirectionRule(true);
     } else {
-      valid = consumeAnnexRule("clocking_direction", line_);
+      valid = interrupted
+                  ? consumeAnnexRule("clocking_direction", line_)
+                  : parseClockingDirectionRule(false);
       if (valid)
         valid = interrupted
                     ? consumeAnnexRule("list_of_clocking_decl_assign", line_,
@@ -10459,7 +10527,7 @@ class SVParser {
                         ? parseConditionalAnnexCommaListRule(
                               "list_of_clocking_decl_assign",
                               "clocking_decl_assign")
-                        : parseAnnexCommaListRule("clocking_decl_assign");
+                        : parseClockingDeclAssignListRule();
     }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A clocking item");
