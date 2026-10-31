@@ -3324,12 +3324,74 @@ class SVParser {
     return parseParameterAssignmentListRule(true);
   }
 
+  // variable_decl_assignment has ordinary, dynamic-array and class-new
+  // alternatives. The first unsized dimension and the initializer select
+  // their children; a local Annex A candidate resolves qualified class_new.
+  [[nodiscard]] auto parseVariableAssignmentRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("variable_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    const bool first_unsized =
+        at(TK::OpenBracket) && at(TK::CloseBracket, 1);
+    if (first_unsized) {
+      if (!consumeAnnexRule("unsized_dimension", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    bool has_dimensions = first_unsized;
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+      has_dimensions = true;
+      parseGrammarChildDirectiveLines();
+    }
+    if (!at(TK::Equals)) return true;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    const bool dynamic_new =
+        first_unsized && at(TK::NewKeyword) &&
+        at(TK::OpenBracket, 1);
+    bool qualified_new = false;
+    if (!has_dimensions && at(TK::Identifier) &&
+        (at(TK::DoubleColon, 1) || at(TK::Hash, 1))) {
+      AnnexState candidate({"class_new"});
+      bool saw_new = false;
+      for (size_t offset = 0; pos_ + offset < tokens_.size(); ++offset) {
+        if (isCompilerDirective(peek(offset)) ||
+            !candidate.accepts(peek(offset).kind)) break;
+        saw_new |= at(TK::NewKeyword, offset);
+        candidate.advance(peek(offset));
+        if (saw_new && candidate.complete() &&
+            (at(TK::Comma, offset + 1) ||
+             at(TK::Semicolon, offset + 1))) {
+          qualified_new = true;
+          break;
+        }
+      }
+    }
+    const std::string_view initializer =
+        dynamic_new ? "dynamic_array_new"
+        : (!has_dimensions && (at(TK::NewKeyword) || qualified_new))
+            ? "class_new"
+            : "expression";
+    return consumeAnnexRule(initializer, line_, TK::Comma,
+                            [&] { return at(TK::Semicolon); });
+  }
+
+  [[nodiscard]] auto parseVariableAssignmentItemsRule() -> bool {
+    do {
+      if (!parseVariableAssignmentRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseVariableAssignmentListRule(bool conditional_members) -> bool {
     return conditional_members
                ? parseConditionalAnnexCommaListRule(
                      "list_of_variable_decl_assignments",
                      "variable_decl_assignment")
-               : parseAnnexCommaListRule("variable_decl_assignment");
+               : parseVariableAssignmentItemsRule();
   }
 
   // net_decl_assignment ::= net_identifier { unpacked_dimension }
