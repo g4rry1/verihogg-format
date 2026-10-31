@@ -3661,14 +3661,26 @@ class SVParser {
         at(TK::AutomaticKeyword, offset))
       ++offset;
     const TK type_start = peek(offset).kind;
-    if (type_start == TK::Identifier &&
-        at(TK::OpenBracket, offset + 1))
-      return false;
+    size_t after_identifier = offset + 1;
+    if (type_start == TK::Identifier) {
+      while (at(TK::OpenBracket, after_identifier)) {
+        int depth = 0;
+        do {
+          if (at(TK::MacroUsage, after_identifier) ||
+              at(TK::Directive, after_identifier))
+            return false;
+          if (at(TK::OpenBracket, after_identifier)) ++depth;
+          if (at(TK::CloseBracket, after_identifier)) --depth;
+          ++after_identifier;
+        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
+        if (depth != 0) return false;
+      }
+    }
     const bool implicit_type =
         type_start == TK::Identifier &&
-        (at(TK::Semicolon, offset + 1) ||
-         at(TK::Equals, offset + 1) ||
-         at(TK::Comma, offset + 1));
+        (at(TK::Semicolon, after_identifier) ||
+         at(TK::Equals, after_identifier) ||
+         at(TK::Comma, after_identifier));
     if (!annexCanStart("data_type_or_implicit", type_start))
       return false;
     const bool conditional_members = hasConditionalListMember(pos_);
