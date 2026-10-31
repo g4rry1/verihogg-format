@@ -109,9 +109,8 @@ struct Production {
          sets.terminals[static_cast<size_t>(rule)].contains(terminal);
 }
 
-// The importer gives the optional super.new part of the constructor its own
-// helper production. Find it through the parent production so this parser
-// does not duplicate the syntax of that part of Annex A.
+// The optional super.new part has an imported helper production. Retain it
+// when a directive or macro interrupts the constructor call itself.
 [[nodiscard]] auto annexConstructorSuperRule() -> std::string_view {
   static const std::string_view rule = []() -> std::string_view {
     const int constructor = annexRule("class_constructor_declaration");
@@ -3926,8 +3925,7 @@ class SVParser {
   }
 
   // class_constructor_declaration places its optional super.new call after
-  // block_item_declaration and before function_statement_or_null. Parse the
-  // imported helper production for that call, including its argument form.
+  // block_item_declaration and before function_statement_or_null.
   auto parseConstructorSuperRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     if (block_stack_.back().statement_phase) {
@@ -3935,18 +3933,56 @@ class SVParser {
       recoverMalformedItem(saved);
       return;
     }
-    const std::string_view rule = annexConstructorSuperRule();
-    if (rule.empty()) {
-      recordGrammarFallback("constructor super production absent from Annex A");
+    if (hasAnnexHeaderInterruption(pos_, false)) {
+      const std::string_view rule = annexConstructorSuperRule();
+      if (rule.empty()) {
+        recordGrammarFallback("constructor super production absent from Annex A");
+        recoverMalformedItem(saved);
+        return;
+      }
+      beginGrammar({rule});
+      parseGrammarLeaf(true, saved, true);
+      const AnnexState call = endGrammar();
+      if (!call.failed && !call.interrupted && call.complete())
+        block_stack_.back().statement_phase = true;
+      return;
+    }
+    const auto skip_directives = [&] {
+      while (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    consumeInto(line_);  // super
+    skip_directives();
+    bool valid = at(TK::Dot);
+    if (valid) consumeInto(line_);
+    skip_directives();
+    valid = valid && at(TK::NewKeyword);
+    if (valid) consumeInto(line_);
+    skip_directives();
+    if (valid && at(TK::OpenParenthesis)) {
+      consumeInto(line_);
+      skip_directives();
+      if (at(TK::DefaultKeyword)) {
+        consumeInto(line_);
+      } else if (!at(TK::CloseParenthesis)) {
+        valid = consumeAnnexRule("list_of_arguments", line_,
+                                 TK::CloseParenthesis);
+      }
+      skip_directives();
+      valid = valid && at(TK::CloseParenthesis);
+      if (valid) consumeInto(line_);
+    }
+    skip_directives();
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A constructor super call");
       recoverMalformedItem(saved);
       return;
     }
-    beginGrammar({rule});
-    parseGrammarLeaf(true, saved, true);
-    const AnnexState call = endGrammar();
-    if (!call.failed && !call.interrupted && call.complete()) {
-      block_stack_.back().statement_phase = true;
-    }
+    consumeInto(line_);
+    addLine();
+    block_stack_.back().statement_phase = true;
   }
 
   // class_property ::= 'const' { class_item_qualifier } data_type
