@@ -3779,6 +3779,26 @@ class SVParser {
            result.complete();
   }
 
+  // package_import_item ::= package_identifier '::' identifier |
+  //                         package_identifier '::' '*'.
+  [[nodiscard]] auto parsePackageImportItemRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("package_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::DoubleColon)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (at(TK::Star)) {
+      consumeInto(line_);
+      return true;
+    }
+    // Annex A's identifier is a lexical nonterminal; slang has already
+    // produced its complete Identifier token.
+    if (!at(TK::Identifier)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   auto parsePackageImportExportRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
         at(TK::StringLiteral, 1))
@@ -3792,8 +3812,7 @@ class SVParser {
       const LeafCheckpoint saved = leafCheckpoint();
       if (!parseConditionalAnnexDeclarationListRule(
               rule, [&] {
-                return consumeAnnexRule("package_import_item", line_,
-                                        TK::Comma);
+                return parsePackageImportItemRule();
               })) {
         recordGrammarFallback("invalid Annex A conditional package items");
         recoverMalformedLeaf(saved);
@@ -3832,7 +3851,7 @@ class SVParser {
     } else {
       do {
         if (at(TK::Comma)) consumeInto(line_);
-        valid = consumeAnnexRule("package_import_item", line_, TK::Comma);
+        valid = parsePackageImportItemRule();
         skip_directives();
       } while (valid && at(TK::Comma));
     }
