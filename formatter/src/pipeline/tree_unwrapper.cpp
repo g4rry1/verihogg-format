@@ -9872,6 +9872,28 @@ class SVParser {
   // ansi_port_declaration { ',' { attribute_instance }
   // ansi_port_declaration } ] ')'. The caller selects this rule only when
   // its first port keyword excludes the non-ANSI list_of_ports alternative.
+  // The explicit 'interface' header selects the first ANSI alternative.
+  [[nodiscard]] auto parseExplicitInterfaceAnsiPortRule() -> bool {
+    if (!at(TK::InterfaceKeyword) ||
+        !consumeAnnexRule("interface_port_header", line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule("unpacked_dimension", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("constant_expression", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
   [[nodiscard]] auto parseAnsiStructuralPortListRule() -> bool {
     if (!at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
@@ -9896,6 +9918,8 @@ class SVParser {
         if (!at(TK::Dot) &&
             !consumeAnnexRule("port_direction", line_)) return false;
         if (!parseModportSimplePortRule()) return false;
+      } else if (at(TK::InterfaceKeyword)) {
+        if (!parseExplicitInterfaceAnsiPortRule()) return false;
       } else if (!consumeAnnexRule("ansi_port_declaration", line_,
                                    TK::Comma)) {
         return false;
