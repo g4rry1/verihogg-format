@@ -4018,17 +4018,10 @@ class SVParser {
       return false;
     if (!annexCanStart("data_type_or_implicit", type_start))
       return false;
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
-        static_cast<void>(parseAnnexItem({"class_property"}, true));
-        return true;
-      }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-        break;
+    const bool conditional_members = hasConditionalListMember(pos_);
+    if (hasAnnexListInterruption(pos_, conditional_members)) {
+      static_cast<void>(parseAnnexItem({"class_property"}, true));
+      return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     while (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
@@ -4050,8 +4043,7 @@ class SVParser {
     }
     if ((!implicit_type &&
          !consumeAnnexRule("data_type_or_implicit", line_)) ||
-        !consumeAnnexRule("list_of_variable_decl_assignments", line_,
-                          TK::Semicolon) ||
+        !parseVariableAssignmentListRule(conditional_members) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A class property declaration");
       recoverMalformedLeaf(saved);
