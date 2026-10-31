@@ -2538,6 +2538,20 @@ class SVParser {
     return found && conditionals == 0;
   }
 
+  [[nodiscard]] auto hasAnnexListInterruption(
+      size_t start, bool conditional_members) const -> bool {
+    for (size_t i = start; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if ((isConditionalStartDirective(token) && !conditional_members) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token)))
+        return true;
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        break;
+    }
+    return false;
+  }
+
   // Keep the list production live when a branch supplies comma-separated
   // children. Ordinary members still enter their own Annex A child rule;
   // parseAnnexConditional advances the same list state through each branch.
@@ -2993,20 +3007,8 @@ class SVParser {
       return false;
     if (at(TK::TypeKeyword, 1)) {
       const bool conditional_members = hasConditionalListMember(pos_);
-      bool interrupted = false;
-      for (size_t i = pos_; i < tokens_.size(); ++i) {
-        const auto& token = tokens_[i];
-        if ((isConditionalStartDirective(token) &&
-             !conditional_members) ||
-            token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
-          interrupted = true;
-          break;
-        }
-        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-          break;
-      }
+      const bool interrupted =
+          hasAnnexListInterruption(pos_, conditional_members);
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // parameter / localparam
       if (interrupted) {
@@ -3071,16 +3073,9 @@ class SVParser {
       return true;
     }
     const bool conditional_members = hasConditionalListMember(pos_);
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if ((isConditionalStartDirective(token) &&
-           !conditional_members) || token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive && !isCompilerDirective(token))) {
-        parseAnnexSemicolonItem(declaration);
-        return true;
-      }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-        break;
+    if (hasAnnexListInterruption(pos_, conditional_members)) {
+      parseAnnexSemicolonItem(declaration);
+      return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // parameter / localparam
@@ -3131,18 +3126,8 @@ class SVParser {
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
     const bool conditional_members = hasConditionalListMember(pos_);
-    bool interrupted = false;
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if ((isConditionalStartDirective(token) &&
-           !conditional_members) || token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive && !isCompilerDirective(token))) {
-        interrupted = true;
-        break;
-      }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-        break;
-    }
+    const bool interrupted =
+        hasAnnexListInterruption(pos_, conditional_members);
     if (!consumeAnnexRule("data_type_or_implicit", line_) ||
         !(interrupted
               ? consumeAnnexRule("list_of_variable_decl_assignments", line_,
@@ -3169,20 +3154,9 @@ class SVParser {
     if (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1))
       return false;
     const bool conditional_members = hasConditionalListMember(pos_);
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if ((isConditionalStartDirective(token) &&
-           !conditional_members) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
-        static_cast<void>(parseAnnexItem({"data_declaration"}, true));
-        return true;
-      }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
-        break;
-      }
+    if (hasAnnexListInterruption(pos_, conditional_members)) {
+      static_cast<void>(parseAnnexItem({"data_declaration"}, true));
+      return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     if (!consumeAnnexRule("data_type_or_implicit", line_) ||
@@ -3219,18 +3193,9 @@ class SVParser {
     if (!annexCanStart("data_type_or_implicit", type_start))
       return false;
     const bool conditional_members = hasConditionalListMember(pos_);
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if ((isConditionalStartDirective(token) &&
-           !conditional_members) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
-        static_cast<void>(parseAnnexItem({"data_declaration"}, true));
-        return true;
-      }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-        break;
+    if (hasAnnexListInterruption(pos_, conditional_members)) {
+      static_cast<void>(parseAnnexItem({"data_declaration"}, true));
+      return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     if (at(TK::ConstKeyword)) consumeInto(line_);
@@ -4450,12 +4415,17 @@ class SVParser {
         (at(TK::Identifier, 1) &&
          (at(TK::Identifier, 2) || at(TK::DoubleColon, 2)))) {
       const LeafCheckpoint saved = leafCheckpoint();
+      const bool conditional_members = hasConditionalListMember(pos_);
+      const bool interrupted =
+          hasAnnexListInterruption(pos_, conditional_members);
       consumeInto(line_);  // rand
       bool valid = implicit_identifier ||
                    consumeAnnexRule("data_type_or_implicit", line_);
       if (valid)
-        valid = consumeAnnexRule("list_of_variable_decl_assignments", line_,
-                                 TK::Semicolon);
+        valid = interrupted
+                    ? consumeAnnexRule("list_of_variable_decl_assignments",
+                                       line_, TK::Semicolon)
+                    : parseVariableAssignmentListRule(conditional_members);
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A rand data declaration");
         recoverMalformedLeaf(saved);
@@ -4741,9 +4711,17 @@ class SVParser {
   auto parseModuleCommonLeafRule(bool continuous_only = false) -> bool {
     if (at(TK::GenVarKeyword)) {
       const LeafCheckpoint saved = leafCheckpoint();
+      const bool conditional_members = hasConditionalListMember(pos_);
+      const bool interrupted =
+          hasAnnexListInterruption(pos_, conditional_members);
       consumeInto(line_);
-      if (!consumeAnnexRule("list_of_genvar_identifiers", line_,
-                            TK::Semicolon) ||
+      if (!(interrupted
+                ? consumeAnnexRule("list_of_genvar_identifiers", line_,
+                                   TK::Semicolon)
+                : conditional_members
+                    ? parseConditionalAnnexCommaListRule(
+                          "list_of_genvar_identifiers", "genvar_identifier")
+                    : parseAnnexCommaListRule("genvar_identifier")) ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A genvar declaration");
         recoverMalformedItem(saved);
