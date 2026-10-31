@@ -2437,7 +2437,9 @@ class SVParser {
         parseGenerateConstructRule()) {
       return true;
     }
-    if (parseStructuralInstantiationRule() || parseUserDataDeclarationRule())
+    if (parseGateInstantiationRule() || parseUdpInstantiationRule() ||
+        parseStructuralInstantiationRule() ||
+        parseUserDataDeclarationRule())
       return true;
     if (parseClockingDeclarationRule()) return true;
     return parseProceduralConstructRule(true);
@@ -4539,7 +4541,9 @@ class SVParser {
     }
     if (parseProceduralConstructRule(true)) return true;
     if (parseClockingDeclarationRule()) return true;
-    if (parseStructuralInstantiationRule() || parseUserDataDeclarationRule())
+    if (parseGateInstantiationRule() || parseUdpInstantiationRule() ||
+        parseStructuralInstantiationRule() ||
+        parseUserDataDeclarationRule())
       return true;
     return parseAssertionItemRule() ||
            parseModuleCommonLeafRule() ||
@@ -6485,6 +6489,151 @@ class SVParser {
         !parseHierarchicalInstanceRule(true, checker_only, checker_viable) ||
         !checker_viable || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A scoped checker instantiation");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  // gate_instantiation has eight alternatives selected by distinct Annex A
+  // gate type terminals. Each instance is a child of the selected production.
+  [[nodiscard]] auto parseGateInstantiationRule() -> bool {
+    std::string_view type;
+    std::string_view instance;
+    std::string_view delay;
+    std::string_view strength;
+    if (annexCanStart("cmos_switchtype", peek().kind)) {
+      type = "cmos_switchtype";
+      instance = "cmos_switch_instance";
+      delay = "delay3";
+    } else if (annexCanStart("mos_switchtype", peek().kind)) {
+      type = "mos_switchtype";
+      instance = "mos_switch_instance";
+      delay = "delay3";
+    } else if (annexCanStart("enable_gatetype", peek().kind)) {
+      type = "enable_gatetype";
+      instance = "enable_gate_instance";
+      delay = "delay3";
+      strength = "drive_strength";
+    } else if (annexCanStart("n_input_gatetype", peek().kind)) {
+      type = "n_input_gatetype";
+      instance = "n_input_gate_instance";
+      delay = "delay2";
+      strength = "drive_strength";
+    } else if (annexCanStart("n_output_gatetype", peek().kind)) {
+      type = "n_output_gatetype";
+      instance = "n_output_gate_instance";
+      delay = "delay2";
+      strength = "drive_strength";
+    } else if (annexCanStart("pass_en_switchtype", peek().kind)) {
+      type = "pass_en_switchtype";
+      instance = "pass_enable_switch_instance";
+      delay = "delay2";
+    } else if (annexCanStart("pass_switchtype", peek().kind)) {
+      type = "pass_switchtype";
+      instance = "pass_switch_instance";
+    } else if (at(TK::PullDownKeyword) || at(TK::PullUpKeyword)) {
+      const bool down = at(TK::PullDownKeyword);
+      type = down ? "pulldown" : "pullup";
+      instance = "pull_gate_instance";
+      strength = down ? "pulldown_strength" : "pullup_strength";
+    } else {
+      return false;
+    }
+    if (hasAnnexListInterruption(pos_, false)) {
+      static_cast<void>(parseAnnexItem({"gate_instantiation"}, true));
+      return true;
+    }
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = true;
+    if (type == "pulldown" || type == "pullup")
+      consumeInto(line_);
+    else
+      valid = consumeAnnexRule(type, line_);
+    const bool has_strength =
+        valid && !strength.empty() && at(TK::OpenParenthesis) &&
+        (annexCanStart("strength0", peek(1).kind) ||
+         annexCanStart("strength1", peek(1).kind) ||
+         at(TK::HighZ0Keyword, 1) || at(TK::HighZ1Keyword, 1));
+    if (has_strength) valid = consumeAnnexRule(strength, line_);
+    if (valid && !delay.empty() && at(TK::Hash))
+      valid = consumeAnnexRule(delay, line_);
+    do {
+      if (!valid) break;
+      parseGrammarChildDirectiveLines();
+      valid = consumeAnnexRule(instance, line_, TK::Comma);
+      parseGrammarChildDirectiveLines();
+      if (!valid || !at(TK::Comma)) break;
+      consumeInto(line_);
+      addLine();
+    } while (true);
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A gate instantiation");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
+  // The immediate '(' of an unnamed UDP instance or drive_strength, and a
+  // non-parenthesized delay2, distinguish these forms from module instances.
+  [[nodiscard]] auto parseUdpInstantiationRule() -> bool {
+    if (!at(TK::Identifier) ||
+        !(at(TK::OpenParenthesis, 1) ||
+          (at(TK::Hash, 1) && !at(TK::OpenParenthesis, 2))))
+      return false;
+    if (hasAnnexListInterruption(pos_, false)) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = consumeAnnexRule("udp_identifier", line_);
+    const bool strength = valid && at(TK::OpenParenthesis) &&
+                          (annexCanStart("strength0", peek(1).kind) ||
+                           annexCanStart("strength1", peek(1).kind) ||
+                           at(TK::HighZ0Keyword, 1) ||
+                           at(TK::HighZ1Keyword, 1));
+    if (valid && strength) valid = consumeAnnexRule("drive_strength", line_);
+    if (valid && at(TK::Hash))
+      valid = consumeAnnexRule("delay2", line_);
+    do {
+      if (!valid) break;
+      parseGrammarChildDirectiveLines();
+      if (at(TK::Identifier))
+        valid = consumeAnnexRule("name_of_instance", line_);
+      if (!valid || !at(TK::OpenParenthesis)) {
+        valid = false;
+        break;
+      }
+      consumeInto(line_);
+      addLine();
+      valid = consumeAnnexRule("output_terminal", line_, TK::Comma);
+      if (!valid || !at(TK::Comma)) {
+        valid = false;
+        break;
+      }
+      consumeInto(line_);
+      do {
+        parseGrammarChildDirectiveLines();
+        valid = consumeAnnexRule("input_terminal", line_, TK::Comma,
+                                 [&] { return at(TK::CloseParenthesis); });
+        if (!valid || !at(TK::Comma)) break;
+        consumeInto(line_);
+      } while (true);
+      if (!valid || !at(TK::CloseParenthesis)) {
+        valid = false;
+        break;
+      }
+      addLine();
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+      addLine();
+    } while (true);
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A UDP instantiation");
       recoverMalformedItem(saved);
       return true;
     }
