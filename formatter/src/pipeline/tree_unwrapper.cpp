@@ -7926,7 +7926,6 @@ class SVParser {
 
   auto parseUdpTableEntryRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
-    int separators = 0;
     bool interrupted = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
@@ -7937,14 +7936,13 @@ class SVParser {
         interrupted = true;
         break;
       }
-      if (token.kind == TK::Colon) ++separators;
       if (token.kind == TK::Semicolon ||
           token.kind == TK::EndTableKeyword ||
           token.kind == TK::EndPrimitiveKeyword ||
           token.kind == TK::EndOfFile)
         break;
     }
-    if (interrupted || (separators != 1 && separators != 2)) {
+    if (interrupted) {
       const AnnexState entry = parseAnnexItem(grammarRoots());
       auto& table = block_stack_.back();
       table.udp_combinational |= entry.completed("combinational_entry");
@@ -7953,23 +7951,31 @@ class SVParser {
       return;
     }
     auto& table = block_stack_.back();
-    const bool sequential = separators == 2;
-    if ((sequential && table.udp_combinational) ||
-        (!sequential && table.udp_sequential)) {
+    const AnnexState input = parseAnnexItem(
+        {"level_input_list", "seq_input_list"}, false, true);
+    bool valid = !input.failed && !input.interrupted &&
+                 input.complete() && at(TK::Colon);
+    if (valid) consumeInto(line_);
+    std::optional<AnnexState> state;
+    if (valid) {
+      state = parseAnnexItem(
+          {"@lexer_output_symbol", "current_state"}, false, true);
+      valid = !state->failed && !state->interrupted && state->complete();
+    }
+    const bool sequential = valid && at(TK::Colon);
+    if (valid) {
+      valid = sequential
+                  ? input.completed("seq_input_list") &&
+                        state->completed("current_state")
+                  : at(TK::Semicolon) &&
+                        input.completed("level_input_list") &&
+                        state->completed("@lexer_output_symbol");
+    }
+    if (valid && ((sequential && table.udp_combinational) ||
+                  (!sequential && table.udp_sequential))) {
       recordGrammarFallback("mixed Annex A UDP table entry forms");
       recoverMalformedLeaf(saved);
       return;
-    }
-    bool valid = consumeAnnexRule(
-        sequential ? "seq_input_list" : "level_input_list", line_,
-        TK::Colon);
-    if (valid && at(TK::Colon)) {
-      consumeInto(line_);
-      valid = consumeAnnexRule(
-          sequential ? "current_state" : "@lexer_output_symbol", line_,
-          sequential ? TK::Colon : TK::Semicolon);
-    } else {
-      valid = false;
     }
     if (valid && sequential && at(TK::Colon)) {
       consumeInto(line_);
