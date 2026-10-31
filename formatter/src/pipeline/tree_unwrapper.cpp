@@ -2963,16 +2963,10 @@ class SVParser {
         (at(TK::Identifier, 1) &&
          (at(TK::Identifier, 2) || at(TK::DoubleColon, 2) ||
           at(TK::Hash, 2))) ||
-        at(TK::VirtualKeyword, 1) ||
-        at(TK::BitKeyword, 1) || at(TK::ByteKeyword, 1) ||
-        at(TK::CHandleKeyword, 1) || at(TK::EnumKeyword, 1) ||
-        at(TK::EventKeyword, 1) || at(TK::IntKeyword, 1) ||
-        at(TK::IntegerKeyword, 1) || at(TK::LogicKeyword, 1) ||
-        at(TK::LongIntKeyword, 1) || at(TK::RealKeyword, 1) ||
-        at(TK::RealTimeKeyword, 1) || at(TK::RegKeyword, 1) ||
-        at(TK::ShortIntKeyword, 1) || at(TK::ShortRealKeyword, 1) ||
-        at(TK::StringKeyword, 1) || at(TK::StructKeyword, 1) ||
-        at(TK::TimeKeyword, 1) || at(TK::UnionKeyword, 1);
+        (annexCanStart("data_type", peek(1).kind) &&
+         !at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1) &&
+         !at(TK::SignedKeyword, 1) && !at(TK::UnsignedKeyword, 1) &&
+         !at(TK::OpenBracket, 1));
     if (explicit_type) {
       for (size_t i = pos_; i < tokens_.size(); ++i) {
         const auto& token = tokens_[i];
@@ -4613,34 +4607,6 @@ class SVParser {
         (at(TK::RefKeyword) || at(TK::ConstKeyword)))
       ++offset;
     if (at(TK::VarKeyword, offset)) ++offset;
-    const auto explicit_type = [](TK kind) {
-      switch (kind) {
-        case TK::BitKeyword:
-        case TK::ByteKeyword:
-        case TK::CHandleKeyword:
-        case TK::EnumKeyword:
-        case TK::EventKeyword:
-        case TK::IntKeyword:
-        case TK::IntegerKeyword:
-        case TK::LogicKeyword:
-        case TK::LongIntKeyword:
-        case TK::RealKeyword:
-        case TK::RealTimeKeyword:
-        case TK::RegKeyword:
-        case TK::ShortIntKeyword:
-        case TK::ShortRealKeyword:
-        case TK::StringKeyword:
-        case TK::StructKeyword:
-        case TK::TimeKeyword:
-        case TK::UnionKeyword:
-        case TK::SignedKeyword:
-        case TK::UnsignedKeyword:
-        case TK::OpenBracket:
-          return true;
-        default:
-          return false;
-      }
-    };
     const TK type_start = peek(offset).kind;
     bool dimensioned_implicit = false;
     if (type_start == TK::Identifier &&
@@ -4668,8 +4634,7 @@ class SVParser {
          (at(TK::Semicolon, offset + 1) ||
           at(TK::Equals, offset + 1) ||
           at(TK::Comma, offset + 1)));
-    if (!explicit_type(type_start) && type_start != TK::Identifier &&
-        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword) {
+    if (!annexCanStart("data_type_or_implicit", type_start)) {
       static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
       return true;
     }
@@ -7064,34 +7029,11 @@ class SVParser {
         closeKw == TK::EndPropertyKeyword ? "property_spec" : "sequence_expr";
     const std::vector<std::string_view> body_rules = {
         "assertion_variable_declaration", expression_rule};
-    const auto explicit_type = [](TK kind) {
-      switch (kind) {
-        case TK::BitKeyword:
-        case TK::ByteKeyword:
-        case TK::CHandleKeyword:
-        case TK::EnumKeyword:
-        case TK::EventKeyword:
-        case TK::IntKeyword:
-        case TK::IntegerKeyword:
-        case TK::LogicKeyword:
-        case TK::LongIntKeyword:
-        case TK::RealKeyword:
-        case TK::RealTimeKeyword:
-        case TK::RegKeyword:
-        case TK::ShortIntKeyword:
-        case TK::ShortRealKeyword:
-        case TK::StringKeyword:
-        case TK::StructKeyword:
-        case TK::TimeKeyword:
-        case TK::UnionKeyword:
-          return true;
-        default:
-          return false;
-      }
-    };
     if (complete) {
       ++indent_level_;
-      while (at(TK::VarKeyword) || explicit_type(peek().kind) ||
+      while (at(TK::VarKeyword) ||
+             (annexCanStart("data_type", peek().kind) &&
+              !at(TK::Identifier) && !at(TK::UnitSystemName)) ||
              (at(TK::Identifier) && at(TK::Identifier, 1)) ||
              (at(TK::Identifier) && at(TK::DoubleColon, 1) &&
               at(TK::Identifier, 2) && at(TK::Identifier, 3))) {
