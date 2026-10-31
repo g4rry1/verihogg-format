@@ -4634,7 +4634,17 @@ class SVParser {
     return true;
   }
 
-  auto parseTfVariableIdentifierListRule() -> bool {
+  auto parseTfVariableIdentifierListRule(bool conditional_members) -> bool {
+    if (!conditional_members) {
+      do {
+        parseGrammarChildDirectiveLines();
+        if (!parseTfVariableIdentifierRule()) return false;
+        parseGrammarChildDirectiveLines();
+        if (!at(TK::Comma)) break;
+        consumeInto(line_);
+      } while (!at(TK::EndOfFile));
+      return true;
+    }
     beginGrammar({"list_of_tf_variable_identifiers"});
     bool valid = true;
     while (!at(TK::EndOfFile) &&
@@ -4716,7 +4726,7 @@ class SVParser {
     if (valid && !implicit_type)
       valid = consumeAnnexRule("data_type_or_implicit", line_);
     if (valid)
-      valid = parseTfVariableIdentifierListRule();
+      valid = parseTfVariableIdentifierListRule(conditional_members);
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A task or function port");
       recoverMalformedLeaf(saved);
