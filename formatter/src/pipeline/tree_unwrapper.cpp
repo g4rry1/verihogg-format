@@ -8575,6 +8575,7 @@ class SVParser {
           at(TK::InputKeyword, 1) || at(TK::OutputKeyword, 1) ||
           at(TK::InOutKeyword, 1) || at(TK::RefKeyword, 1) ||
           at(TK::InterfaceKeyword, 1) ||
+          (at(TK::OpenParenthesis, 1) && at(TK::Star, 2)) ||
           (annexCanStart("data_type", peek(1).kind) &&
            !at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1));
       if (direct_ansi) {
