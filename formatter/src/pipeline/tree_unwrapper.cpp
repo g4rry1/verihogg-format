@@ -2557,6 +2557,25 @@ class SVParser {
     return false;
   }
 
+  [[nodiscard]] auto hasAnnexHeaderInterruption(
+      size_t start, bool conditional_ports) const -> bool {
+    ListDepth depth;
+    for (size_t i = start; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if ((isConditionalStartDirective(token) &&
+           !(conditional_ports && depth.parens == 1 &&
+             depth.brackets == 0 && depth.braces == 0)) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token)))
+        return true;
+      if ((token.kind == TK::Semicolon && depth.topLevel()) ||
+          token.kind == TK::EndOfFile)
+        break;
+      advanceListDepth(depth, token.kind);
+    }
+    return false;
+  }
+
   // Keep the list production live when a branch supplies comma-separated
   // children. Ordinary members still enter their own Annex A child rule;
   // parseAnnexConditional advances the same list state through each branch.
@@ -3726,19 +3745,14 @@ class SVParser {
   // [ '(' [ checker_port_list ] ')' ] ';' { checker_or_generate_item }
   // endchecker [ ':' checker_identifier ].
   auto parseCheckerBlockRule() -> void {
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage) {
-        parseAnnexDelimitedBlock(TK::EndCheckerKeyword,
-                                 "checker_declaration",
-                                 "checker_or_generate_item");
-        return;
-      }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
-        break;
-      }
+    const bool conditional_ports =
+        at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
+        hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
+    if (hasAnnexHeaderInterruption(pos_, conditional_ports)) {
+      parseAnnexDelimitedBlock(TK::EndCheckerKeyword,
+                               "checker_declaration",
+                               "checker_or_generate_item");
+      return;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // checker
@@ -3758,13 +3772,12 @@ class SVParser {
     if (at(TK::OpenParenthesis)) {
       consumeInto(line_);
       bool valid = true;
-      if (!at(TK::CloseParenthesis)) {
-        do {
-          valid = consumeAnnexRule("checker_port_item", line_, TK::Comma);
-          if (!valid || !at(TK::Comma)) break;
-          consumeInto(line_);
-        } while (!at(TK::EndOfFile));
-      }
+      if (!at(TK::CloseParenthesis))
+        valid = conditional_ports
+                    ? parseConditionalAnnexCommaListRule(
+                          "checker_port_list", "checker_port_item",
+                          TK::CloseParenthesis)
+                    : parseAnnexCommaListRule("checker_port_item");
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A checker port list");
         recoverMalformedItem(saved);
@@ -3784,19 +3797,14 @@ class SVParser {
   }
 
   auto parseCovergroupBlockRule() -> void {
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage) {
-        parseAnnexDelimitedBlock(TK::EndGroupKeyword,
-                                 "covergroup_declaration",
-                                 "coverage_spec_or_option");
-        return;
-      }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
-        break;
-      }
+    const bool conditional_ports =
+        at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
+        hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
+    if (hasAnnexHeaderInterruption(pos_, conditional_ports)) {
+      parseAnnexDelimitedBlock(TK::EndGroupKeyword,
+                               "covergroup_declaration",
+                               "coverage_spec_or_option");
+      return;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // covergroup
@@ -3818,13 +3826,12 @@ class SVParser {
     if (!extends && at(TK::OpenParenthesis)) {
       consumeInto(line_);
       bool valid = true;
-      if (!at(TK::CloseParenthesis)) {
-        do {
-          valid = consumeAnnexRule("tf_port_item", line_, TK::Comma);
-          if (!valid || !at(TK::Comma)) break;
-          consumeInto(line_);
-        } while (!at(TK::EndOfFile));
-      }
+      if (!at(TK::CloseParenthesis))
+        valid = conditional_ports
+                    ? parseConditionalAnnexCommaListRule(
+                          "tf_port_list", "tf_port_item",
+                          TK::CloseParenthesis)
+                    : parseAnnexCommaListRule("tf_port_item");
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A covergroup port list");
         recoverMalformedItem(saved);
@@ -7167,24 +7174,8 @@ class SVParser {
     const bool conditional_ports =
         at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
         hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
-    ListDepth header_depth;
-    bool direct_header = true;
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if ((isConditionalStartDirective(token) &&
-           !(conditional_ports && header_depth.parens == 1 &&
-             header_depth.brackets == 0 && header_depth.braces == 0)) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive && !isCompilerDirective(token))) {
-        direct_header = false;
-        break;
-      }
-      if ((token.kind == TK::Semicolon && header_depth.topLevel()) ||
-          token.kind == TK::EndOfFile) {
-        break;
-      }
-      advanceListDepth(header_depth, token.kind);
-    }
+    const bool direct_header =
+        !hasAnnexHeaderInterruption(pos_, conditional_ports);
     bool complete;
     if (direct_header) {
       complete = parseAssertionDeclarationHeaderRule(closeKw,
@@ -9613,22 +9604,9 @@ class SVParser {
     const bool conditional_ports =
         at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
         hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
-    ListDepth depth;
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if ((isConditionalStartDirective(token) &&
-           !(conditional_ports && depth.parens == 1 &&
-             depth.brackets == 0 && depth.braces == 0)) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
-        static_cast<void>(parseAnnexItem({"let_declaration"}, true));
-        return true;
-      }
-      if ((token.kind == TK::Semicolon && depth.topLevel()) ||
-          token.kind == TK::EndOfFile)
-        break;
-      advanceListDepth(depth, token.kind);
+    if (hasAnnexHeaderInterruption(pos_, conditional_ports)) {
+      static_cast<void>(parseAnnexItem({"let_declaration"}, true));
+      return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     const auto skip_directives = [&] {
