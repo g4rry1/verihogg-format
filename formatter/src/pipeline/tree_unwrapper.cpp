@@ -3030,7 +3030,6 @@ class SVParser {
       }
     }
     const LeafCheckpoint saved = leafCheckpoint();
-    beginGrammar({"timeunits_declaration"});
     const TK first = peek().kind;
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek()) &&
@@ -3039,7 +3038,8 @@ class SVParser {
         parseDirectiveLine();
       }
     };
-    const auto parse_clause = [&](TK keyword) -> bool {
+    const auto parse_clause = [&](TK keyword, bool& slash) -> bool {
+      if (!at(keyword)) return false;
       consumeInto(line_);
       skip_directives();
       // slang has already combined Annex A time_literal into TimeLiteral.
@@ -3047,6 +3047,7 @@ class SVParser {
       consumeInto(line_);
       skip_directives();
       if (keyword == TK::TimeUnitKeyword && at(TK::Slash)) {
+        slash = true;
         consumeInto(line_);
         skip_directives();
         if (!at(TK::TimeLiteral)) return false;
@@ -3058,16 +3059,19 @@ class SVParser {
       addLine();
       return true;
     };
-    bool valid = grammarAllows(first) && parse_clause(first);
+    bool first_slash = false;
+    bool valid = parse_clause(first, first_slash);
     if (valid) {
       skip_directives();
-      if ((at(TK::TimeUnitKeyword) || at(TK::TimePrecisionKeyword)) &&
-          grammarAllows(peek().kind))
-        valid = parse_clause(peek().kind);
+      const TK second = first == TK::TimeUnitKeyword
+                            ? TK::TimePrecisionKeyword
+                            : TK::TimeUnitKeyword;
+      if (!first_slash && at(second)) {
+        bool second_slash = false;
+        valid = parse_clause(second, second_slash) && !second_slash;
+      }
     }
-    const AnnexState timeunits = endGrammar(false);
-    if (!valid || timeunits.failed || timeunits.interrupted ||
-        !timeunits.complete()) {
+    if (!valid) {
       recordGrammarFallback("invalid Annex A timeunits declaration");
       recoverMalformedItem(saved);
     }
@@ -4847,6 +4851,20 @@ class SVParser {
     return true;
   }
 
+  // data_declaration ::= qualified variable declaration |
+  // type_declaration | package_import_declaration | nettype_declaration.
+  // These children emit their own completed line after class qualifiers.
+  auto parseClassPropertyDataChildRule() -> bool {
+    if (at(TK::TypedefKeyword)) return parseTypeDeclarationRule();
+    if (at(TK::NetTypeKeyword)) return parseNettypeDeclarationRule();
+    if (at(TK::ImportKeyword)) return parsePackageImportExportRule();
+    if (parseQualifiedDataDeclarationRule() ||
+        parseExplicitDataDeclarationRule() ||
+        parseUserDataDeclarationRule())
+      return true;
+    return false;
+  }
+
   // class_property ::= { property_qualifier } data_declaration. Once a
   // distinct declaration keyword follows the qualifiers, enter that child
   // rule directly instead of recognizing the entire class_property as a leaf.
@@ -4872,8 +4890,7 @@ class SVParser {
       }
       parseGrammarChildDirectiveLines();
     }
-    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parsePackageImportExportRule())
+    if (parseClassPropertyDataChildRule())
       return true;
     recordGrammarFallback("invalid Annex A qualified class declaration");
     recoverMalformedItem(saved);
@@ -4901,15 +4918,10 @@ class SVParser {
     } while (valid && (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
                        at(TK::StaticKeyword) ||
                        at(TK::ProtectedKeyword) || at(TK::LocalKeyword)));
-    if (valid)
-      valid = consumeAnnexRule("data_declaration", line_);
-    if (!valid || line_.tokens.empty() ||
-        line_.tokens.back().kind != TK::Semicolon) {
-      recordGrammarFallback("invalid Annex A qualified class property");
-      recoverMalformedLeaf(saved);
-      return true;
-    }
-    addLine();
+    if (valid && parseClassPropertyDataChildRule()) return true;
+    recordGrammarFallback(valid ? "unmatched Annex A class data declaration"
+                                : "invalid Annex A class property qualifier");
+    recoverMalformedLeaf(saved);
     return true;
   }
 
