@@ -7159,11 +7159,30 @@ class SVParser {
   }
 
   // module_item, interface_item, and program_item append ';' to the shared
-  // port_declaration production. The declaration child itself chooses among
-  // input, output, inout, and ref forms while tokens enter the output line.
+  // port_declaration production. Its leading keyword selects the Annex A
+  // declaration child while tokens enter the output line.
   auto parsePortDeclarationRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
-    if (!consumeAnnexRule("port_declaration", line_, TK::Semicolon) ||
+    std::string_view declaration;
+    switch (peek().kind) {
+      case TK::InputKeyword:
+        declaration = "input_declaration";
+        break;
+      case TK::OutputKeyword:
+        declaration = "output_declaration";
+        break;
+      case TK::InOutKeyword:
+        declaration = "inout_declaration";
+        break;
+      case TK::RefKeyword:
+        declaration = "ref_declaration";
+        break;
+      default:
+        recordGrammarFallback("invalid Annex A port declaration start");
+        recoverMalformedLeaf(saved);
+        return;
+    }
+    if (!consumeAnnexRule(declaration, line_, TK::Semicolon) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A port declaration");
       recoverMalformedLeaf(saved);
