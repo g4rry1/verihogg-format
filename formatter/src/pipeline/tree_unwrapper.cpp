@@ -6497,6 +6497,61 @@ class SVParser {
     return true;
   }
 
+  // A.3.1 fixes the terminal order for these primitive instances. The
+  // n_output_gate_instance list has a shared comma prefix between its final
+  // output and input, so that one keeps its local Annex A child state.
+  [[nodiscard]] auto parseGateInstanceRule(std::string_view instance) -> bool {
+    if (instance == "n_output_gate_instance")
+      return consumeAnnexRule(instance, line_, TK::Comma);
+    if (at(TK::Identifier) &&
+        !consumeAnnexRule("name_of_instance", line_))
+      return false;
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    const auto terminal = [&](std::string_view rule) -> bool {
+      parseGrammarChildDirectiveLines();
+      return consumeAnnexRule(rule, line_, TK::Comma,
+                              [&] { return at(TK::CloseParenthesis); });
+    };
+    const auto separator = [&]() -> bool {
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) return false;
+      consumeInto(line_);
+      return true;
+    };
+    const bool pass = instance == "pass_switch_instance" ||
+                      instance == "pass_enable_switch_instance";
+    bool valid = terminal(pass ? "inout_terminal" : "output_terminal");
+    if (instance == "pull_gate_instance") {
+      // pull_gate_instance ::= [ name_of_instance ] '(' output_terminal ')'.
+    } else if (valid && separator()) {
+      valid = terminal(pass ? "inout_terminal" : "input_terminal");
+    } else {
+      valid = false;
+    }
+    if (valid && instance == "n_input_gate_instance") {
+      while (at(TK::Comma)) {
+        consumeInto(line_);
+        valid = terminal("input_terminal");
+        if (!valid) break;
+      }
+    } else if (valid && instance != "pass_switch_instance" &&
+               instance != "pull_gate_instance") {
+      if (!separator()) return false;
+      const std::string_view third =
+          instance == "cmos_switch_instance" ? "ncontrol_terminal"
+                                               : "enable_terminal";
+      valid = terminal(third);
+      if (valid && instance == "cmos_switch_instance") {
+        valid = separator() && terminal("pcontrol_terminal");
+      }
+    }
+    parseGrammarChildDirectiveLines();
+    if (!valid || !at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   // gate_instantiation has eight alternatives selected by distinct Annex A
   // gate type terminals. Each instance is a child of the selected production.
   [[nodiscard]] auto parseGateInstantiationRule() -> bool {
@@ -6563,7 +6618,7 @@ class SVParser {
     do {
       if (!valid) break;
       parseGrammarChildDirectiveLines();
-      valid = consumeAnnexRule(instance, line_, TK::Comma);
+      valid = parseGateInstanceRule(instance);
       parseGrammarChildDirectiveLines();
       if (!valid || !at(TK::Comma)) break;
       consumeInto(line_);
