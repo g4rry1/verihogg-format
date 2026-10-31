@@ -3110,40 +3110,15 @@ class SVParser {
   }
 
   auto parseExplicitDataDeclarationRule() -> bool {
-    switch (peek().kind) {
-      case TK::BitKeyword:
-      case TK::ByteKeyword:
-      case TK::CHandleKeyword:
-      case TK::EnumKeyword:
-      case TK::EventKeyword:
-      case TK::IntKeyword:
-      case TK::IntegerKeyword:
-      case TK::LogicKeyword:
-      case TK::LongIntKeyword:
-      case TK::RealKeyword:
-      case TK::RealTimeKeyword:
-      case TK::RegKeyword:
-      case TK::ShortIntKeyword:
-      case TK::ShortRealKeyword:
-      case TK::StringKeyword:
-      case TK::StructKeyword:
-      case TK::TimeKeyword:
-      case TK::UnionKeyword:
-      case TK::SignedKeyword:
-      case TK::UnsignedKeyword:
-      case TK::OpenBracket:
-        break;
-      case TK::VirtualKeyword:
-        if (at(TK::ClassKeyword, 1) || at(TK::FunctionKeyword, 1) ||
-            at(TK::TaskKeyword, 1))
-          return false;
-        break;
-      case TK::TypeKeyword:
-        if (!at(TK::OpenParenthesis, 1)) return false;
-        break;
-      default:
-        return false;
-    }
+    if (!annexCanStart("data_type_or_implicit", peek().kind) ||
+        at(TK::Identifier) || at(TK::UnitSystemName))
+      return false;
+    if (at(TK::VirtualKeyword) &&
+        (at(TK::ClassKeyword, 1) || at(TK::FunctionKeyword, 1) ||
+         at(TK::TaskKeyword, 1)))
+      return false;
+    if (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1))
+      return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token) ||
