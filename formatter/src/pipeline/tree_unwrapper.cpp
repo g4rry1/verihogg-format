@@ -9328,9 +9328,10 @@ class SVParser {
     if (valid) {
       do {
         const size_t before = pos_;
-        const AnnexState rule = parseAnnexItem({"rs_rule"}, false, true);
-        valid = pos_ > before && !rule.failed && !rule.interrupted &&
-                rule.complete();
+        const bool child = parseRsRule();
+        valid = child && pos_ > before &&
+                !grammar_scopes_.back().failed &&
+                !grammar_scopes_.back().interrupted;
         if (!valid || !at(TK::Or)) break;
         consumeInto(line_);
         addLine();
