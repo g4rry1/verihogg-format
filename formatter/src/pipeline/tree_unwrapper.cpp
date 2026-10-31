@@ -9741,8 +9741,7 @@ class SVParser {
           !consumeAnnexRule("data_type_or_implicit", line_))
         return false;
     } else {
-      if (at(TK::UnitSystemName) ||
-          (at(TK::Identifier) &&
+      if ((at(TK::Identifier) &&
            !startsParameterPortDeclaration()) ||
           !annexCanStart("data_type", peek().kind) ||
           !consumeAnnexRule("data_type", line_))
@@ -9781,8 +9780,7 @@ class SVParser {
               !at(TK::OpenParenthesis, 2)));
         const bool data_declaration = declaration &&
             ((at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) ||
-             (!at(TK::UnitSystemName) &&
-              annexCanStart("data_type", peek().kind)));
+             annexCanStart("data_type", peek().kind));
         const bool valid =
             type_declaration
                 ? parseTypeParameterPortDeclarationRule()
