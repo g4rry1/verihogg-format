@@ -2755,6 +2755,7 @@ class SVParser {
       }
     }
     const LeafCheckpoint saved = leafCheckpoint();
+    beginGrammar({"timeunits_declaration"});
     const TK first = peek().kind;
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek()) &&
@@ -2782,15 +2783,16 @@ class SVParser {
       addLine();
       return true;
     };
-    bool valid = parse_clause(first);
+    bool valid = grammarAllows(first) && parse_clause(first);
     if (valid) {
       skip_directives();
-      const TK second = first == TK::TimeUnitKeyword
-                            ? TK::TimePrecisionKeyword
-                            : TK::TimeUnitKeyword;
-      if (at(second)) valid = parse_clause(second);
+      if ((at(TK::TimeUnitKeyword) || at(TK::TimePrecisionKeyword)) &&
+          grammarAllows(peek().kind))
+        valid = parse_clause(peek().kind);
     }
-    if (!valid) {
+    const AnnexState timeunits = endGrammar(false);
+    if (!valid || timeunits.failed || timeunits.interrupted ||
+        !timeunits.complete()) {
       recordGrammarFallback("invalid Annex A timeunits declaration");
       recoverMalformedItem(saved);
     }
