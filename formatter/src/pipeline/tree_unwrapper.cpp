@@ -7422,58 +7422,56 @@ class SVParser {
         directional &&
         (annexCanStart("net_type", peek(1).kind) ||
          at(TK::InterconnectKeyword, 1));
-    if (at(TK::RefKeyword) || at(TK::InOutKeyword) ||
-        (directional && at(TK::VarKeyword, 1)) || explicit_net) {
-      const bool conditional_members = hasConditionalListMember(pos_);
-      if (!hasAnnexListInterruption(pos_, conditional_members)) {
-        const bool net = at(TK::InOutKeyword) || explicit_net;
-        const bool output_variable = at(TK::OutputKeyword);
-        consumeInto(line_);
-        // The type can be implicit. Once an identifier and its dimensions
-        // reach a list separator, that identifier begins the next production.
-        // This also resolves net_port_type's nettype_identifier alternative.
-        const auto identifier_ends_member = [&] {
-          if (!at(TK::Identifier)) return false;
-          size_t next = pos_ + 1;
-          while (next < tokens_.size() &&
-                 tokens_[next].kind == TK::OpenBracket) {
-            int depth = 0;
-            do {
-              if (tokens_[next].kind == TK::OpenBracket) ++depth;
-              if (tokens_[next].kind == TK::CloseBracket) --depth;
-              ++next;
-            } while (depth > 0 && next < tokens_.size());
-            if (depth != 0) return false;
-          }
-          return next < tokens_.size() &&
-                 (tokens_[next].kind == TK::Semicolon ||
-                  tokens_[next].kind == TK::Comma ||
-                  (output_variable && tokens_[next].kind == TK::Equals));
-        };
-        const bool empty_net_type = net && identifier_ends_member();
-        const bool valid =
-            (empty_net_type ||
-             consumeAnnexRule(net ? "net_port_type" : "variable_port_type",
-                              line_, std::nullopt,
-                              identifier_ends_member)) &&
-            parsePortIdentifierDimensionListRule(
-                net ? "list_of_port_identifiers"
-                    : output_variable ? "list_of_variable_port_identifiers"
-                                      : "list_of_variable_identifiers",
-                net || output_variable ? "port_identifier"
-                                       : "variable_identifier",
-                net ? "unpacked_dimension" : "variable_dimension",
-                output_variable,
-                conditional_members);
-        if (!valid || !at(TK::Semicolon)) {
-          recordGrammarFallback("invalid Annex A port declaration");
-          recoverMalformedLeaf(saved);
-          return;
+    const bool conditional_members = hasConditionalListMember(pos_);
+    if (!hasAnnexListInterruption(pos_, conditional_members)) {
+      const bool inout = at(TK::InOutKeyword);
+      const bool output_variable = at(TK::OutputKeyword);
+      consumeInto(line_);
+      // The type can be implicit. Once an identifier and its dimensions
+      // reach a list separator, that identifier begins the next production.
+      // This also resolves net_port_type's nettype_identifier alternative.
+      const auto identifier_ends_member = [&] {
+        if (!at(TK::Identifier)) return false;
+        size_t next = pos_ + 1;
+        while (next < tokens_.size() && tokens_[next].kind == TK::OpenBracket) {
+          int depth = 0;
+          do {
+            if (tokens_[next].kind == TK::OpenBracket) ++depth;
+            if (tokens_[next].kind == TK::CloseBracket) --depth;
+            ++next;
+          } while (depth > 0 && next < tokens_.size());
+          if (depth != 0) return false;
         }
-        consumeInto(line_);
-        addLine();
+        return next < tokens_.size() &&
+               (tokens_[next].kind == TK::Semicolon ||
+                tokens_[next].kind == TK::Comma ||
+                (output_variable && tokens_[next].kind == TK::Equals));
+      };
+      const bool net = inout || explicit_net ||
+                       (directional && !at(TK::VarKeyword) &&
+                        (identifier_ends_member() ||
+                         !annexCanStart("data_type", peek().kind)));
+      const bool empty_net_type = net && identifier_ends_member();
+      const bool valid =
+          (empty_net_type ||
+           consumeAnnexRule(net ? "net_port_type" : "variable_port_type", line_,
+                            std::nullopt, identifier_ends_member)) &&
+          parsePortIdentifierDimensionListRule(
+              net               ? "list_of_port_identifiers"
+              : output_variable ? "list_of_variable_port_identifiers"
+                                : "list_of_variable_identifiers",
+              net || output_variable ? "port_identifier"
+                                     : "variable_identifier",
+              net ? "unpacked_dimension" : "variable_dimension",
+              output_variable && !net, conditional_members);
+      if (!valid || !at(TK::Semicolon)) {
+        recordGrammarFallback("invalid Annex A port declaration");
+        recoverMalformedLeaf(saved);
         return;
       }
+      consumeInto(line_);
+      addLine();
+      return;
     }
     if (!consumeAnnexRule(declaration, line_, TK::Semicolon) ||
         !at(TK::Semicolon)) {
