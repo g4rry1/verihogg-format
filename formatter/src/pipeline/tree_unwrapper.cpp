@@ -9168,20 +9168,14 @@ class SVParser {
                                    TK::Comma);
         }
       } else if (ansi) {
-        valid = consumeAnnexRule("udp_output_declaration", line_, TK::Comma);
+        valid = parseUdpOutputDeclarationRule(true);
         if (valid && at(TK::Comma)) {
           consumeInto(line_);
         } else {
           valid = false;
         }
         while (valid) {
-          valid = consumeAnnexRule(
-              "udp_input_declaration", line_, TK::CloseParenthesis,
-              [&] {
-                return at(TK::Comma) &&
-                       (at(TK::InputKeyword, 1) ||
-                        at(TK::OpenParenthesis, 1));
-              });
+          valid = parseUdpInputDeclarationRule(true);
           if (!valid || !at(TK::Comma)) break;
           consumeInto(line_);
         }
@@ -9374,15 +9368,65 @@ class SVParser {
 
   // list_of_udp_port_identifiers ::= port_identifier
   // { ',' port_identifier }.
-  [[nodiscard]] auto parseUdpPortIdentifierListRule() -> bool {
+  [[nodiscard]] auto parseUdpPortIdentifierListRule(
+      bool header = false) -> bool {
     do {
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("port_identifier", line_)) return false;
       parseGrammarChildDirectiveLines();
       if (!at(TK::Comma)) break;
+      if (header) {
+        size_t next = 1;
+        while (isCompilerDirective(peek(next))) ++next;
+        if (at(TK::InputKeyword, next) ||
+            (at(TK::OpenParenthesis, next) && at(TK::Star, next + 1)))
+          break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
+  }
+
+  // udp_output_declaration ::= { attribute_instance } output [ reg ]
+  // port_identifier [ '=' constant_expression (only after reg) ].
+  [[nodiscard]] auto parseUdpOutputDeclarationRule(bool header) -> bool {
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (!at(TK::OutputKeyword)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    const bool registered = at(TK::RegKeyword);
+    if (registered) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+    }
+    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    if (registered && at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("constant_expression", line_,
+                            header ? TK::Comma : TK::Semicolon,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
+  // udp_input_declaration ::= { attribute_instance } input
+  // list_of_udp_port_identifiers.
+  [[nodiscard]] auto parseUdpInputDeclarationRule(bool header) -> bool {
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (!at(TK::InputKeyword)) return false;
+    consumeInto(line_);
+    return parseUdpPortIdentifierListRule(header);
   }
 
   [[nodiscard]] auto parseUdpPortDeclarationRule() -> bool {
@@ -9392,17 +9436,9 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
     if (at(TK::OutputKeyword)) {
-      consumeInto(line_);
-      const bool registered = at(TK::RegKeyword);
-      if (registered) consumeInto(line_);
-      valid = consumeAnnexRule("port_identifier", line_);
-      if (valid && registered && at(TK::Equals)) {
-        consumeInto(line_);
-        valid = consumeAnnexRule("constant_expression", line_, TK::Semicolon);
-      }
+      valid = parseUdpOutputDeclarationRule(false);
     } else if (at(TK::InputKeyword)) {
-      consumeInto(line_);
-      valid = parseUdpPortIdentifierListRule();
+      valid = parseUdpInputDeclarationRule(false);
     } else {
       consumeInto(line_);
       valid = consumeAnnexRule("variable_identifier", line_);
