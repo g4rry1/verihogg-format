@@ -9809,9 +9809,34 @@ class SVParser {
     return true;
   }
 
-  // list_of_ports and list_of_port_declarations can both contain a leading
-  // named port or a bare identifier. Parse each member once, retaining both
-  // viable Annex A alternatives until a later member resolves the choice.
+  // port ::= [ port_expression ] | '.' port_identifier '(' [ port_expression
+  // ] ')'. The enclosing list has already selected its non-ANSI alternative.
+  [[nodiscard]] auto parseNonAnsiPortMemberRule() -> bool {
+    if (at(TK::Comma) || at(TK::CloseParenthesis)) return true;
+    if (at(TK::Dot)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("port_identifier", line_)) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::OpenParenthesis)) return false;
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::CloseParenthesis) &&
+          !consumeAnnexRule("port_expression", line_,
+                            TK::CloseParenthesis))
+        return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::CloseParenthesis)) return false;
+      consumeInto(line_);
+      return true;
+    }
+    return consumeAnnexRule("port_expression", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); });
+  }
+
+  // list_of_ports and list_of_port_declarations can share a leading named
+  // port or identifier. Keep both Annex A alternatives only until a member
+  // resolves the list; subsequent members enter their child functions.
   [[nodiscard]] auto parseSharedStructuralPortListRule(bool& nonansi)
       -> bool {
     if (!at(TK::OpenParenthesis)) return false;
@@ -9821,21 +9846,23 @@ class SVParser {
     nonansi = true;
     do {
       parseGrammarChildDirectiveLines();
-      while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-        if (!ansi || !consumeAnnexRule("attribute_instance", line_))
-          return false;
+      const bool attributes = at(TK::OpenParenthesis) && at(TK::Star, 1);
+      const bool qualified_interface =
+          at(TK::Identifier) && at(TK::Dot, 1) &&
+          at(TK::Identifier, 2) && at(TK::Identifier, 3);
+      if (attributes || qualified_interface) {
+        if (!ansi) return false;
         nonansi = false;
-        parseGrammarChildDirectiveLines();
       }
-      if (at(TK::Comma) || at(TK::CloseParenthesis)) {
+      if (!nonansi) {
+        if (!parseAnsiPortMemberRule()) return false;
+      } else if (!ansi) {
+        if (!parseNonAnsiPortMemberRule()) return false;
+      } else if (at(TK::Comma) || at(TK::CloseParenthesis)) {
         // port ::= [ port_expression ] has an empty alternative.
-        if (!nonansi) return false;
         ansi = false;
       } else {
-        std::vector<std::string_view> roots;
-        if (nonansi) roots.push_back("port");
-        if (ansi) roots.push_back("ansi_port_declaration");
-        beginGrammar(std::move(roots));
+        beginGrammar({"port", "ansi_port_declaration"});
         while (!at(TK::EndOfFile)) {
           const auto& grammar = grammar_scopes_.back();
           if (grammar.complete() &&
@@ -9868,14 +9895,10 @@ class SVParser {
     return true;
   }
 
-  // list_of_port_declarations ::= '(' [ { attribute_instance }
-  // ansi_port_declaration { ',' { attribute_instance }
-  // ansi_port_declaration } ] ')'. The caller selects this rule only when
-  // its first port keyword excludes the non-ANSI list_of_ports alternative.
-  // The explicit 'interface' header selects the first ANSI alternative.
-  [[nodiscard]] auto parseExplicitInterfaceAnsiPortRule() -> bool {
-    if (!at(TK::InterfaceKeyword) ||
-        !consumeAnnexRule("interface_port_header", line_))
+  // interface_port_header selects the first ansi_port_declaration alternative.
+  [[nodiscard]] auto parseInterfaceAnsiPortRule() -> bool {
+    if (!at(TK::InterfaceKeyword) && !at(TK::Identifier)) return false;
+    if (!consumeAnnexRule("interface_port_header", line_))
       return false;
     parseGrammarChildDirectiveLines();
     if (!consumeAnnexRule("port_identifier", line_)) return false;
@@ -9944,57 +9967,115 @@ class SVParser {
     return true;
   }
 
-  [[nodiscard]] auto parseAnsiStructuralPortListRule() -> bool {
-    if (!at(TK::OpenParenthesis)) return false;
-    consumeInto(line_);
-    addLine();
+  // A user type can be a nettype, variable type, or interface identifier.
+  // Keep those three header productions live only through their shared
+  // prefix. The remaining port_identifier, dimensions and initializer enter
+  // their own Annex A children in this same pass.
+  [[nodiscard]] auto parseAmbiguousAnsiPortRule() -> bool {
+    beginGrammar({"net_port_header", "variable_port_header",
+                  "interface_port_header"});
+    while (!at(TK::EndOfFile)) {
+      const auto& header = grammar_scopes_.back();
+      if (header.complete() && ansiIdentifierEndsMember()) break;
+      if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+        continue;
+      }
+      if (header.failed || header.interrupted ||
+          !header.accepts(peek().kind))
+        break;
+      consumeInto(line_);
+    }
+    const AnnexState header = endGrammar(false);
+    if (header.failed || header.interrupted || !header.complete() ||
+        !ansiIdentifierEndsMember())
+      return false;
+    const bool variable = header.completed("variable_port_header");
+    if (!variable && !header.completed("net_port_header") &&
+        !header.completed("interface_port_header"))
+      return false;
+    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule(variable ? "variable_dimension"
+                                     : "unpacked_dimension",
+                            line_))
+        return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("constant_expression", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
+  // { attribute_instance } ansi_port_declaration, after the enclosing list
+  // has chosen its ANSI production.
+  [[nodiscard]] auto parseAnsiPortMemberRule() -> bool {
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
       }
     };
-    do {
+    skip_directives();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
       skip_directives();
-      while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-        if (!consumeAnnexRule("attribute_instance", line_)) return false;
-        skip_directives();
-      }
-      const bool named = at(TK::Dot) ||
-          ((at(TK::InputKeyword) || at(TK::OutputKeyword) ||
-            at(TK::InOutKeyword) || at(TK::RefKeyword)) &&
-           at(TK::Dot, 1));
-      if (named) {
-        if (!at(TK::Dot) &&
-            !consumeAnnexRule("port_direction", line_)) return false;
-        if (!parseModportSimplePortRule()) return false;
-      } else if (at(TK::InterfaceKeyword)) {
-        if (!parseExplicitInterfaceAnsiPortRule()) return false;
-      } else {
-        const size_t type_offset =
-            at(TK::InputKeyword) || at(TK::OutputKeyword) ||
-                    at(TK::InOutKeyword) || at(TK::RefKeyword)
-                ? 1
-                : 0;
-        const bool variable_type =
-            at(TK::VarKeyword, type_offset) ||
-            (annexCanStart("data_type", peek(type_offset).kind) &&
-             !at(TK::Identifier, type_offset) &&
-             !at(TK::UnitSystemName, type_offset));
-        if (variable_type || at(TK::InterconnectKeyword, type_offset) ||
-            annexCanStart("net_type", peek(type_offset).kind) ||
-            at(TK::SignedKeyword, type_offset) ||
-            at(TK::UnsignedKeyword, type_offset) ||
-            at(TK::OpenBracket, type_offset) ||
-            ansiIdentifierEndsMember(type_offset)) {
-          if (!parseTypedAnsiPortRule(variable_type))
-            return false;
-        } else if (!consumeAnnexRule("ansi_port_declaration", line_,
-                                     TK::Comma)) {
+    }
+    const bool named = at(TK::Dot) ||
+        ((at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+          at(TK::InOutKeyword) || at(TK::RefKeyword)) &&
+         at(TK::Dot, 1));
+    if (named) {
+      if (!at(TK::Dot) &&
+          !consumeAnnexRule("port_direction", line_)) return false;
+      if (!parseModportSimplePortRule()) return false;
+    } else if (at(TK::InterfaceKeyword) ||
+               (at(TK::Identifier) && at(TK::Dot, 1) &&
+                at(TK::Identifier, 2) && at(TK::Identifier, 3))) {
+      if (!parseInterfaceAnsiPortRule()) return false;
+    } else {
+      const size_t type_offset =
+          at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+                  at(TK::InOutKeyword) || at(TK::RefKeyword)
+              ? 1
+              : 0;
+      const bool variable_type =
+          at(TK::VarKeyword, type_offset) ||
+          (annexCanStart("data_type", peek(type_offset).kind) &&
+           !at(TK::Identifier, type_offset) &&
+           !at(TK::UnitSystemName, type_offset));
+      if (variable_type || at(TK::InterconnectKeyword, type_offset) ||
+          annexCanStart("net_type", peek(type_offset).kind) ||
+          at(TK::SignedKeyword, type_offset) ||
+          at(TK::UnsignedKeyword, type_offset) ||
+          at(TK::OpenBracket, type_offset) ||
+          ansiIdentifierEndsMember(type_offset)) {
+        if (!parseTypedAnsiPortRule(variable_type))
           return false;
-        }
+      } else if (!parseAmbiguousAnsiPortRule()) {
+        return false;
       }
-      skip_directives();
+    }
+    skip_directives();
+    return true;
+  }
+
+  // list_of_port_declarations ::= '(' [ { attribute_instance }
+  // ansi_port_declaration { ',' { attribute_instance }
+  // ansi_port_declaration } ] ')'.
+  [[nodiscard]] auto parseAnsiStructuralPortListRule() -> bool {
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    addLine();
+    do {
+      if (!parseAnsiPortMemberRule()) return false;
       if (!at(TK::Comma)) break;
       consumeInto(line_);
       addLine();
