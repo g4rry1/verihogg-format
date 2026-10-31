@@ -5029,7 +5029,8 @@ class SVParser {
   }
 
   // modport_simple_port ::= port_identifier |
-  // '.' port_identifier '(' [ expression ] ')'.
+  // '.' port_identifier '(' [ expression ] ')'. The named alternative is
+  // also the final alternative of ansi_port_declaration after direction.
   [[nodiscard]] auto parseModportSimplePortRule() -> bool {
     parseGrammarChildDirectiveLines();
     const bool named = at(TK::Dot);
@@ -9887,8 +9888,18 @@ class SVParser {
         if (!consumeAnnexRule("attribute_instance", line_)) return false;
         skip_directives();
       }
-      if (!consumeAnnexRule("ansi_port_declaration", line_, TK::Comma))
+      const bool named = at(TK::Dot) ||
+          ((at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+            at(TK::InOutKeyword) || at(TK::RefKeyword)) &&
+           at(TK::Dot, 1));
+      if (named) {
+        if (!at(TK::Dot) &&
+            !consumeAnnexRule("port_direction", line_)) return false;
+        if (!parseModportSimplePortRule()) return false;
+      } else if (!consumeAnnexRule("ansi_port_declaration", line_,
+                                   TK::Comma)) {
         return false;
+      }
       skip_directives();
       if (!at(TK::Comma)) break;
       consumeInto(line_);
