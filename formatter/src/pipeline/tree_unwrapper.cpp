@@ -9917,7 +9917,9 @@ class SVParser {
   // A net header can be empty. Stop it before the identifier that ends this
   // member, including when the identifier has unpacked dimensions.
   [[nodiscard]] auto parseTypedAnsiPortRule(bool variable) -> bool {
-    if (!consumeAnnexRule(variable ? "variable_port_header"
+    const bool empty_header = ansiIdentifierEndsMember();
+    if (!empty_header &&
+        !consumeAnnexRule(variable ? "variable_port_header"
                                    : "net_port_header",
                           line_, std::nullopt,
                           [&] { return ansiIdentifierEndsMember(); }))
