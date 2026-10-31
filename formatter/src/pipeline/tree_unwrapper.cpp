@@ -164,6 +164,23 @@ struct AnnexItemHash {
   static const int output = annexRule("@lexer_output_symbol");
   static const int level = annexRule("@lexer_level_symbol");
   static const int edge = annexRule("@lexer_edge_symbol");
+  static const int finish_number = annexRule("finish_number");
+  static const int severity = annexRule("severity_system_task");
+  static const int fatal_severity_suffix = [] {
+    for (const auto& production : kProductions) {
+      if (production.left != severity || production.count < 2) continue;
+      const int suffix = kSymbols[production.offset + 1];
+      for (const auto& child : kProductions) {
+        if (child.left != suffix) continue;
+        if (std::ranges::find(kSymbols + child.offset,
+                              kSymbols + child.offset + child.count,
+                              finish_number) !=
+            kSymbols + child.offset + child.count)
+          return suffix;
+      }
+    }
+    return -1;
+  }();
   static const int edge_descriptor = annexRule("@lexer_edge_descriptor");
   static const int x_digit = annexRule("@lexer_x_digit");
   static const int z_digit = annexRule("@lexer_z_digit");
@@ -234,8 +251,18 @@ struct AnnexItemHash {
            rule_name.substr(
                0, rule_name.size() - std::string_view("_timing_check").size());
   }
+  if (rule == severity && item.dot == 0) {
+    const auto& production = kProductions[item.production];
+    const int suffix = kSymbols[production.offset + 1];
+    return suffix == fatal_severity_suffix ? lexeme == "$fatal"
+                 : lexeme == "$error" || lexeme == "$warning" ||
+                       lexeme == "$info";
+  }
   if (rule == output) {
     return lexeme == "0" || lexeme == "1" || lexeme == "x" || lexeme == "X";
+  }
+  if (rule == finish_number) {
+    return lexeme == "0" || lexeme == "1" || lexeme == "2";
   }
   if (rule == level) {
     return lexeme == "0" || lexeme == "1" || lexeme == "x" || lexeme == "X" ||
@@ -4935,10 +4962,26 @@ class SVParser {
     addLine();
   }
 
-  // module_common_item has distinct leading terminals for these three leaf
-  // productions. Program and checker items include continuous_assign, but
-  // neither includes net_alias or bind_directive.
+  // module_common_item has distinct leading terminals for these leaf
+  // productions. Program and checker items include continuous_assign and
+  // elaboration_severity_system_task, but not net_alias or bind_directive.
   auto parseModuleCommonLeafRule(bool continuous_only = false) -> bool {
+    if (at(TK::SystemIdentifier)) {
+      const std::string_view name = peek().rawText();
+      if (name == "$fatal" || name == "$error" ||
+          name == "$warning" || name == "$info") {
+        const LeafCheckpoint saved = leafCheckpoint();
+        if (!consumeAnnexRule("severity_system_task", line_) ||
+            line_.tokens.empty() ||
+            line_.tokens.back().kind != TK::Semicolon) {
+          recordGrammarFallback("invalid Annex A elaboration severity task");
+          recoverMalformedLeaf(saved);
+        } else {
+          addLine();
+        }
+        return true;
+      }
+    }
     if (at(TK::GenVarKeyword)) {
       const LeafCheckpoint saved = leafCheckpoint();
       const bool conditional_members = hasConditionalListMember(pos_);
