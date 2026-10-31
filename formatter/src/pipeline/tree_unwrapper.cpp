@@ -8608,18 +8608,37 @@ class SVParser {
 
   // constraint_block_item ::= solve solve_before_list before
   //                           solve_before_list ';' | constraint_expression.
+  // solve_before_list ::= constraint_primary { ',' constraint_primary }.
+  [[nodiscard]] auto parseSolveBeforeListRule(TK terminator) -> bool {
+    const bool conditional_members =
+        hasConditionalListMember(pos_, terminator);
+    if (conditional_members ||
+        hasAnnexListInterruption(pos_, conditional_members, terminator))
+      return consumeAnnexRule("solve_before_list", line_, terminator);
+    do {
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("constraint_primary", line_, TK::Comma,
+                            [&] { return at(terminator); }))
+        return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   auto parseConstraintBlockItemRule() -> bool {
     if (!at(TK::SolveKeyword)) return parseConstraintExpressionRule();
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
-    if (!consumeAnnexRule("solve_before_list", line_) ||
+    if (!parseSolveBeforeListRule(TK::BeforeKeyword) ||
         !at(TK::BeforeKeyword)) {
       recordGrammarFallback("invalid Annex A solve before constraint");
       recoverMalformedItem(saved);
       return true;
     }
     consumeInto(line_);
-    if (!consumeAnnexRule("solve_before_list", line_) ||
+    if (!parseSolveBeforeListRule(TK::Semicolon) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("incomplete Annex A solve before constraint");
       recoverMalformedItem(saved);
