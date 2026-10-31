@@ -2763,6 +2763,78 @@ class SVParser {
     return true;
   }
 
+  // A.7.5.1 selects a timing-check production by its system identifier. The
+  // argument slots below follow that production; each nonempty slot invokes
+  // its A.7.5.2 child while tokens are emitted.
+  [[nodiscard]] auto parseSpecifyTimingCheckRule() -> bool {
+    if (!at(TK::SystemIdentifier)) return false;
+    const std::string_view name = peek().rawText();
+    std::vector<std::string_view> required;
+    std::vector<std::string_view> optional;
+    if (name == "$setup") {
+      required = {"data_event", "reference_event", "timing_check_limit"};
+    } else if (name == "$period") {
+      required = {"controlled_reference_event", "timing_check_limit"};
+    } else if (name == "$width") {
+      required = {"controlled_reference_event", "timing_check_limit",
+                  "threshold"};
+    } else if (name == "$nochange") {
+      required = {"reference_event", "data_event", "start_edge_offset",
+                  "end_edge_offset"};
+    } else if (name == "$hold" || name == "$recovery" ||
+               name == "$removal" || name == "$skew" ||
+               name == "$timeskew" || name == "$fullskew" ||
+               name == "$setuphold" || name == "$recrem") {
+      required = {"reference_event", "data_event", "timing_check_limit"};
+      if (name == "$fullskew" || name == "$setuphold" ||
+          name == "$recrem")
+        required.push_back("timing_check_limit");
+    } else {
+      return false;
+    }
+    optional.push_back("notifier");
+    if (name == "$timeskew" || name == "$fullskew") {
+      optional.push_back("event_based_flag");
+      optional.push_back("remain_active_flag");
+    } else if (name == "$setuphold" || name == "$recrem") {
+      optional.insert(optional.end(),
+                      {"timestamp_condition", "timecheck_condition",
+                       "delayed_reference", "delayed_data"});
+    }
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::OpenParenthesis)) return false;
+    consumeInto(line_);
+    for (size_t i = 0; i < required.size(); ++i) {
+      parseGrammarChildDirectiveLines();
+      if (i > 0) {
+        if (!at(TK::Comma)) return false;
+        consumeInto(line_);
+        parseGrammarChildDirectiveLines();
+      }
+      if (!consumeAnnexRule(required[i], line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    for (const auto child : optional) {
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma) && !at(TK::CloseParenthesis) &&
+          !consumeAnnexRule(child, line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::Semicolon)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   auto parseSpecifyItemRule() -> bool {
     if (at(TK::SpecParamKeyword)) {
       parseSpecparamDeclarationRule();
@@ -2839,7 +2911,9 @@ class SVParser {
       if (valid && at(TK::Semicolon)) consumeInto(line_);
       else valid = false;
     } else {
-      valid = consumeAnnexRule("system_timing_check", line_);
+      valid = hasAnnexListInterruption(pos_, false)
+                  ? consumeAnnexRule("system_timing_check", line_)
+                  : parseSpecifyTimingCheckRule();
     }
     if (!valid || line_.tokens.empty() ||
         line_.tokens.back().kind != TK::Semicolon) {
