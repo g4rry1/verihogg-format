@@ -4620,6 +4620,50 @@ class SVParser {
     }
   }
 
+  // list_of_tf_variable_identifiers repeats this unnamed Annex A sequence.
+  auto parseTfVariableIdentifierRule() -> bool {
+    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      if (!consumeAnnexRule("expression", line_, TK::Comma))
+        return false;
+    }
+    return true;
+  }
+
+  auto parseTfVariableIdentifierListRule() -> bool {
+    beginGrammar({"list_of_tf_variable_identifiers"});
+    bool valid = true;
+    while (!at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (grammar_scopes_.back().complete() && at(TK::Semicolon)) break;
+      if (isConditionalStartDirective(peek())) {
+        bool header_ended = true;
+        valid = parseAnnexConditional(TK::EndOfFile, header_ended,
+                                      indent_level_);
+      } else if (isCompilerDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      } else if (at(TK::Comma)) {
+        valid = grammarAllows(TK::Comma);
+        if (valid) consumeInto(line_);
+      } else {
+        valid = grammarAllows(peek().kind) &&
+                parseTfVariableIdentifierRule();
+      }
+      if (!valid || grammar_scopes_.back().failed ||
+          grammar_scopes_.back().interrupted)
+        break;
+    }
+    const AnnexState result = endGrammar(false);
+    return valid && !result.failed && !result.interrupted &&
+           result.complete() && at(TK::Semicolon);
+  }
+
   auto parseTfPortDeclarationRule() -> bool {
     const bool direction =
         annexCanStart("tf_port_direction", peek().kind) &&
@@ -4661,17 +4705,10 @@ class SVParser {
       static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
       return true;
     }
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
-        static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
-        return true;
-      }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-        break;
+    const bool conditional_members = hasConditionalListMember(pos_);
+    if (hasAnnexListInterruption(pos_, conditional_members)) {
+      static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
+      return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = consumeAnnexRule("tf_port_direction", line_);
@@ -4679,8 +4716,7 @@ class SVParser {
     if (valid && !implicit_type)
       valid = consumeAnnexRule("data_type_or_implicit", line_);
     if (valid)
-      valid = consumeAnnexRule("list_of_tf_variable_identifiers", line_,
-                               TK::Semicolon);
+      valid = parseTfVariableIdentifierListRule();
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A task or function port");
       recoverMalformedLeaf(saved);
