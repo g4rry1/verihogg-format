@@ -8416,7 +8416,69 @@ class SVParser {
     return true;
   }
 
-  // list_of_port_declarations ::= '(' [ { attribute_instance }
+  // parameter_port_list has two alternatives. A comma continues the current
+  // assignment list when the next tokens can form its identifier and optional
+  // dimensions; otherwise it starts another parameter_port_declaration.
+  [[nodiscard]] auto startsParameterPortDeclaration() const -> bool {
+    if (!at(TK::Identifier)) return true;
+    size_t next = pos_ + 1;
+    while (next < tokens_.size() &&
+           tokens_[next].kind == TK::OpenBracket) {
+      int depth = 0;
+      do {
+        if (tokens_[next].kind == TK::OpenBracket) ++depth;
+        if (tokens_[next].kind == TK::CloseBracket) --depth;
+        ++next;
+      } while (depth > 0 && next < tokens_.size());
+      if (depth != 0) return true;
+    }
+    return next < tokens_.size() &&
+           (tokens_[next].kind == TK::Identifier ||
+            tokens_[next].kind == TK::DoubleColon ||
+            tokens_[next].kind == TK::Hash ||
+            tokens_[next].kind == TK::Dot);
+  }
+
+  [[nodiscard]] auto parseParameterPortListRule() -> bool {
+    if (!at(TK::Hash) || !at(TK::OpenParenthesis, 1)) return false;
+    consumeInto(line_);
+    consumeInto(line_);
+    addLine();
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::CloseParenthesis)) {
+      bool bare_assignments = !startsParameterPortDeclaration();
+      std::string_view assignment = "param_assignment";
+      do {
+        parseGrammarChildDirectiveLines();
+        const bool declaration =
+            !bare_assignments && startsParameterPortDeclaration();
+        if (declaration) {
+          assignment =
+              at(TK::TypeKeyword) ||
+                      ((at(TK::ParameterKeyword) ||
+                        at(TK::LocalParamKeyword)) &&
+                       at(TK::TypeKeyword, 1))
+                  ? "type_assignment"
+                  : "param_assignment";
+        }
+        const std::string_view child =
+            declaration ? "parameter_port_declaration" : assignment;
+        if (!consumeAnnexRule(child, line_, TK::Comma,
+                              [&] { return at(TK::CloseParenthesis); }))
+          return false;
+        bare_assignments = false;
+        parseGrammarChildDirectiveLines();
+        if (!at(TK::Comma)) break;
+        consumeInto(line_);
+        addLine();
+      } while (!at(TK::EndOfFile));
+    }
+    addLine();
+    if (!at(TK::CloseParenthesis)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   // list_of_ports ::= '(' port { ',' port } ')'. A leading named port or
   // concatenation selects this non-ANSI alternative unambiguously.
   [[nodiscard]] auto parseNonAnsiStructuralPortListRule() -> bool {
@@ -8440,6 +8502,7 @@ class SVParser {
     return true;
   }
 
+  // list_of_port_declarations ::= '(' [ { attribute_instance }
   // ansi_port_declaration { ',' { attribute_instance }
   // ansi_port_declaration } ] ')'. The caller selects this rule only when
   // its first port keyword excludes the non-ANSI list_of_ports alternative.
@@ -8558,12 +8621,7 @@ class SVParser {
       skip_directives();
     }
     if (at(TK::Hash)) {
-      beginGrammar({"parameter_port_list"});
-      consumeInto(line_);
-      static_cast<void>(parseParenthesizedListInto(line_, closeKw));
-      const AnnexState parameters = endGrammar();
-      if (parameters.failed || parameters.interrupted ||
-          !parameters.complete()) {
+      if (!parseParameterPortListRule()) {
         recordGrammarFallback("invalid Annex A parameter port list");
         recoverMalformedStructuralHeader(saved, closeKw, external);
         return true;
