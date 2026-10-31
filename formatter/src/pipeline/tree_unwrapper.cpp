@@ -5139,18 +5139,6 @@ class SVParser {
           token.kind == TK::EndOfFile)
         break;
     }
-    if (!interrupted && at(TK::OpenParenthesis, 1)) {
-      const LeafCheckpoint saved = leafCheckpoint();
-      if (!consumeAnnexRule("subroutine_call_statement", line_) ||
-          line_.tokens.empty() ||
-          line_.tokens.back().kind != TK::Semicolon) {
-        recordGrammarFallback("invalid Annex A subroutine call statement");
-        recoverMalformedItem(saved);
-        return true;
-      }
-      addLine();
-      return true;
-    }
     const auto blocking_operator = [](TK kind) {
       return annexCanStart("assignment_operator", kind) ||
              annexCanStart("inc_or_dec_operator", kind);
@@ -5211,6 +5199,33 @@ class SVParser {
       consumeInto(line_);
       addLine();
       return true;
+    }
+    if (!interrupted) {
+      ListDepth depth;
+      bool call = false;
+      for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
+        const TK kind = tokens_[i].kind;
+        if (depth.topLevel() && kind == TK::OpenParenthesis) {
+          call = true;
+          break;
+        }
+        if (depth.topLevel() &&
+            (kind == TK::Semicolon || kind == TK::EndOfFile))
+          break;
+        advanceListDepth(depth, kind);
+      }
+      if (call) {
+        const LeafCheckpoint saved = leafCheckpoint();
+        if (!consumeAnnexRule("subroutine_call_statement", line_) ||
+            line_.tokens.empty() ||
+            line_.tokens.back().kind != TK::Semicolon) {
+          recordGrammarFallback("invalid Annex A subroutine call statement");
+          recoverMalformedItem(saved);
+          return true;
+        }
+        addLine();
+        return true;
+      }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     const AnnexState item = parseAnnexItem(
