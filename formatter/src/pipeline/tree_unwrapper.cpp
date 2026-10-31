@@ -2644,20 +2644,17 @@ class SVParser {
                         at(TK::NoShowCancelledKeyword);
     if (pulse || cancel) {
       const LeafCheckpoint saved = leafCheckpoint();
-      bool conditional = false;
-      for (size_t i = pos_; i < tokens_.size(); ++i) {
-        if (isConditionalStartDirective(tokens_[i])) {
-          conditional = true;
-          break;
-        }
-        if (tokens_[i].kind == TK::Semicolon ||
-            tokens_[i].kind == TK::EndOfFile)
-          break;
-      }
+      const bool conditional_members = hasConditionalListMember(pos_);
+      const bool interrupted =
+          hasAnnexListInterruption(pos_, conditional_members);
       consumeInto(line_);
-      if (!(conditional
+      if (!(interrupted
                 ? consumeAnnexRule("list_of_path_outputs", line_,
                                    TK::Semicolon)
+                : conditional_members
+                    ? parseConditionalAnnexCommaListRule(
+                          "list_of_path_outputs",
+                          "specify_output_terminal_descriptor")
                 : parseSpecifyOutputListRule()) ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A specify output list");
