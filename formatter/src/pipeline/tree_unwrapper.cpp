@@ -4387,6 +4387,39 @@ class SVParser {
     return true;
   }
 
+  // class_property ::= { property_qualifier } data_declaration. Once a
+  // distinct declaration keyword follows the qualifiers, enter that child
+  // rule directly instead of recognizing the entire class_property as a leaf.
+  auto parseQualifiedClassDataDeclarationRule() -> bool {
+    size_t offset = 0;
+    while (at(TK::RandKeyword, offset) ||
+           at(TK::RandCKeyword, offset) ||
+           at(TK::StaticKeyword, offset) ||
+           at(TK::ProtectedKeyword, offset) ||
+           at(TK::LocalKeyword, offset))
+      ++offset;
+    if (offset == 0 ||
+        (!at(TK::TypedefKeyword, offset) &&
+         !at(TK::NetTypeKeyword, offset) &&
+         !at(TK::ImportKeyword, offset)))
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    while (pos_ < saved.pos + offset) {
+      if (!consumeAnnexRule("property_qualifier", line_)) {
+        recordGrammarFallback("invalid Annex A class property qualifier");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      parseGrammarChildDirectiveLines();
+    }
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parsePackageImportExportRule())
+      return true;
+    recordGrammarFallback("invalid Annex A qualified class declaration");
+    recoverMalformedItem(saved);
+    return true;
+  }
+
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
@@ -4403,6 +4436,7 @@ class SVParser {
     if (parseExplicitClassPropertyRule()) return true;
     if (parseClassMethodPrototypeRule()) return true;
     if (parseQualifiedClassMethodRule()) return true;
+    if (parseQualifiedClassDataDeclarationRule()) return true;
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
       parseConstraintBlock({"class_constraint"});
@@ -4734,6 +4768,7 @@ class SVParser {
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseQualifiedDataDeclarationRule() ||
         parseExplicitDataDeclarationRule() ||
+        (at(TK::ImportKeyword) && parsePackageImportExportRule()) ||
         parseUserDataDeclarationRule())
       return true;
     lines_.resize(saved.output_size);
