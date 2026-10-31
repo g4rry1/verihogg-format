@@ -3924,34 +3924,6 @@ class SVParser {
     if (at(TK::StaticKeyword, offset) ||
         at(TK::AutomaticKeyword, offset))
       ++offset;
-    const auto built_in_type = [](TK kind) {
-      switch (kind) {
-        case TK::BitKeyword:
-        case TK::ByteKeyword:
-        case TK::CHandleKeyword:
-        case TK::EnumKeyword:
-        case TK::EventKeyword:
-        case TK::IntKeyword:
-        case TK::IntegerKeyword:
-        case TK::LogicKeyword:
-        case TK::LongIntKeyword:
-        case TK::RealKeyword:
-        case TK::RealTimeKeyword:
-        case TK::RegKeyword:
-        case TK::ShortIntKeyword:
-        case TK::ShortRealKeyword:
-        case TK::StringKeyword:
-        case TK::StructKeyword:
-        case TK::TimeKeyword:
-        case TK::UnionKeyword:
-        case TK::SignedKeyword:
-        case TK::UnsignedKeyword:
-        case TK::OpenBracket:
-          return true;
-        default:
-          return false;
-      }
-    };
     const TK type_start = peek(offset).kind;
     if (type_start == TK::VirtualKeyword &&
         (at(TK::FunctionKeyword, offset + 1) ||
@@ -3968,8 +3940,7 @@ class SVParser {
     if (offset == 0 && type_start != TK::Identifier &&
         type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
       return false;
-    if (!built_in_type(type_start) && type_start != TK::Identifier &&
-        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
+    if (!annexCanStart("data_type_or_implicit", type_start))
       return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
