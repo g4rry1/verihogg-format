@@ -2498,7 +2498,8 @@ class SVParser {
   // A conditional after a list separator can contribute complete members to
   // either branch. Other interrupted positions stay with the parent rule's
   // diagnostic path because they may split an individual grammar child.
-  [[nodiscard]] auto hasConditionalListMember(size_t start) const -> bool {
+  [[nodiscard]] auto hasConditionalListMember(
+      size_t start, TK terminator = TK::Semicolon) const -> bool {
     ListDepth depth;
     int conditionals = 0;
     bool found = false;
@@ -2526,7 +2527,7 @@ class SVParser {
         branch_last = TK::Comma;
         continue;
       }
-      if (token.kind == TK::Semicolon && depth.topLevel()) {
+      if (token.kind == terminator && depth.topLevel()) {
         if (conditionals > 0) return false;
         break;
       }
@@ -2556,13 +2557,15 @@ class SVParser {
   // children. Ordinary members still enter their own Annex A child rule;
   // parseAnnexConditional advances the same list state through each branch.
   auto parseConditionalAnnexCommaListRule(std::string_view list,
-                                          std::string_view child) -> bool {
+                                          std::string_view child,
+                                          TK terminator = TK::Semicolon)
+      -> bool {
     beginGrammar({list});
     bool valid = true;
     while (!at(TK::EndOfFile) &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
-      if (grammar_scopes_.back().complete() && at(TK::Semicolon)) break;
+      if (grammar_scopes_.back().complete() && at(terminator)) break;
       if (isConditionalStartDirective(peek())) {
         bool ended = true;
         valid = parseAnnexConditional(TK::EndOfFile, ended, indent_level_);
@@ -2582,7 +2585,7 @@ class SVParser {
     }
     const AnnexState result = endGrammar(false);
     return valid && !result.failed && !result.interrupted &&
-           result.complete() && at(TK::Semicolon);
+           result.complete() && at(terminator);
   }
 
   // specparam_declaration ::= specparam [packed_dimension]
@@ -9593,18 +9596,25 @@ class SVParser {
   // [ '(' [ let_port_list ] ')' ] '=' expression ';'.
   auto parseLetDeclarationRule() -> bool {
     if (!at(TK::LetKeyword)) return false;
+    const bool conditional_ports =
+        at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
+        hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
+    ListDepth depth;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
+      if ((isConditionalStartDirective(token) &&
+           !(conditional_ports && depth.parens == 1 &&
+             depth.brackets == 0 && depth.braces == 0)) ||
           token.kind == TK::MacroUsage ||
           (token.kind == TK::Directive &&
            !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({"let_declaration"}, true));
         return true;
       }
-      if (token.kind == TK::Semicolon ||
+      if ((token.kind == TK::Semicolon && depth.topLevel()) ||
           token.kind == TK::EndOfFile)
         break;
+      advanceListDepth(depth, token.kind);
     }
     const LeafCheckpoint saved = leafCheckpoint();
     const auto skip_directives = [&] {
@@ -9627,7 +9637,11 @@ class SVParser {
         consumeInto(line_);
       } else {
         consumeInto(line_);
-        if (!parseAnnexCommaListRule("let_port_item") ||
+        if (!(conditional_ports
+                  ? parseConditionalAnnexCommaListRule(
+                        "let_port_list", "let_port_item",
+                        TK::CloseParenthesis)
+                  : parseAnnexCommaListRule("let_port_item")) ||
             !at(TK::CloseParenthesis)) {
           recordGrammarFallback("invalid Annex A let port list");
           recoverMalformedItem(saved);
