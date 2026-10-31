@@ -3182,31 +3182,6 @@ class SVParser {
     if (at(TK::StaticKeyword, offset) ||
         at(TK::AutomaticKeyword, offset))
       ++offset;
-    const auto explicit_type = [](TK kind) {
-      switch (kind) {
-        case TK::BitKeyword:
-        case TK::ByteKeyword:
-        case TK::CHandleKeyword:
-        case TK::EnumKeyword:
-        case TK::EventKeyword:
-        case TK::IntKeyword:
-        case TK::IntegerKeyword:
-        case TK::LogicKeyword:
-        case TK::LongIntKeyword:
-        case TK::RealKeyword:
-        case TK::RealTimeKeyword:
-        case TK::RegKeyword:
-        case TK::ShortIntKeyword:
-        case TK::ShortRealKeyword:
-        case TK::StringKeyword:
-        case TK::StructKeyword:
-        case TK::TimeKeyword:
-        case TK::UnionKeyword:
-          return true;
-        default:
-          return false;
-      }
-    };
     const TK type_start = peek(offset).kind;
     if (type_start == TK::Identifier &&
         at(TK::OpenBracket, offset + 1))
@@ -3216,11 +3191,7 @@ class SVParser {
         (at(TK::Semicolon, offset + 1) ||
          at(TK::Equals, offset + 1) ||
          at(TK::Comma, offset + 1));
-    if (!explicit_type(type_start) && type_start != TK::Identifier &&
-        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword &&
-        type_start != TK::SignedKeyword &&
-        type_start != TK::UnsignedKeyword &&
-        type_start != TK::OpenBracket)
+    if (!annexCanStart("data_type_or_implicit", type_start))
       return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
@@ -3368,35 +3339,11 @@ class SVParser {
                   at(TK::ScalaredKeyword))) {
       consumeInto(line_);
     }
-    const auto explicit_type = [&] {
-      switch (peek().kind) {
-        case TK::BitKeyword:
-        case TK::ByteKeyword:
-        case TK::CHandleKeyword:
-        case TK::EnumKeyword:
-        case TK::EventKeyword:
-        case TK::IntKeyword:
-        case TK::IntegerKeyword:
-        case TK::LogicKeyword:
-        case TK::LongIntKeyword:
-        case TK::RealKeyword:
-        case TK::RealTimeKeyword:
-        case TK::RegKeyword:
-        case TK::ShortIntKeyword:
-        case TK::ShortRealKeyword:
-        case TK::StringKeyword:
-        case TK::StructKeyword:
-        case TK::TimeKeyword:
-        case TK::UnionKeyword:
-        case TK::SignedKeyword:
-        case TK::UnsignedKeyword:
-        case TK::OpenBracket:
-          return true;
-        default:
-          return false;
-      }
-    };
-    if (valid && explicit_type())
+    // A bare identifier is also the first net_identifier in the implicit
+    // form. Shared identifier prefixes were routed through net_declaration
+    // above; distinct data types can use the Annex A first set here.
+    if (valid && annexCanStart("data_type_or_implicit", peek().kind) &&
+        !at(TK::Identifier) && !at(TK::UnitSystemName))
       valid = consumeAnnexRule("data_type_or_implicit", line_);
     if (valid && at(TK::Hash))
       valid = consumeAnnexRule("delay3", line_);
