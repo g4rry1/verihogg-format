@@ -3799,6 +3799,20 @@ class SVParser {
     return true;
   }
 
+  [[nodiscard]] auto parseHeaderPackageImportRule() -> bool {
+    if (!at(TK::ImportKeyword)) return false;
+    consumeInto(line_);
+    do {
+      if (!parsePackageImportItemRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    if (!at(TK::Semicolon)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   auto parsePackageImportExportRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
         at(TK::StringLiteral, 1))
@@ -4061,6 +4075,65 @@ class SVParser {
     return true;
   }
 
+  // checker_port_item ::= { attribute_instance } [ direction ]
+  //   property_formal_type formal_port_identifier { variable_dimension }
+  //   [ '=' property_actual_arg ].
+  [[nodiscard]] auto parseCheckerPortItemRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::InputKeyword) || at(TK::OutputKeyword)) {
+      if (!consumeAnnexRule("checker_port_direction", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    size_t after_identifier = 1;
+    if (at(TK::Identifier)) {
+      while (at(TK::OpenBracket, after_identifier)) {
+        int depth = 0;
+        do {
+          if (at(TK::OpenBracket, after_identifier)) ++depth;
+          if (at(TK::CloseBracket, after_identifier)) --depth;
+          ++after_identifier;
+        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
+        if (depth != 0) break;
+      }
+    }
+    const bool implicit_type = at(TK::Identifier) &&
+        (at(TK::Comma, after_identifier) ||
+         at(TK::CloseParenthesis, after_identifier) ||
+         at(TK::Equals, after_identifier));
+    if (!implicit_type &&
+        !consumeAnnexRule("property_formal_type", line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexRule("formal_port_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    while (at(TK::OpenBracket)) {
+      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (at(TK::Equals)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexRule("property_actual_arg", line_, TK::Comma,
+                            [&] { return at(TK::CloseParenthesis); }))
+        return false;
+    }
+    return true;
+  }
+
+  [[nodiscard]] auto parseCheckerPortListRule() -> bool {
+    do {
+      if (!parseCheckerPortItemRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::Comma)) break;
+      consumeInto(line_);
+    } while (!at(TK::EndOfFile));
+    return true;
+  }
+
   // checker_declaration ::= checker checker_identifier
   // [ '(' [ checker_port_list ] ')' ] ';' { checker_or_generate_item }
   // endchecker [ ':' checker_identifier ].
@@ -4097,7 +4170,7 @@ class SVParser {
                     ? parseConditionalAnnexCommaListRule(
                           "checker_port_list", "checker_port_item",
                           TK::CloseParenthesis)
-                    : parseAnnexCommaListRule("checker_port_item");
+                    : parseCheckerPortListRule();
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A checker port list");
         recoverMalformedItem(saved);
@@ -9482,7 +9555,7 @@ class SVParser {
     }
     skip_directives();
     while (at(TK::ImportKeyword)) {
-      if (!consumeAnnexRule("package_import_declaration", line_)) {
+      if (!parseHeaderPackageImportRule()) {
         recordGrammarFallback("invalid Annex A header package import");
         recoverMalformedStructuralHeader(saved, closeKw, external);
         return true;
