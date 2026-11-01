@@ -6153,12 +6153,14 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool returns = at(TK::ReturnKeyword);
     consumeInto(line_);
+    parseGrammarChildDirectiveLines();
     if (returns && !at(TK::Semicolon) &&
         !consumeAnnexRule("expression", line_, TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A return expression");
       recoverMalformedItem(saved);
       return true;
     }
+    parseGrammarChildDirectiveLines();
     if (!at(TK::Semicolon)) {
       recordGrammarFallback("missing Annex A jump semicolon");
       recoverMalformedItem(saved);
@@ -6173,6 +6175,7 @@ class SVParser {
     if (!at(TK::DisableKeyword)) return false;
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
+    parseGrammarChildDirectiveLines();
     if (at(TK::ForkKeyword)) {
       consumeInto(line_);
     } else if (!consumeAnnexRule("hierarchical_task_identifier", line_)) {
@@ -6180,6 +6183,7 @@ class SVParser {
       recoverMalformedItem(saved);
       return true;
     }
+    parseGrammarChildDirectiveLines();
     if (!at(TK::Semicolon)) {
       recordGrammarFallback("missing Annex A disable semicolon");
       recoverMalformedItem(saved);
@@ -6196,6 +6200,7 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool delayed = at(TK::MinusDoubleArrow);
     consumeInto(line_);
+    parseGrammarChildDirectiveLines();
     if (delayed && (at(TK::Hash) || at(TK::At) ||
                     at(TK::RepeatKeyword)) &&
         !consumeAnnexRule("delay_or_event_control", line_)) {
@@ -6203,17 +6208,20 @@ class SVParser {
       recoverMalformedItem(saved);
       return true;
     }
+    parseGrammarChildDirectiveLines();
     if (!consumeAnnexRule("hierarchical_event_identifier", line_)) {
       recordGrammarFallback("invalid Annex A event trigger target");
       recoverMalformedItem(saved);
       return true;
     }
+    parseGrammarChildDirectiveLines();
     if ((at(TK::Dot) || at(TK::OpenBracket)) &&
         !consumeAnnexRule("nonrange_select", line_)) {
       recordGrammarFallback("invalid Annex A event trigger select");
       recoverMalformedItem(saved);
       return true;
     }
+    parseGrammarChildDirectiveLines();
     if (!at(TK::Semicolon)) {
       recordGrammarFallback("missing Annex A event trigger semicolon");
       recoverMalformedItem(saved);
@@ -6235,6 +6243,7 @@ class SVParser {
       recoverMalformedItem(saved);
       return;
     }
+    parseGrammarChildDirectiveLines();
     const bool compound =
         at(TK::BeginKeyword) || at(TK::ForkKeyword) || at(TK::IfKeyword) ||
         at(TK::CaseKeyword) || at(TK::CaseXKeyword) ||
@@ -6354,6 +6363,7 @@ class SVParser {
     }
     if (!ordered && at(TK::ForkKeyword)) {
       consumeInto(line_);
+      parseGrammarChildDirectiveLines();
       if (at(TK::Semicolon)) {
         consumeInto(line_);
         addLine();
@@ -6370,10 +6380,14 @@ class SVParser {
     }
     if (ordered) {
       consumeInto(line_);
+      parseGrammarChildDirectiveLines();
       bool valid = consumeAnnexRule("hierarchical_identifier", line_, TK::Comma);
+      parseGrammarChildDirectiveLines();
       while (valid && at(TK::Comma)) {
         consumeInto(line_);
+        parseGrammarChildDirectiveLines();
         valid = consumeAnnexRule("hierarchical_identifier", line_, TK::Comma);
+        parseGrammarChildDirectiveLines();
       }
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A wait_order identifier list");
@@ -6877,17 +6891,20 @@ class SVParser {
   // [ statement ] 'else' statement_or_null. A recursive statement call owns
   // any nested else before this production considers its own else.
   auto parseActionBlockRule() -> void {
+    parseGrammarChildDirectiveLines();
     const bool null_before_else = at(TK::Semicolon);
     if (!at(TK::ElseKeyword)) {
       grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
       parseStatement();
       grammar_contexts_.pop_back();
     }
+    parseGrammarChildDirectiveLines();
     if (!at(TK::ElseKeyword)) return;
     if (null_before_else) {
       recordGrammarFallback("Annex A action_block requires a statement before else");
     }
     consumeInto(line_);
+    parseGrammarChildDirectiveLines();
     grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
     parseStatement();
     grammar_contexts_.pop_back();
