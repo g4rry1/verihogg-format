@@ -10951,10 +10951,10 @@ class SVParser {
           recoverMalformedItem(saved);
           return;
         }
-        consumeAnnexDelimited(
+        const bool predicate = consumeAnnexDelimited(
             TK::OpenParenthesis, TK::CloseParenthesis,
             generate ? "constant_expression" : "cond_predicate", line_);
-        if (pos_ == 0 ||
+        if (!predicate || pos_ == 0 ||
             tokens_[pos_ - 1].kind != TK::CloseParenthesis) {
           recordGrammarFallback("incomplete Annex A if condition");
           recoverMalformedItem(saved);
@@ -11072,10 +11072,10 @@ class SVParser {
           recoverMalformedItem(saved);
           return;
         }
-        consumeAnnexDelimited(
+        const bool expression = consumeAnnexDelimited(
             TK::OpenParenthesis, TK::CloseParenthesis,
             generate ? "constant_expression" : "case_expression", line_);
-        if (pos_ == 0 ||
+        if (!expression || pos_ == 0 ||
             tokens_[pos_ - 1].kind != TK::CloseParenthesis) {
           recordGrammarFallback("incomplete Annex A case condition");
           recoverMalformedItem(saved);
