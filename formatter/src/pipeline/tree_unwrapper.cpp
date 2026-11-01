@@ -12332,16 +12332,24 @@ class SVParser {
   auto parseBinsOrOptionsRule() -> bool {
     if (parseCoverageOptionRule()) return true;
     const bool wildcard = at(TK::WildcardKeyword);
-    if (!(at(TK::BinsKeyword, wildcard ? 1 : 0) ||
-          at(TK::IllegalBinsKeyword, wildcard ? 1 : 0) ||
-          at(TK::IgnoreBinsKeyword, wildcard ? 1 : 0)))
+    const size_t bins_offset =
+        wildcard ? afterOrdinaryDirectives(1) : 0;
+    if (!(at(TK::BinsKeyword, bins_offset) ||
+          at(TK::IllegalBinsKeyword, bins_offset) ||
+          at(TK::IgnoreBinsKeyword, bins_offset)))
       return false;
     // Conditional directives and unavailable macro expansions need the
     // interrupted item path, which can resume at the enclosing coverpoint.
     if (hasAnnexListInterruption(pos_, false)) return false;
 
     const LeafCheckpoint saved = leafCheckpoint();
-    if (wildcard) consumeInto(line_);
+    if (wildcard) {
+      consumeInto(line_);
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    }
     bool valid = consumeAnnexRule("bins_keyword", line_);
     parseGrammarChildDirectiveLines();
     if (valid) valid = consumeAnnexRule("bin_identifier", line_);
