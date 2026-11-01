@@ -12375,34 +12375,43 @@ class SVParser {
     const size_t keyword_offset = labeled ? 2 : 0;
     bool point = at(TK::CoverPointKeyword, keyword_offset);
     const bool cross = at(TK::CrossKeyword, keyword_offset);
-    bool typed_point = false;
+    bool parsed_point_prefix = false;
     if (!point && !cross) {
-      ListDepth depth;
-      for (size_t i = pos_; i + 1 < tokens_.size(); ++i) {
-        if (depth.topLevel() && tokens_[i].kind == TK::Colon &&
-            tokens_[i + 1].kind == TK::CoverPointKeyword) {
-          typed_point = true;
-          break;
+      const LeafCheckpoint saved = leafCheckpoint();
+      beginGrammar({"cover_point"});
+      while (!at(TK::CoverPointKeyword) && !atEnclosingBoundary() &&
+             !at(TK::Semicolon) && !at(TK::OpenBrace)) {
+        if (isConditionalStartDirective(peek())) {
+          bool header_ended = true;
+          if (!parseAnnexConditional(TK::EndOfFile, header_ended,
+                                     indent_level_))
+            break;
+          continue;
         }
-        if (depth.topLevel() &&
-            (tokens_[i].kind == TK::Semicolon ||
-             tokens_[i].kind == TK::OpenBrace ||
-             tokens_[i].kind == TK::EndOfFile))
-          break;
-        advanceListDepth(depth, tokens_[i].kind);
+        if (isCompilerDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+          continue;
+        }
+        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        consumeInto(line_);
       }
+      const bool keyword_expected =
+          at(TK::CoverPointKeyword) &&
+          grammar_scopes_.back().accepts(TK::CoverPointKeyword);
+      const AnnexState prefix = endGrammar(false);
+      if (!keyword_expected || prefix.failed || prefix.interrupted ||
+          !prefix.hasViableRule("cover_point")) {
+        recordGrammarFallback("invalid Annex A coverpoint prefix");
+        recoverMalformedItem(saved);
+        return true;
+      }
+      point = true;
+      parsed_point_prefix = true;
     }
-    point = point || typed_point;
-    if (!point && !cross) return false;
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
-    if (typed_point) {
-      valid = consumeAnnexRule("data_type_or_implicit", line_);
-      if (valid)
-        valid = consumeAnnexRule("cover_point_identifier", line_);
-      if (valid && at(TK::Colon)) consumeInto(line_);
-      else valid = false;
-    } else if (labeled) {
+    if (labeled && !parsed_point_prefix) {
       valid = consumeAnnexRule(point ? "cover_point_identifier"
                                      : "cross_identifier", line_);
       if (valid && at(TK::Colon)) consumeInto(line_);
