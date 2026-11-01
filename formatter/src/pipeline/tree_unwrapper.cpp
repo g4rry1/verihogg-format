@@ -5348,12 +5348,19 @@ class SVParser {
   // interface_or_generate_item | checker_or_generate_item.
   auto parseRandCheckerDataDeclarationRule() -> bool {
     if (!at(TK::RandKeyword)) return false;
+    const auto after_implicit = at(TK::Identifier, 1)
+                                    ? afterBalancedDimensions(2)
+                                    : std::nullopt;
     const bool implicit_identifier =
-        at(TK::Identifier, 1) &&
-        (at(TK::Semicolon, 2) || at(TK::Equals, 2) || at(TK::Comma, 2));
+        after_implicit &&
+        (at(TK::Semicolon, *after_implicit) ||
+         at(TK::Equals, *after_implicit) ||
+         at(TK::Comma, *after_implicit));
+    const auto after_type = at(TK::Identifier, 1)
+                                ? afterUserTypePrefix(1)
+                                : std::nullopt;
     if (implicit_identifier ||
-        (at(TK::Identifier, 1) &&
-         (at(TK::Identifier, 2) || at(TK::DoubleColon, 2)))) {
+        (after_type && at(TK::Identifier, *after_type))) {
       const LeafCheckpoint saved = leafCheckpoint();
       const bool conditional_members = hasConditionalListMember(pos_);
       const bool interrupted =
