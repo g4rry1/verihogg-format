@@ -2871,12 +2871,20 @@ class SVParser {
         break;
     }
     consumeInto(line_);
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
     if (at(TK::OpenBracket) &&
         !consumeAnnexRule("packed_dimension", line_)) {
       recordGrammarFallback("invalid Annex A specparam dimension");
       recoverMalformedItem(saved);
       return;
     }
+    skip_directives();
     const bool valid = conditional_members
                            ? parseConditionalAnnexCommaListRule(
                                  "list_of_specparam_assignments",
@@ -3666,12 +3674,20 @@ class SVParser {
   auto parseParameterDeclarationRule() -> bool {
     if (!at(TK::ParameterKeyword) && !at(TK::LocalParamKeyword))
       return false;
-    if (at(TK::TypeKeyword, 1)) {
+    const size_t type_start = afterOrdinaryDirectives(1);
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    if (at(TK::TypeKeyword, type_start)) {
       const bool conditional_members = hasConditionalListMember(pos_);
       const bool interrupted =
           hasAnnexListInterruption(pos_, conditional_members);
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // parameter / localparam
+      skip_directives();
       if (interrupted) {
         if (!consumeAnnexRule("type_parameter_declaration", line_,
                               TK::Semicolon) ||
@@ -3685,16 +3701,11 @@ class SVParser {
         return true;
       }
       consumeInto(line_);  // type
-      const auto skip_directives = [&] {
-        while (isCompilerDirective(peek())) {
-          addLine();
-          parseDirectiveLine();
-        }
-      };
       skip_directives();
       const bool forward = annexCanStart("forward_type", peek().kind) &&
                            (!at(TK::InterfaceKeyword) ||
-                            at(TK::ClassKeyword, 1));
+                            at(TK::ClassKeyword,
+                               afterOrdinaryDirectives(1)));
       bool valid = !forward || consumeAnnexRule("forward_type", line_);
       skip_directives();
       if (!valid ||
@@ -3714,30 +3725,32 @@ class SVParser {
     const auto declaration = at(TK::ParameterKeyword)
                                  ? "parameter_declaration"
                                  : "local_parameter_declaration";
-    const auto after_identifier = at(TK::Identifier, 1)
-                                      ? afterBalancedDimensions(2)
-                                      : std::optional<size_t>{2};
+    const auto after_identifier = at(TK::Identifier, type_start)
+                                      ? afterBalancedDimensions(type_start + 1)
+                                      : std::optional<size_t>{type_start + 1};
     if (!after_identifier) {
       parseAnnexSemicolonItem(declaration);
       return true;
     }
+    const size_t boundary = afterOrdinaryDirectives(*after_identifier);
     const bool explicit_type =
-        (at(TK::Identifier, 1) &&
-         (at(TK::Identifier, *after_identifier) ||
-          at(TK::DoubleColon, *after_identifier) ||
-          at(TK::Hash, *after_identifier))) ||
-        (annexCanStart("data_type", peek(1).kind) &&
-         !at(TK::Identifier, 1) &&
-         !at(TK::SignedKeyword, 1) && !at(TK::UnsignedKeyword, 1) &&
-         !at(TK::OpenBracket, 1));
-    const bool implicit_type = at(TK::SignedKeyword, 1) ||
-                               at(TK::UnsignedKeyword, 1) ||
-                               at(TK::OpenBracket, 1);
+        (at(TK::Identifier, type_start) &&
+         (at(TK::Identifier, boundary) ||
+          at(TK::DoubleColon, boundary) ||
+          at(TK::Hash, boundary))) ||
+        (annexCanStart("data_type", peek(type_start).kind) &&
+         !at(TK::Identifier, type_start) &&
+         !at(TK::SignedKeyword, type_start) &&
+         !at(TK::UnsignedKeyword, type_start) &&
+         !at(TK::OpenBracket, type_start));
+    const bool implicit_type = at(TK::SignedKeyword, type_start) ||
+                               at(TK::UnsignedKeyword, type_start) ||
+                               at(TK::OpenBracket, type_start);
     const bool bare_assignment =
-        at(TK::Identifier, 1) &&
-        (at(TK::Equals, *after_identifier) ||
-         at(TK::Comma, *after_identifier) ||
-         at(TK::Semicolon, *after_identifier));
+        at(TK::Identifier, type_start) &&
+        (at(TK::Equals, boundary) ||
+         at(TK::Comma, boundary) ||
+         at(TK::Semicolon, boundary));
     if (!explicit_type && !implicit_type && !bare_assignment) {
       parseAnnexSemicolonItem(declaration);
       return true;
@@ -3749,6 +3762,7 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // parameter / localparam
+    skip_directives();
     const std::string_view type_rule =
         explicit_type ? "data_type_or_implicit"
                       : implicit_type ? "implicit_data_type" : "";
