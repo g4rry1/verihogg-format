@@ -906,12 +906,37 @@ class SVParser {
       do {
         if (at(TK::MacroUsage, offset) || at(TK::Directive, offset))
           return std::nullopt;
+        if (at(TK::Semicolon, offset) || at(TK::EndOfFile, offset) ||
+            (!block_stack_.empty() &&
+             matchesBlockClose(block_stack_.back().close_kind,
+                               peek(offset).kind)))
+          return std::nullopt;
         if (at(TK::OpenBracket, offset)) ++depth;
         if (at(TK::CloseBracket, offset)) --depth;
         ++offset;
       } while (depth > 0 && pos_ + offset < tokens_.size());
       if (depth != 0) return std::nullopt;
     }
+    return offset;
+  }
+
+  [[nodiscard]] auto afterBalancedParentheses(size_t offset) const
+      -> std::optional<size_t> {
+    if (!at(TK::OpenParenthesis, offset)) return std::nullopt;
+    int depth = 0;
+    do {
+      if (at(TK::MacroUsage, offset) || at(TK::Directive, offset))
+        return std::nullopt;
+      if (at(TK::Semicolon, offset) || at(TK::EndOfFile, offset) ||
+          (!block_stack_.empty() &&
+           matchesBlockClose(block_stack_.back().close_kind,
+                             peek(offset).kind)))
+        return std::nullopt;
+      if (at(TK::OpenParenthesis, offset)) ++depth;
+      if (at(TK::CloseParenthesis, offset)) --depth;
+      ++offset;
+    } while (depth > 0 && pos_ + offset < tokens_.size());
+    if (depth != 0) return std::nullopt;
     return offset;
   }
 
@@ -3584,15 +3609,9 @@ class SVParser {
     while (true) {
       if (at(TK::Hash, variable) &&
           at(TK::OpenParenthesis, variable + 1)) {
-        size_t next = variable + 1;
-        int depth = 0;
-        do {
-          if (at(TK::OpenParenthesis, next)) ++depth;
-          if (at(TK::CloseParenthesis, next)) --depth;
-          ++next;
-        } while (depth > 0 && next < tokens_.size());
-        if (depth != 0) return false;
-        variable = next;
+        const auto next = afterBalancedParentheses(variable + 1);
+        if (!next) return false;
+        variable = *next;
       }
       if (!at(TK::DoubleColon, variable) ||
           !at(TK::Identifier, variable + 1))
@@ -7360,21 +7379,11 @@ class SVParser {
   }
 
   [[nodiscard]] auto hasInstanceShape(size_t index) const -> bool {
-    if (index >= tokens_.size() ||
-        tokens_[index].kind != TK::Identifier) return false;
-    ++index;
-    while (index < tokens_.size() &&
-           tokens_[index].kind == TK::OpenBracket) {
-      int depth = 0;
-      do {
-        if (tokens_[index].kind == TK::OpenBracket) ++depth;
-        if (tokens_[index].kind == TK::CloseBracket) --depth;
-        ++index;
-      } while (depth > 0 && index < tokens_.size());
-      if (depth != 0) return false;
-    }
-    return index < tokens_.size() &&
-           tokens_[index].kind == TK::OpenParenthesis;
+    if (index < pos_ || index >= tokens_.size()) return false;
+    const size_t offset = index - pos_;
+    if (!at(TK::Identifier, offset)) return false;
+    const auto after_dimensions = afterBalancedDimensions(offset + 1);
+    return after_dimensions && at(TK::OpenParenthesis, *after_dimensions);
   }
 
   auto parseScopedCheckerInstantiationRule(bool finish_line = true,
@@ -7607,19 +7616,9 @@ class SVParser {
       return parseScopedCheckerInstantiationRule(finish_line, valid_result);
     bool instance_shape = hasInstanceShape(pos_ + 1);
     if (at(TK::Hash, 1) && at(TK::OpenParenthesis, 2)) {
-      int depth = 0;
-      for (size_t i = pos_ + 2; i < tokens_.size(); ++i) {
-        if (tokens_[i].kind == TK::OpenParenthesis) ++depth;
-        if (tokens_[i].kind == TK::CloseParenthesis) --depth;
-        if (depth == 0) {
-          instance_shape = hasInstanceShape(i + 1);
-          break;
-        }
-        if (tokens_[i].kind == TK::EndOfFile ||
-            tokens_[i].kind == TK::EndModuleKeyword) {
-          break;
-        }
-      }
+      const auto after_parameters = afterBalancedParentheses(2);
+      instance_shape = after_parameters &&
+                       hasInstanceShape(pos_ + *after_parameters);
     }
     if (!instance_shape) {
       return false;
