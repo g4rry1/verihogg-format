@@ -2391,6 +2391,14 @@ class SVParser {
     }
   }
 
+  [[nodiscard]] auto parseAttributeMacroInterruptionRule() -> bool {
+    if (!at(TK::MacroUsage) &&
+        !(at(TK::Directive) && !isCompilerDirective(peek())))
+      return false;
+    parseMacroStatement();
+    return true;
+  }
+
   // description ::= module_declaration | udp_declaration |
   // interface_declaration | program_declaration | package_declaration |
   // ... | config_declaration. The keyword alternatives enter their rule
@@ -2404,6 +2412,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       // The attributed description alternatives are structural headers,
       // udp_declaration, package_item and bind_directive. Config and extern
       // structural declarations have no attribute prefix in Annex A.
@@ -2520,6 +2529,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       // non_port_module_item attaches attributes to
       // module_or_generate_item or specparam_declaration. The other keyword
       // alternatives (including generate_region and nested design units)
@@ -5048,6 +5058,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       // Annex A puts attributes on these class_item alternatives, but not
       // on parameter declarations or the empty ';' alternative.
       if (valid && !at(TK::ParameterKeyword) &&
@@ -5343,6 +5354,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       // interface_or_generate_item is the attributed alternative of
       // non_port_interface_item; its children are module_common_item and
       // extern_tf_declaration.
@@ -5407,6 +5419,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       // The attributed non_port_program_item alternatives are declaration,
       // continuous assignment, initial/final and concurrent assertion.
       // program_generate_item and timeunits_declaration are separate.
@@ -5517,6 +5530,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       // Only module_or_generate_item and interface_or_generate_item have
       // attribute prefixes. The checker-only rand declaration and the
       // separate generate_region alternative do not.
@@ -5551,6 +5565,21 @@ class SVParser {
   }
 
   auto parseCheckerItemRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      // checker_declaration repeats { attribute_instance }
+      // checker_or_generate_item, although the child has no attributes.
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
+      if (valid && parseCheckerItemRule()) return true;
+      recordGrammarFallback("invalid Annex A attributed checker item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (at(TK::Semicolon)) {
       consumeInto(line_);
       addLine();
@@ -5568,6 +5597,20 @@ class SVParser {
   }
 
   auto parsePackageItemRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      // package_declaration repeats { attribute_instance } package_item.
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
+      if (valid && parsePackageItemRule()) return true;
+      recordGrammarFallback("invalid Annex A attributed package item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (parseTimeunitsRule()) return true;
     if (parseAnonymousProgramRule()) return true;
     if (at(TK::ExportKeyword)) {
@@ -5594,6 +5637,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       if (valid && at(TK::PureKeyword) &&
           at(TK::VirtualKeyword, 1) && parseInterfaceClassItemRule())
         return true;
@@ -5831,6 +5875,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       if (valid && parseBlockOrTfItemDeclarationRule(allow_tf_port))
         return true;
       recordGrammarFallback("invalid Annex A attributed block item");
@@ -6716,7 +6761,11 @@ class SVParser {
       return false;
     const auto roots = grammarRoots();
     for (const std::string_view root : roots) {
-      if (!annexCanStart(root, peek().kind)) continue;
+      const bool enclosing_attributes =
+          at(TK::OpenParenthesis) && at(TK::Star, 1) &&
+          (root == "package_item" || root == "checker_or_generate_item");
+      if (!enclosing_attributes && !annexCanStart(root, peek().kind))
+        continue;
       if (root == "library_description" &&
           parseLibraryDescriptionRule())
         return true;
@@ -11762,6 +11811,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       if (valid && (at(TK::PropertyKeyword) ||
                     at(TK::SequenceKeyword) || at(TK::LetKeyword)) &&
           parseClockingItemRule())
@@ -11964,6 +12014,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       if (valid && !at(TK::FunctionKeyword) && parseCrossBodyItemRule())
         return true;
       recordGrammarFallback("invalid Annex A attributed cross body item");
@@ -12274,6 +12325,7 @@ class SVParser {
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseAttributeMacroInterruptionRule()) return true;
       if (valid && parseCoverageSpecOrOptionRule()) return true;
       recordGrammarFallback("invalid Annex A attributed coverage item");
       recoverMalformedItem(saved);
