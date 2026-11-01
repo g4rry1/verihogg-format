@@ -6176,24 +6176,18 @@ class SVParser {
           break;
       }
       consumeInto(line_);  // bind
-      const bool instance_target =
-          at(TK::Identifier) &&
-          (at(TK::Dot, 1) || at(TK::OpenBracket, 1));
-      bool valid = consumeAnnexRule(instance_target
-                                        ? "bind_target_instance"
-                                        : "bind_target_scope", line_);
+      const AnnexState target = parseAnnexItem(
+          {"bind_target_scope", "bind_target_instance"}, false, true);
+      if (target.interrupted) return true;
+      const bool scope_target = target.completed("bind_target_scope");
+      bool valid = !target.failed && target.complete() &&
+                   (scope_target || target.completed("bind_target_instance"));
       if (valid && at(TK::Colon)) {
-        if (instance_target) valid = false;
+        if (!scope_target) valid = false;
         else {
           consumeInto(line_);
-          do {
-            parseGrammarChildDirectiveLines();
-            valid = consumeAnnexRule("bind_target_instance", line_,
-                                     TK::Comma);
-            parseGrammarChildDirectiveLines();
-            if (!valid || !at(TK::Comma)) break;
-            consumeInto(line_);
-          } while (!at(TK::EndOfFile));
+          parseGrammarChildDirectiveLines();
+          valid = consumeAnnexRule("bind_target_instance_list", line_);
         }
       }
       if (valid) {
