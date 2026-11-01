@@ -5390,10 +5390,11 @@ class SVParser {
   }
 
   auto parseExternTfDeclarationRule() -> bool {
+    const size_t next = afterOrdinaryDirectives(1);
     if (!at(TK::ExternKeyword) ||
-        (!at(TK::FunctionKeyword, 1) &&
-         !at(TK::TaskKeyword, 1) &&
-         !at(TK::ForkJoinKeyword, 1)))
+        (!at(TK::FunctionKeyword, next) &&
+         !at(TK::TaskKeyword, next) &&
+         !at(TK::ForkJoinKeyword, next)))
       return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
@@ -5408,12 +5409,21 @@ class SVParser {
         break;
     }
     const LeafCheckpoint saved = leafCheckpoint();
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     consumeInto(line_);  // extern
+    skip_directives();
     const bool forkjoin = at(TK::ForkJoinKeyword);
     if (forkjoin) consumeInto(line_);
+    skip_directives();
     const bool valid = consumeAnnexRule(
         forkjoin ? "task_prototype" : "method_prototype", line_,
         TK::Semicolon);
+    skip_directives();
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A extern task or function");
       recoverMalformedLeaf(saved);
