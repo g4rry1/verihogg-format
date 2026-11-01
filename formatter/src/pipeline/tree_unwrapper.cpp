@@ -6332,13 +6332,14 @@ class SVParser {
     }
   }
 
-  // statement_item alternatives with an identifier or scoped prefix share
-  // tokens until the call, assignment, or clocking drive is complete.
+  // statement_item alternatives for calls and assignments share tokens until
+  // the call, assignment, or clocking drive is complete.
   // Keep only those Annex A children live while emitting the statement.
-  auto parseIdentifierStatementRule() -> bool {
+  auto parseAssignmentOrCallStatementRule() -> bool {
     if (!at(TK::Identifier) && !at(TK::UnitSystemName) &&
         !at(TK::RootSystemName) && !at(TK::ThisKeyword) &&
-        !at(TK::SuperKeyword))
+        !at(TK::SuperKeyword) && !at(TK::OpenBrace) &&
+        !at(TK::ApostropheOpenBrace))
       return false;
     bool interrupted = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
@@ -6363,8 +6364,11 @@ class SVParser {
     size_t assignment_offset = nonblocking ? 1 : 0;
     if (!interrupted && !blocking && !nonblocking &&
         (at(TK::OpenBracket, 1) || at(TK::Dot, 1) ||
-         at(TK::DoubleColon, 1))) {
+         at(TK::DoubleColon, 1) || at(TK::OpenBrace) ||
+         at(TK::ApostropheOpenBrace))) {
       ListDepth depth;
+      if (at(TK::OpenBrace) || at(TK::ApostropheOpenBrace))
+        advanceListDepth(depth, peek().kind);
       for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
         const TK kind = tokens_[i].kind;
         if (depth.topLevel() && kind == TK::LessThanEquals) {
@@ -6960,7 +6964,7 @@ class SVParser {
             parseAttributedStatementRule(root) ||
             parseStatementLabelRule(roots) ||
             parseQualifiedStatementRule() || parseStatementItemRule() ||
-            parseIdentifierStatementRule()) {
+            parseAssignmentOrCallStatementRule()) {
           markStatementPhase();
           return true;
         }
@@ -6973,7 +6977,7 @@ class SVParser {
       }
       if (root == "statement_item") {
         if (parseQualifiedStatementRule() || parseStatementItemRule() ||
-            parseIdentifierStatementRule()) {
+            parseAssignmentOrCallStatementRule()) {
           markStatementPhase();
           return true;
         }
