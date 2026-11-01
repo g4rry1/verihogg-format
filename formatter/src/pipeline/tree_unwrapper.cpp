@@ -3276,11 +3276,20 @@ class SVParser {
       static_cast<void>(parseAnnexItem({"type_declaration"}, true));
       return true;
     }
-    if (at(TK::Identifier, 1)) {
-      const auto after_selects = afterBalancedDimensions(2);
+    const size_t type_start = afterOrdinaryDirectives(1);
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    if (at(TK::Identifier, type_start)) {
+      const auto after_selects =
+          afterBalancedDimensions(type_start + 1);
       if (after_selects && at(TK::Dot, *after_selects)) {
         const LeafCheckpoint saved = leafCheckpoint();
         consumeInto(line_);  // typedef
+        skip_directives();
         bool valid = consumeAnnexRule("interface_port_identifier", line_);
         parseGrammarChildDirectiveLines();
         if (valid && at(TK::OpenBracket))
@@ -3303,19 +3312,26 @@ class SVParser {
         return true;
       }
     }
-    size_t identifier_offset = 1;
-    const bool interface_class = at(TK::InterfaceKeyword, 1) &&
-                                 at(TK::ClassKeyword, 2);
-    const bool forward = annexCanStart("forward_type", peek(1).kind) &&
-                         (!at(TK::InterfaceKeyword, 1) || interface_class);
-    if (forward) identifier_offset += interface_class ? 2 : 1;
-    if (at(TK::Identifier, identifier_offset) &&
-        at(TK::Semicolon, identifier_offset + 1)) {
+    size_t identifier_offset = type_start;
+    const size_t class_offset =
+        afterOrdinaryDirectives(type_start + 1);
+    const bool interface_class = at(TK::InterfaceKeyword, type_start) &&
+                                 at(TK::ClassKeyword, class_offset);
+    const bool forward =
+        annexCanStart("forward_type", peek(type_start).kind) &&
+        (!at(TK::InterfaceKeyword, type_start) || interface_class);
+    if (forward)
+      identifier_offset = interface_class ? class_offset + 1
+                                          : type_start + 1;
+    const size_t name_offset = afterOrdinaryDirectives(identifier_offset);
+    if (at(TK::Identifier, name_offset) &&
+        at(TK::Semicolon, afterOrdinaryDirectives(name_offset + 1))) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // typedef
-      const bool valid =
-          (!forward || consumeAnnexRule("forward_type", line_)) &&
-          consumeAnnexRule("type_identifier", line_);
+      skip_directives();
+      bool valid = !forward || consumeAnnexRule("forward_type", line_);
+      skip_directives();
+      if (valid) valid = consumeAnnexRule("type_identifier", line_);
       parseGrammarChildDirectiveLines();
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A forward type declaration");
@@ -3327,9 +3343,10 @@ class SVParser {
       return true;
     }
     if (annexCanStart("data_type_or_incomplete_class_scoped_type",
-                      peek(1).kind)) {
+                      peek(type_start).kind)) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // typedef
+      skip_directives();
       bool valid = consumeAnnexRule(
           "data_type_or_incomplete_class_scoped_type", line_);
       parseGrammarChildDirectiveLines();
@@ -3358,8 +3375,21 @@ class SVParser {
       static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
       return true;
     }
+    const size_t type_start = afterOrdinaryDirectives(1);
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     bool has_resolver = false;
     for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
+      if (isCompilerDirective(tokens_[i]) &&
+          !isConditionalStartDirective(tokens_[i]) &&
+          !isConditionalBoundaryDirective(tokens_[i])) {
+        i = pos_ + afterOrdinaryDirectives(i - pos_) - 1;
+        continue;
+      }
       if (tokens_[i].kind == TK::Semicolon ||
           tokens_[i].kind == TK::EndOfFile)
         break;
@@ -3370,12 +3400,16 @@ class SVParser {
     // otherwise the alias branch retains the shared spelling. All other type
     // starters come from the imported data_type first set.
     const bool explicit_type =
-        annexCanStart("data_type", peek(1).kind) &&
-        (has_resolver || (at(TK::Identifier, 1) && at(TK::Hash, 2)) ||
-         (!at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1)));
+        annexCanStart("data_type", peek(type_start).kind) &&
+        (has_resolver ||
+         (at(TK::Identifier, type_start) &&
+          at(TK::Hash, type_start + 1)) ||
+         (!at(TK::Identifier, type_start) &&
+          !at(TK::UnitSystemName, type_start)));
     if (explicit_type) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // nettype
+      skip_directives();
       bool valid = consumeAnnexRule("data_type", line_);
       parseGrammarChildDirectiveLines();
       if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
@@ -3432,15 +3466,18 @@ class SVParser {
     }
     // The second alternative is a nettype alias. A bare user type has the
     // same two-identifier spelling and follows the same line boundary.
-    if (has_resolver || at(TK::Hash, 2)) {
+    if (has_resolver || at(TK::Hash, type_start + 1)) {
       static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
       return true;
     }
-    if ((at(TK::Identifier, 1) &&
-         (at(TK::Identifier, 2) || at(TK::DoubleColon, 2))) ||
-        (at(TK::UnitSystemName, 1) && at(TK::DoubleColon, 2))) {
+    if ((at(TK::Identifier, type_start) &&
+         (at(TK::Identifier, type_start + 1) ||
+          at(TK::DoubleColon, type_start + 1))) ||
+        (at(TK::UnitSystemName, type_start) &&
+         at(TK::DoubleColon, type_start + 1))) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // nettype
+      skip_directives();
       bool valid = true;
       if (at(TK::DoubleColon, 1) || at(TK::UnitSystemName)) {
         beginGrammar({"package_scope", "class_scope"});
