@@ -9165,25 +9165,24 @@ class SVParser {
 
   auto parseDesignStatementRule() -> bool {
     if (!at(TK::DesignKeyword)) return false;
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      if (isConditionalStartDirective(tokens_[i])) {
-        const AnnexState item = parseAnnexItem({"design_statement"});
-        if (item.complete()) block_stack_.back().statement_phase = true;
-        return true;
-      }
-      if (tokens_[i].kind == TK::Semicolon ||
-          tokens_[i].kind == TK::EndOfFile) break;
+    if (hasAnnexListInterruption(pos_, false)) {
+      const AnnexState item = parseAnnexItem({"design_statement"});
+      if (item.complete()) block_stack_.back().statement_phase = true;
+      return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // design
+    parseGrammarChildDirectiveLines();
     bool valid = true;
     while (valid && at(TK::Identifier)) {
       if (at(TK::Dot, 1)) {
         valid = consumeAnnexRule("library_identifier", line_);
         if (!valid) break;
         consumeInto(line_);
+        parseGrammarChildDirectiveLines();
       }
       valid = consumeAnnexRule("cell_identifier", line_);
+      parseGrammarChildDirectiveLines();
     }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A design statement");
@@ -9211,13 +9210,9 @@ class SVParser {
       default:
         return false;
     }
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      if (isConditionalStartDirective(tokens_[i])) {
-        static_cast<void>(parseAnnexItem({"config_rule_statement"}));
-        return true;
-      }
-      if (tokens_[i].kind == TK::Semicolon ||
-          tokens_[i].kind == TK::EndOfFile) break;
+    if (hasAnnexListInterruption(pos_, false)) {
+      static_cast<void>(parseAnnexItem({"config_rule_statement"}));
+      return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
     if (!consumeAnnexRule(clause, line_)) {
@@ -9225,6 +9220,7 @@ class SVParser {
       recoverMalformedItem(saved);
       return true;
     }
+    parseGrammarChildDirectiveLines();
     const bool liblist = at(TK::LibListKeyword);
     if (!liblist &&
         (clause == "default_clause" || !at(TK::UseKeyword))) {
@@ -9232,9 +9228,10 @@ class SVParser {
       recoverMalformedItem(saved);
       return true;
     }
-    if (!consumeAnnexRule(liblist ? "liblist_clause" : "use_clause",
-                          line_) ||
-        !at(TK::Semicolon)) {
+    const bool valid = consumeAnnexRule(
+        liblist ? "liblist_clause" : "use_clause", line_);
+    parseGrammarChildDirectiveLines();
+    if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A config rule clause");
       recoverMalformedItem(saved);
       return true;
