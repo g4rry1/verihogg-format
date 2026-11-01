@@ -940,6 +940,18 @@ class SVParser {
     return offset;
   }
 
+  [[nodiscard]] auto afterAttributePrefix() const
+      -> std::optional<size_t> {
+    size_t offset = 0;
+    while (at(TK::OpenParenthesis, offset) &&
+           at(TK::Star, offset + 1)) {
+      const auto after = afterBalancedParentheses(offset);
+      if (!after || !at(TK::Star, *after - 2)) return std::nullopt;
+      offset = *after;
+    }
+    return offset;
+  }
+
   // Only distinguish a type name from the following declaration name here.
   // The data_type child validates scopes, parameters and dimensions when it
   // is consumed by the corresponding Annex A production.
@@ -6700,6 +6712,40 @@ class SVParser {
     return false;
   }
 
+  // statement ::= [ label ':' ] { attribute_instance } statement_item;
+  // statement_or_null and function_statement_or_null additionally permit
+  // { attribute_instance } ';'. Enter the item child after its prefix.
+  auto parseAttributedStatementRule(std::string_view root) -> bool {
+    if (!at(TK::OpenParenthesis) || !at(TK::Star, 1)) return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    bool valid = true;
+    do {
+      valid = consumeAnnexRule("attribute_instance", line_);
+      parseGrammarChildDirectiveLines();
+    } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+    if (valid && parseAttributeMacroInterruptionRule()) return true;
+    if (valid && at(TK::Semicolon) &&
+        (root == "statement_or_null" ||
+         root == "function_statement_or_null")) {
+      consumeInto(line_);
+      addLine();
+      return true;
+    }
+    if (valid && !at(TK::Semicolon) && !at(TK::EndOfFile) &&
+        !matchingOpenFrame(peek().kind) &&
+        !(stop_at_conditional_boundary_ &&
+          isConditionalBoundaryDirective(peek()))) {
+      const size_t before = pos_;
+      grammar_contexts_.push_back({block_stack_.size(), {"statement_item"}});
+      parseStatement();
+      grammar_contexts_.pop_back();
+      if (pos_ > before) return true;
+    }
+    recordGrammarFallback("invalid Annex A attributed statement");
+    recoverMalformedItem(saved);
+    return true;
+  }
+
   // conditional_generate_construct and loop_generate_construct are shared by
   // module, interface, program, checker and generate items in Annex A.
   auto parseGenerateConstructRule() -> bool {
@@ -6760,6 +6806,40 @@ class SVParser {
         !grammar_paused_.back())
       return false;
     const auto roots = grammarRoots();
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const bool declaration = std::ranges::any_of(
+          roots, [](std::string_view root) {
+            return root == "block_item_declaration" ||
+                   root == "tf_item_declaration";
+          });
+      const auto statement = std::ranges::find_if(
+          roots, [](std::string_view root) {
+            return root == "statement_or_null" ||
+                   root == "function_statement_or_null";
+          });
+      if (declaration && statement != roots.end()) {
+        const auto child = afterAttributePrefix();
+        if (child) {
+          const TK first = peek(*child).kind;
+          const auto after_type = first == TK::Identifier
+                                      ? afterUserTypePrefix(*child)
+                                      : std::nullopt;
+          const bool identifier_statement =
+              after_type && !at(TK::Identifier, *after_type) &&
+              !at(TK::Semicolon, *after_type) &&
+              !at(TK::Comma, *after_type);
+          const bool distinct_statement =
+              annexCanStart(*statement, first) &&
+              !annexCanStart("block_item_declaration", first) &&
+              !annexCanStart("tf_item_declaration", first);
+          if ((identifier_statement || distinct_statement) &&
+              parseAttributedStatementRule(*statement)) {
+            markStatementPhase();
+            return true;
+          }
+        }
+      }
+    }
     for (const std::string_view root : roots) {
       const bool enclosing_attributes =
           at(TK::OpenParenthesis) && at(TK::Star, 1) &&
@@ -6790,7 +6870,8 @@ class SVParser {
       if (root == "statement_or_null" || root == "statement" ||
           root == "function_statement_or_null" ||
           root == "function_statement") {
-        if (parseStatementLabelRule(roots) ||
+        if (parseAttributedStatementRule(root) ||
+            parseStatementLabelRule(roots) ||
             parseQualifiedStatementRule() || parseStatementItemRule() ||
             parseIdentifierStatementRule()) {
           markStatementPhase();
@@ -7107,8 +7188,25 @@ class SVParser {
   }
 
   auto parseLabeledStatement(std::string_view body_rule) -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // label identifier
     consumeInto(line_);  // colon
+    if (body_rule == "statement_item") {
+      parseGrammarChildDirectiveLines();
+      while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+        if (!consumeAnnexRule("attribute_instance", line_)) {
+          recordGrammarFallback("invalid Annex A labeled statement attribute");
+          recoverMalformedItem(saved);
+          return;
+        }
+        parseGrammarChildDirectiveLines();
+      }
+    }
+    if (matchingOpenFrame(peek().kind) || at(TK::EndOfFile)) {
+      recordGrammarFallback("missing Annex A labeled statement item");
+      recoverMalformedItem(saved);
+      return;
+    }
     const auto checkpoint = grammar_scopes_.empty()
                                 ? std::optional<AnnexState::Checkpoint>{}
                                 : std::optional{grammar_scopes_.back().checkpoint()};
