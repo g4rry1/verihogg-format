@@ -4808,19 +4808,32 @@ class SVParser {
   // 'function class_scope new' from function_declaration.
   auto parseClassConstructorRule() -> bool {
     if (!at(TK::FunctionKeyword)) return false;
-    AnnexState candidate({"class_constructor_declaration"});
-    bool constructor_name = false;
-    for (size_t offset = 0; pos_ + offset < tokens_.size(); ++offset) {
-      const TK kind = peek(offset).kind;
-      if (isCompilerDirective(peek(offset)) ||
-          !candidate.accepts(kind)) break;
-      candidate.advance(peek(offset));
-      if (kind == TK::NewKeyword &&
-          candidate.hasViableRule("class_constructor_declaration")) {
-        constructor_name = true;
-        break;
+    bool constructor_name = at(TK::NewKeyword, afterOrdinaryDirectives(1));
+    if (!constructor_name) {
+      const auto scope_end =
+          afterUserTypePrefix(afterOrdinaryDirectives(1));
+      if (scope_end) {
+        const size_t separator = afterOrdinaryDirectives(*scope_end);
+        constructor_name =
+            at(TK::DoubleColon, separator) &&
+            at(TK::NewKeyword,
+               afterOrdinaryDirectives(separator + 1));
       }
-      if (kind == TK::Semicolon) break;
+    }
+    if (!constructor_name) {
+      AnnexState candidate({"class_constructor_declaration"});
+      for (size_t offset = 0; pos_ + offset < tokens_.size(); ++offset) {
+        const TK kind = peek(offset).kind;
+        if (isCompilerDirective(peek(offset)) ||
+            !candidate.accepts(kind)) break;
+        candidate.advance(peek(offset));
+        if (kind == TK::NewKeyword &&
+            candidate.hasViableRule("class_constructor_declaration")) {
+          constructor_name = true;
+          break;
+        }
+        if (kind == TK::Semicolon) break;
+      }
     }
     if (!constructor_name) return false;
     const LeafCheckpoint saved = leafCheckpoint();
