@@ -5012,7 +5012,8 @@ class SVParser {
     }
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseExplicitDataDeclarationRule())
+        parseExplicitDataDeclarationRule() ||
+        parseUserDataDeclarationRule())
       return true;
     if (parseQualifiedConstClassPropertyRule()) return true;
     if (parseExplicitClassPropertyRule()) return true;
