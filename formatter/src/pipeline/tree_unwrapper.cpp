@@ -4291,7 +4291,8 @@ class SVParser {
       return parsePackageImportExportRule();
     }
     if (at(TK::ConstraintKeyword) ||
-        (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
+        (at(TK::StaticKeyword) &&
+         at(TK::ConstraintKeyword, afterOrdinaryDirectives(1)))) {
       parseConstraintBlock({"extern_constraint_declaration"});
       return true;
     }
@@ -5315,7 +5316,8 @@ class SVParser {
     if (parseQualifiedClassMethodRule()) return true;
     if (parseQualifiedClassDataDeclarationRule()) return true;
     if (at(TK::ConstraintKeyword) ||
-        (at(TK::StaticKeyword) && at(TK::ConstraintKeyword, 1))) {
+        (at(TK::StaticKeyword) &&
+         at(TK::ConstraintKeyword, afterOrdinaryDirectives(1)))) {
       parseConstraintBlock({"class_constraint"});
       return true;
     }
@@ -9527,6 +9529,12 @@ class SVParser {
   }
 
   auto parseConstraintExpressionRule() -> bool {
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     if ((at(TK::IfKeyword) || at(TK::ForeachKeyword) ||
          at(TK::UniqueKeyword) || at(TK::SoftKeyword) ||
          at(TK::DisableKeyword)) &&
@@ -9546,11 +9554,16 @@ class SVParser {
       if (!parseConstraintSetRule()) recoverMalformedItem(saved);
       return true;
     }
-    if (at(TK::DisableKeyword) && at(TK::SoftKeyword, 1)) {
+    if (at(TK::DisableKeyword) &&
+        at(TK::SoftKeyword, afterOrdinaryDirectives(1))) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
+      skip_directives();
       consumeInto(line_);
-      if (!consumeAnnexRule("constraint_primary", line_) ||
+      skip_directives();
+      const bool primary = consumeAnnexRule("constraint_primary", line_);
+      skip_directives();
+      if (!primary ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A disable soft constraint");
         recoverMalformedItem(saved);
@@ -9589,6 +9602,7 @@ class SVParser {
                 at(TK::CloseBrace);
         if (valid) consumeInto(line_);
       }
+      skip_directives();
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("incomplete Annex A uniqueness constraint");
         recoverMalformedItem(saved);
@@ -9625,7 +9639,8 @@ class SVParser {
         recoverMalformedItem(saved);
         return true;
       }
-      if (at(TK::ElseKeyword)) {
+      if (at(TK::ElseKeyword, afterOrdinaryDirectives(0))) {
+        skip_directives();
         consumeInto(line_);
         addLine();
         if (!parseConstraintSetRule()) recoverMalformedItem(saved);
@@ -9635,12 +9650,16 @@ class SVParser {
     if (!annexCanStart("constraint_expression", peek().kind)) return false;
     const LeafCheckpoint saved = leafCheckpoint();
     const bool soft = at(TK::SoftKeyword);
-    if (soft) consumeInto(line_);
+    if (soft) {
+      consumeInto(line_);
+      skip_directives();
+    }
     if (!consumeAnnexRule("expression", line_, TK::MinusArrow)) {
       recordGrammarFallback("invalid Annex A constraint expression");
       recoverMalformedItem(saved);
       return true;
     }
+    skip_directives();
     if (!soft && at(TK::MinusArrow)) {
       consumeInto(line_);
       addLine();
@@ -9649,6 +9668,7 @@ class SVParser {
     }
     if (at(TK::DistKeyword)) {
       consumeInto(line_);
+      skip_directives();
       if (!at(TK::OpenBrace)) {
         recordGrammarFallback("invalid Annex A distribution constraint");
         recoverMalformedItem(saved);
@@ -9660,6 +9680,7 @@ class SVParser {
         return true;
       }
     }
+    skip_directives();
     if (!at(TK::Semicolon)) {
       recordGrammarFallback("missing Annex A constraint semicolon");
       recoverMalformedItem(saved);
@@ -9715,6 +9736,10 @@ class SVParser {
   // identifier followed by the block brace belongs to constraint_identifier.
   [[nodiscard]] auto parseExternConstraintHeaderRule() -> bool {
     if (at(TK::StaticKeyword)) consumeInto(line_);
+    while (afterOrdinaryDirectives(0) > 0) {
+      addLine();
+      parseDirectiveLine();
+    }
     if (!at(TK::ConstraintKeyword)) return false;
     consumeInto(line_);
     while (isCompilerDirective(peek()) &&
