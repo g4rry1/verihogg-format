@@ -1018,7 +1018,8 @@ class SVParser {
     const auto after_dimensions = afterBalancedDimensions(1);
     return after_dimensions &&
            std::ranges::any_of(boundaries, [&](TK boundary) {
-             return at(boundary, *after_dimensions);
+             return at(boundary,
+                       afterOrdinaryDirectives(*after_dimensions));
            });
   }
 
@@ -4570,6 +4571,23 @@ class SVParser {
     return true;
   }
 
+  // tf_port_direction ::= port_direction | [ const ] ref [ static ].
+  // Consume the optional static after directive lines in the same child rule.
+  [[nodiscard]] auto parseTfPortDirectionRule() -> bool {
+    if (at(TK::ConstKeyword) || at(TK::RefKeyword)) {
+      if (at(TK::ConstKeyword)) {
+        consumeInto(line_);
+        parseGrammarChildDirectiveLines();
+      }
+      if (!at(TK::RefKeyword)) return false;
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (at(TK::StaticKeyword)) consumeInto(line_);
+      return true;
+    }
+    return consumeAnnexRule("port_direction", line_);
+  }
+
   // tf_port_item ::= { attribute_instance } [ tf_port_direction ] [ var ]
   // data_type_or_implicit [ port_identifier { variable_dimension }
   // [ '=' expression ] ].
@@ -4582,7 +4600,7 @@ class SVParser {
     if (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
         at(TK::InOutKeyword) || at(TK::RefKeyword) ||
         at(TK::ConstKeyword)) {
-      if (!consumeAnnexRule("tf_port_direction", line_)) return false;
+      if (!parseTfPortDirectionRule()) return false;
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::VarKeyword)) {
@@ -6032,20 +6050,7 @@ class SVParser {
       valid = consumeAnnexRule("attribute_instance", line_);
       parseGrammarChildDirectiveLines();
     }
-    if (valid && ref_direction) {
-      if (at(TK::ConstKeyword)) {
-        consumeInto(line_);
-        parseGrammarChildDirectiveLines();
-      }
-      valid = at(TK::RefKeyword);
-      if (valid) {
-        consumeInto(line_);
-        parseGrammarChildDirectiveLines();
-      }
-      if (valid && at(TK::StaticKeyword)) consumeInto(line_);
-    } else if (valid) {
-      valid = consumeAnnexRule("port_direction", line_);
-    }
+    if (valid) valid = parseTfPortDirectionRule();
     parseGrammarChildDirectiveLines();
     if (valid && at(TK::VarKeyword)) consumeInto(line_);
     parseGrammarChildDirectiveLines();
