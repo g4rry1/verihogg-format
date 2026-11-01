@@ -2442,10 +2442,14 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      // The attributed description alternatives are structural headers,
-      // udp_declaration, package_item and bind_directive. Config and extern
-      // structural declarations have no attribute prefix in Annex A.
-      if (valid && !at(TK::ConfigKeyword) && !at(TK::ExternKeyword) &&
+      // description admits attributes on structural headers, package_item
+      // and bind_directive, but not on config or extern alternatives.
+      if (valid &&
+          annexCanStartAny({"module_nonansi_header", "udp_declaration",
+                            "interface_nonansi_header",
+                            "program_nonansi_header", "package_declaration",
+                            "package_item", "bind_directive"},
+                           peek().kind) &&
           parseDescriptionRule())
         return true;
       recordGrammarFallback("invalid Annex A attributed description");
@@ -5080,10 +5084,13 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      // Annex A puts attributes on these class_item alternatives, but not
-      // on parameter declarations or the empty ';' alternative.
-      if (valid && !at(TK::ParameterKeyword) &&
-          !at(TK::LocalParamKeyword) && !at(TK::Semicolon) &&
+      // class_item places attributes on exactly these six alternatives.
+      if (valid &&
+          annexCanStartAny({"class_property", "class_method",
+                            "class_constraint", "class_declaration",
+                            "interface_class_declaration",
+                            "covergroup_declaration"},
+                           peek().kind) &&
           parseClassItemRule())
         return true;
       recordGrammarFallback("invalid Annex A attributed class item");
@@ -5651,8 +5658,9 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid && at(TK::PureKeyword) &&
-          at(TK::VirtualKeyword, 1) && parseInterfaceClassItemRule())
+      if (valid &&
+          annexCanStart("interface_class_method", peek().kind) &&
+          parseInterfaceClassItemRule())
         return true;
       recordGrammarFallback("invalid Annex A attributed interface class method");
       recoverMalformedItem(saved);
@@ -11981,8 +11989,8 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid && (at(TK::PropertyKeyword) ||
-                    at(TK::SequenceKeyword) || at(TK::LetKeyword)) &&
+      if (valid &&
+          annexCanStart("assertion_item_declaration", peek().kind) &&
           parseClockingItemRule())
         return true;
       recordGrammarFallback("invalid Annex A attributed clocking item");
@@ -12184,7 +12192,9 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid && !at(TK::FunctionKeyword) && parseCrossBodyItemRule())
+      if (valid &&
+          annexCanStart("bins_selection_or_option", peek().kind) &&
+          parseCrossBodyItemRule())
         return true;
       recordGrammarFallback("invalid Annex A attributed cross body item");
       recoverMalformedItem(saved);
