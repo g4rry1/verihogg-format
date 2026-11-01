@@ -2397,6 +2397,23 @@ class SVParser {
   // functions directly; shared-prefix alternatives still use local grammar
   // state in parseStatement().
   auto parseDescriptionRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      // The attributed description alternatives are structural headers,
+      // udp_declaration, package_item and bind_directive. Config and extern
+      // structural declarations have no attribute prefix in Annex A.
+      if (valid && !at(TK::ConfigKeyword) && !at(TK::ExternKeyword) &&
+          parseDescriptionRule())
+        return true;
+      recordGrammarFallback("invalid Annex A attributed description");
+      recoverMalformedItem(saved);
+      return true;
+    }
     switch (peek().kind) {
       case TK::ExternKeyword:
         if (at(TK::PrimitiveKeyword, 1)) {
@@ -9815,7 +9832,7 @@ class SVParser {
 
   // package_declaration ::= {attribute_instance} package [lifetime]
   //                         package_identifier ';' ... endpackage.
-  // Attribute prefixes have already been consumed by parseStatementImpl().
+  // The enclosing description rule has already consumed any attributes.
   [[nodiscard]] auto parsePackageHeaderRule() -> bool {
     consumeInto(line_);
     const auto skip_directives = [&] {
