@@ -895,6 +895,26 @@ class SVParser {
     return peek(offset).kind == kind;
   }
 
+  // Look ahead only to choose between Annex A productions that share an
+  // identifier prefix. Their dimension children still validate the tokens
+  // when SVParser consumes them. Unavailable macro tokens keep the existing
+  // interrupted grammar path.
+  [[nodiscard]] auto afterBalancedDimensions(size_t offset) const
+      -> std::optional<size_t> {
+    while (at(TK::OpenBracket, offset)) {
+      int depth = 0;
+      do {
+        if (at(TK::MacroUsage, offset) || at(TK::Directive, offset))
+          return std::nullopt;
+        if (at(TK::OpenBracket, offset)) ++depth;
+        if (at(TK::CloseBracket, offset)) --depth;
+        ++offset;
+      } while (depth > 0 && pos_ + offset < tokens_.size());
+      if (depth != 0) return std::nullopt;
+    }
+    return offset;
+  }
+
   auto consume() -> Token {
     if (pos_ >= tokens_.size()) return tokens_.back();
     const Token token = tokens_[pos_];
@@ -3488,33 +3508,18 @@ class SVParser {
     const auto declaration = at(TK::ParameterKeyword)
                                  ? "parameter_declaration"
                                  : "local_parameter_declaration";
-    size_t after_identifier = 2;
-    bool interrupted_dimension = false;
-    if (at(TK::Identifier, 1)) {
-      while (at(TK::OpenBracket, after_identifier)) {
-        int depth = 0;
-        do {
-          if (at(TK::MacroUsage, after_identifier) ||
-              at(TK::Directive, after_identifier)) {
-            interrupted_dimension = true;
-            break;
-          }
-          if (at(TK::OpenBracket, after_identifier)) ++depth;
-          if (at(TK::CloseBracket, after_identifier)) --depth;
-          ++after_identifier;
-        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
-        if (depth != 0 || interrupted_dimension) break;
-      }
-    }
-    if (interrupted_dimension) {
+    const auto after_identifier = at(TK::Identifier, 1)
+                                      ? afterBalancedDimensions(2)
+                                      : std::optional<size_t>{2};
+    if (!after_identifier) {
       parseAnnexSemicolonItem(declaration);
       return true;
     }
     const bool explicit_type =
         (at(TK::Identifier, 1) &&
-         (at(TK::Identifier, after_identifier) ||
-          at(TK::DoubleColon, after_identifier) ||
-          at(TK::Hash, after_identifier))) ||
+         (at(TK::Identifier, *after_identifier) ||
+          at(TK::DoubleColon, *after_identifier) ||
+          at(TK::Hash, *after_identifier))) ||
         (annexCanStart("data_type", peek(1).kind) &&
          !at(TK::Identifier, 1) &&
          !at(TK::SignedKeyword, 1) && !at(TK::UnsignedKeyword, 1) &&
@@ -3524,9 +3529,9 @@ class SVParser {
                                at(TK::OpenBracket, 1);
     const bool bare_assignment =
         at(TK::Identifier, 1) &&
-        (at(TK::Equals, after_identifier) ||
-         at(TK::Comma, after_identifier) ||
-         at(TK::Semicolon, after_identifier));
+        (at(TK::Equals, *after_identifier) ||
+         at(TK::Comma, *after_identifier) ||
+         at(TK::Semicolon, *after_identifier));
     if (!explicit_type && !implicit_type && !bare_assignment) {
       parseAnnexSemicolonItem(declaration);
       return true;
@@ -3585,18 +3590,9 @@ class SVParser {
         break;
       variable += 2;
     }
-    while (at(TK::OpenBracket, variable)) {
-      int depth = 0;
-      do {
-        if (at(TK::MacroUsage, variable) ||
-            at(TK::Directive, variable))
-          return false;
-        if (at(TK::OpenBracket, variable)) ++depth;
-        if (at(TK::CloseBracket, variable)) --depth;
-        ++variable;
-      } while (depth > 0 && pos_ + variable < tokens_.size());
-      if (depth != 0) return false;
-    }
+    const auto after_dimensions = afterBalancedDimensions(variable);
+    if (!after_dimensions) return false;
+    variable = *after_dimensions;
     if (!at(TK::Identifier, variable) ||
         at(TK::OpenParenthesis, variable + 1))
       return false;
@@ -3661,26 +3657,16 @@ class SVParser {
         at(TK::AutomaticKeyword, offset))
       ++offset;
     const TK type_start = peek(offset).kind;
-    size_t after_identifier = offset + 1;
-    if (type_start == TK::Identifier) {
-      while (at(TK::OpenBracket, after_identifier)) {
-        int depth = 0;
-        do {
-          if (at(TK::MacroUsage, after_identifier) ||
-              at(TK::Directive, after_identifier))
-            return false;
-          if (at(TK::OpenBracket, after_identifier)) ++depth;
-          if (at(TK::CloseBracket, after_identifier)) --depth;
-          ++after_identifier;
-        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
-        if (depth != 0) return false;
-      }
-    }
+    const auto after_identifier =
+        type_start == TK::Identifier
+            ? afterBalancedDimensions(offset + 1)
+            : std::optional<size_t>{offset + 1};
+    if (!after_identifier) return false;
     const bool implicit_type =
         type_start == TK::Identifier &&
-        (at(TK::Semicolon, after_identifier) ||
-         at(TK::Equals, after_identifier) ||
-         at(TK::Comma, after_identifier));
+        (at(TK::Semicolon, *after_identifier) ||
+         at(TK::Equals, *after_identifier) ||
+         at(TK::Comma, *after_identifier));
     if (!annexCanStart("data_type_or_implicit", type_start))
       return false;
     const bool conditional_members = hasConditionalListMember(pos_);
@@ -4796,26 +4782,16 @@ class SVParser {
         (at(TK::FunctionKeyword, offset + 1) ||
          at(TK::TaskKeyword, offset + 1)))
       return false;
-    size_t after_identifier = offset + 1;
-    if (type_start == TK::Identifier) {
-      while (at(TK::OpenBracket, after_identifier)) {
-        int depth = 0;
-        do {
-          if (at(TK::MacroUsage, after_identifier) ||
-              at(TK::Directive, after_identifier))
-            return false;
-          if (at(TK::OpenBracket, after_identifier)) ++depth;
-          if (at(TK::CloseBracket, after_identifier)) --depth;
-          ++after_identifier;
-        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
-        if (depth != 0) return false;
-      }
-    }
+    const auto after_identifier =
+        type_start == TK::Identifier
+            ? afterBalancedDimensions(offset + 1)
+            : std::optional<size_t>{offset + 1};
+    if (!after_identifier) return false;
     const bool implicit_type =
         type_start == TK::Identifier &&
-        (at(TK::Semicolon, after_identifier) ||
-         at(TK::Equals, after_identifier) ||
-         at(TK::Comma, after_identifier));
+        (at(TK::Semicolon, *after_identifier) ||
+         at(TK::Equals, *after_identifier) ||
+         at(TK::Comma, *after_identifier));
     if (offset == 0 && type_start != TK::Identifier &&
         type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
       return false;
@@ -9799,22 +9775,10 @@ class SVParser {
   // dimensions; otherwise it starts another parameter_port_declaration.
   [[nodiscard]] auto startsParameterPortDeclaration() const -> bool {
     if (!at(TK::Identifier)) return true;
-    size_t next = pos_ + 1;
-    while (next < tokens_.size() &&
-           tokens_[next].kind == TK::OpenBracket) {
-      int depth = 0;
-      do {
-        if (tokens_[next].kind == TK::OpenBracket) ++depth;
-        if (tokens_[next].kind == TK::CloseBracket) --depth;
-        ++next;
-      } while (depth > 0 && next < tokens_.size());
-      if (depth != 0) return true;
-    }
-    return next < tokens_.size() &&
-           (tokens_[next].kind == TK::Identifier ||
-            tokens_[next].kind == TK::DoubleColon ||
-            tokens_[next].kind == TK::Hash ||
-            tokens_[next].kind == TK::Dot);
+    const auto next = afterBalancedDimensions(1);
+    if (!next) return true;
+    return at(TK::Identifier, *next) || at(TK::DoubleColon, *next) ||
+           at(TK::Hash, *next) || at(TK::Dot, *next);
   }
 
   // parameter_port_declaration can select type_parameter_declaration when
@@ -10028,20 +9992,10 @@ class SVParser {
   [[nodiscard]] auto ansiIdentifierEndsMember(size_t offset = 0) const
       -> bool {
     if (!at(TK::Identifier, offset)) return false;
-    size_t next = pos_ + offset + 1;
-    while (next < tokens_.size() && tokens_[next].kind == TK::OpenBracket) {
-      int depth = 0;
-      do {
-        if (tokens_[next].kind == TK::OpenBracket) ++depth;
-        if (tokens_[next].kind == TK::CloseBracket) --depth;
-        ++next;
-      } while (depth > 0 && next < tokens_.size());
-      if (depth != 0) return false;
-    }
-    return next < tokens_.size() &&
-           (tokens_[next].kind == TK::Comma ||
-            tokens_[next].kind == TK::CloseParenthesis ||
-            tokens_[next].kind == TK::Equals);
+    const auto next = afterBalancedDimensions(offset + 1);
+    return next && (at(TK::Comma, *next) ||
+                    at(TK::CloseParenthesis, *next) ||
+                    at(TK::Equals, *next));
   }
 
   // The selected ansi_port_declaration alternative enters its header rule.
