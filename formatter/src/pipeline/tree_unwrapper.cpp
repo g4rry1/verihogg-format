@@ -6332,11 +6332,14 @@ class SVParser {
     }
   }
 
-  // statement_item alternatives with an identifier prefix share tokens until
-  // the call, assignment, or clocking drive is complete.
+  // statement_item alternatives with an identifier or scoped prefix share
+  // tokens until the call, assignment, or clocking drive is complete.
   // Keep only those Annex A children live while emitting the statement.
   auto parseIdentifierStatementRule() -> bool {
-    if (!at(TK::Identifier)) return false;
+    if (!at(TK::Identifier) && !at(TK::UnitSystemName) &&
+        !at(TK::RootSystemName) && !at(TK::ThisKeyword) &&
+        !at(TK::SuperKeyword))
+      return false;
     bool interrupted = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
