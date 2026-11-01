@@ -5502,9 +5502,9 @@ class SVParser {
         (at(TK::Semicolon, *after_implicit) ||
          at(TK::Equals, *after_implicit) ||
          at(TK::Comma, *after_implicit));
-    const auto after_type = at(TK::Identifier, 1)
-                                ? afterUserTypePrefix(1)
-                                : std::nullopt;
+    const size_t type_offset =
+        at(TK::UnitSystemName, 1) && at(TK::DoubleColon, 2) ? 3 : 1;
+    const auto after_type = afterUserTypePrefix(type_offset);
     if (implicit_identifier ||
         (after_type && at(TK::Identifier, *after_type))) {
       const LeafCheckpoint saved = leafCheckpoint();
