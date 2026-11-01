@@ -6893,9 +6893,15 @@ class SVParser {
       }
     }
 
-    // Consume complete Annex A attribute_instance prefixes before selecting
-    // the construction they decorate. package_declaration stores these outside
-    // package_item; other contexts validate them through their current root.
+    // Let a direct Annex A item rule consume its own attribute_instance
+    // children. Keep the shared prefix path for roots whose direct rule does
+    // not yet include attributes (and for description/package prefixes).
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1) &&
+        parseDirectGrammarRule())
+      return;
+
+    // package_declaration stores these outside package_item; other remaining
+    // contexts validate them through their current root.
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const bool package_item =
           !block_stack_.empty() &&
