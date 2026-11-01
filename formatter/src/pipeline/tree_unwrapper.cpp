@@ -8819,12 +8819,20 @@ class SVParser {
         "assertion_variable_declaration", expression_rule};
     if (complete) {
       ++indent_level_;
-      while (at(TK::VarKeyword) ||
-             (annexCanStart("data_type", peek().kind) &&
-              !at(TK::Identifier) && !at(TK::UnitSystemName)) ||
-             (at(TK::Identifier) && at(TK::Identifier, 1)) ||
-             (at(TK::Identifier) && at(TK::DoubleColon, 1) &&
-              at(TK::Identifier, 2) && at(TK::Identifier, 3))) {
+      while (true) {
+        while (isCompilerDirective(peek()) &&
+               !isConditionalStartDirective(peek()) &&
+               !isConditionalBoundaryDirective(peek())) {
+          addLine();
+          parseDirectiveLine();
+        }
+        if (!(at(TK::VarKeyword) ||
+              (annexCanStart("data_type", peek().kind) &&
+               !at(TK::Identifier) && !at(TK::UnitSystemName)) ||
+              (at(TK::Identifier) && at(TK::Identifier, 1)) ||
+              (at(TK::Identifier) && at(TK::DoubleColon, 1) &&
+               at(TK::Identifier, 2) && at(TK::Identifier, 3))))
+          break;
         if (!parseAssertionVariableDeclarationRule()) {
           complete = false;
           break;
