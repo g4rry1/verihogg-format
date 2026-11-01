@@ -915,6 +915,16 @@ class SVParser {
     return offset;
   }
 
+  [[nodiscard]] auto implicitIdentifierBefore(
+      std::initializer_list<TK> boundaries) const -> bool {
+    if (!at(TK::Identifier)) return false;
+    const auto after_dimensions = afterBalancedDimensions(1);
+    return after_dimensions &&
+           std::ranges::any_of(boundaries, [&](TK boundary) {
+             return at(boundary, *after_dimensions);
+           });
+  }
+
   auto consume() -> Token {
     if (pos_ >= tokens_.size()) return tokens_.back();
     const Token token = tokens_[pos_];
@@ -4227,22 +4237,8 @@ class SVParser {
       if (!consumeAnnexRule("checker_port_direction", line_)) return false;
       parseGrammarChildDirectiveLines();
     }
-    size_t after_identifier = 1;
-    if (at(TK::Identifier)) {
-      while (at(TK::OpenBracket, after_identifier)) {
-        int depth = 0;
-        do {
-          if (at(TK::OpenBracket, after_identifier)) ++depth;
-          if (at(TK::CloseBracket, after_identifier)) --depth;
-          ++after_identifier;
-        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
-        if (depth != 0) break;
-      }
-    }
-    const bool implicit_type = at(TK::Identifier) &&
-        (at(TK::Comma, after_identifier) ||
-         at(TK::CloseParenthesis, after_identifier) ||
-         at(TK::Equals, after_identifier));
+    const bool implicit_type = implicitIdentifierBefore(
+        {TK::Comma, TK::CloseParenthesis, TK::Equals});
     if (!implicit_type &&
         !consumeAnnexRule("property_formal_type", line_))
       return false;
@@ -4294,22 +4290,8 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       }
     }
-    size_t after_identifier = 1;
-    if (at(TK::Identifier)) {
-      while (at(TK::OpenBracket, after_identifier)) {
-        int depth = 0;
-        do {
-          if (at(TK::OpenBracket, after_identifier)) ++depth;
-          if (at(TK::CloseBracket, after_identifier)) --depth;
-          ++after_identifier;
-        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
-        if (depth != 0) break;
-      }
-    }
-    const bool implicit_type = at(TK::Identifier) &&
-        (at(TK::Comma, after_identifier) ||
-         at(TK::CloseParenthesis, after_identifier) ||
-         at(TK::Equals, after_identifier));
+    const bool implicit_type = implicitIdentifierBefore(
+        {TK::Comma, TK::CloseParenthesis, TK::Equals});
     if (!implicit_type &&
         !consumeAnnexRule(property ? "property_formal_type"
                                    : "sequence_formal_type", line_))
@@ -4361,22 +4343,8 @@ class SVParser {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
     }
-    size_t after_identifier = 1;
-    if (at(TK::Identifier)) {
-      while (at(TK::OpenBracket, after_identifier)) {
-        int depth = 0;
-        do {
-          if (at(TK::OpenBracket, after_identifier)) ++depth;
-          if (at(TK::CloseBracket, after_identifier)) --depth;
-          ++after_identifier;
-        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
-        if (depth != 0) break;
-      }
-    }
-    const bool implicit_type = at(TK::Identifier) &&
-        (at(TK::Comma, after_identifier) ||
-         at(TK::CloseParenthesis, after_identifier) ||
-         at(TK::Equals, after_identifier));
+    const bool implicit_type = implicitIdentifierBefore(
+        {TK::Comma, TK::CloseParenthesis, TK::Equals});
     if (!implicit_type &&
         !consumeAnnexRule("data_type_or_implicit", line_)) return false;
     parseGrammarChildDirectiveLines();
@@ -5544,13 +5512,17 @@ class SVParser {
                                              std::string_view initializer)
       -> bool {
     if (!consumeAnnexRule(identifier, line_)) return false;
+    parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
       if (!consumeAnnexRule(dimension, line_)) return false;
+      parseGrammarChildDirectiveLines();
     }
     if (!initializer.empty() && at(TK::Equals)) {
       consumeInto(line_);
+      parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule(initializer, line_, TK::Comma))
         return false;
+      parseGrammarChildDirectiveLines();
     }
     return true;
   }
@@ -5615,19 +5587,14 @@ class SVParser {
     bool dimensioned_implicit = false;
     if (type_start == TK::Identifier &&
         at(TK::OpenBracket, offset + 1)) {
-      size_t next = offset + 1;
-      while (at(TK::OpenBracket, next)) {
-        int depth = 0;
-        do {
-          if (at(TK::OpenBracket, next)) ++depth;
-          if (at(TK::CloseBracket, next)) --depth;
-          ++next;
-        } while (depth > 0 && next < tokens_.size());
-        if (depth != 0) break;
+      const auto next = afterBalancedDimensions(offset + 1);
+      if (!next) {
+        static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
+        return true;
       }
-      dimensioned_implicit = at(TK::Semicolon, next) ||
-                             at(TK::Equals, next) || at(TK::Comma, next);
-      if (!dimensioned_implicit && !at(TK::Identifier, next)) {
+      dimensioned_implicit = at(TK::Semicolon, *next) ||
+                             at(TK::Equals, *next) || at(TK::Comma, *next);
+      if (!dimensioned_implicit && !at(TK::Identifier, *next)) {
         static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
         return true;
       }
@@ -5649,9 +5616,12 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = consumeAnnexRule("tf_port_direction", line_);
+    parseGrammarChildDirectiveLines();
     if (valid && at(TK::VarKeyword)) consumeInto(line_);
+    parseGrammarChildDirectiveLines();
     if (valid && !implicit_type)
       valid = consumeAnnexRule("data_type_or_implicit", line_);
+    parseGrammarChildDirectiveLines();
     if (valid)
       valid = parseTfVariableIdentifierListRule(conditional_members);
     if (!valid || !at(TK::Semicolon)) {
@@ -8342,22 +8312,8 @@ class SVParser {
     const bool var = at(TK::VarKeyword);
     if (var) consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    size_t after_identifier = 1;
-    if (var && at(TK::Identifier)) {
-      while (at(TK::OpenBracket, after_identifier)) {
-        int depth = 0;
-        do {
-          if (at(TK::OpenBracket, after_identifier)) ++depth;
-          if (at(TK::CloseBracket, after_identifier)) --depth;
-          ++after_identifier;
-        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
-        if (depth != 0) break;
-      }
-    }
-    const bool implicit_type = var && at(TK::Identifier) &&
-                               (at(TK::Semicolon, after_identifier) ||
-                                at(TK::Equals, after_identifier) ||
-                                at(TK::Comma, after_identifier));
+    const bool implicit_type = var && implicitIdentifierBefore(
+        {TK::Semicolon, TK::Equals, TK::Comma});
     if (!implicit_type &&
         !consumeAnnexRule(var ? "data_type_or_implicit" : "data_type",
                           line_))
@@ -11436,22 +11392,8 @@ class SVParser {
       if (!consumeAnnexRule("attribute_instance", line_)) return false;
       parseGrammarChildDirectiveLines();
     }
-    size_t after_identifier = 1;
-    if (at(TK::Identifier)) {
-      while (at(TK::OpenBracket, after_identifier)) {
-        int depth = 0;
-        do {
-          if (at(TK::OpenBracket, after_identifier)) ++depth;
-          if (at(TK::CloseBracket, after_identifier)) --depth;
-          ++after_identifier;
-        } while (depth > 0 && pos_ + after_identifier < tokens_.size());
-        if (depth != 0) break;
-      }
-    }
-    const bool implicit_type = at(TK::Identifier) &&
-        (at(TK::Comma, after_identifier) ||
-         at(TK::CloseParenthesis, after_identifier) ||
-         at(TK::Equals, after_identifier));
+    const bool implicit_type = implicitIdentifierBefore(
+        {TK::Comma, TK::CloseParenthesis, TK::Equals});
     if (!implicit_type && !consumeAnnexRule("let_formal_type", line_))
       return false;
     parseGrammarChildDirectiveLines();
