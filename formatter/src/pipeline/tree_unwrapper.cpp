@@ -5493,6 +5493,23 @@ class SVParser {
   }
 
   auto parseGenerateItemRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      // Only module_or_generate_item and interface_or_generate_item have
+      // attribute prefixes. The checker-only rand declaration and the
+      // separate generate_region alternative do not.
+      if (valid && !at(TK::RandKeyword) && !at(TK::GenerateKeyword) &&
+          parseGenerateItemRule())
+        return true;
+      recordGrammarFallback("invalid Annex A attributed generate item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (parseDefaultClockingOrDisableRule(false)) return true;
     if (parseRandCheckerDataDeclarationRule()) return true;
     if (parseParameterDeclarationRule()) return true;
@@ -11721,6 +11738,21 @@ class SVParser {
   }
 
   auto parseClockingItemRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && (at(TK::PropertyKeyword) ||
+                    at(TK::SequenceKeyword) || at(TK::LetKeyword)) &&
+          parseClockingItemRule())
+        return true;
+      recordGrammarFallback("invalid Annex A attributed clocking item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (at(TK::PropertyKeyword) || at(TK::SequenceKeyword))
       return parsePackageOrGenerateDeclarationRule();
     if (at(TK::LetKeyword)) {
