@@ -3102,18 +3102,27 @@ class SVParser {
 
   auto parseTypeDeclarationRule() -> bool {
     if (!at(TK::TypedefKeyword)) return false;
+    if (hasAnnexListInterruption(pos_, false)) {
+      static_cast<void>(parseAnnexItem({"type_declaration"}, true));
+      return true;
+    }
     if (at(TK::Identifier, 1)) {
       const auto after_selects = afterBalancedDimensions(2);
       if (after_selects && at(TK::Dot, *after_selects)) {
         const LeafCheckpoint saved = leafCheckpoint();
         consumeInto(line_);  // typedef
         bool valid = consumeAnnexRule("interface_port_identifier", line_);
+        parseGrammarChildDirectiveLines();
         if (valid && at(TK::OpenBracket))
           valid = consumeAnnexRule("constant_bit_select", line_, TK::Dot);
+        parseGrammarChildDirectiveLines();
         if (valid && at(TK::Dot)) consumeInto(line_);
         else valid = false;
+        parseGrammarChildDirectiveLines();
         if (valid) valid = consumeAnnexRule("type_identifier", line_);
+        parseGrammarChildDirectiveLines();
         if (valid) valid = consumeAnnexRule("type_identifier", line_);
+        parseGrammarChildDirectiveLines();
         if (!valid || !at(TK::Semicolon)) {
           recordGrammarFallback("invalid Annex A interface typedef");
           recoverMalformedLeaf(saved);
@@ -3137,6 +3146,7 @@ class SVParser {
       const bool valid =
           (!forward || consumeAnnexRule("forward_type", line_)) &&
           consumeAnnexRule("type_identifier", line_);
+      parseGrammarChildDirectiveLines();
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A forward type declaration");
         recoverMalformedItem(saved);
@@ -3152,9 +3162,13 @@ class SVParser {
       consumeInto(line_);  // typedef
       bool valid = consumeAnnexRule(
           "data_type_or_incomplete_class_scoped_type", line_);
+      parseGrammarChildDirectiveLines();
       if (valid) valid = consumeAnnexRule("type_identifier", line_);
-      while (valid && at(TK::OpenBracket))
+      parseGrammarChildDirectiveLines();
+      while (valid && at(TK::OpenBracket)) {
         valid = consumeAnnexRule("variable_dimension", line_);
+        parseGrammarChildDirectiveLines();
+      }
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A type declaration");
         recoverMalformedLeaf(saved);
@@ -11615,11 +11629,16 @@ class SVParser {
           at(TK::IllegalBinsKeyword, wildcard ? 1 : 0) ||
           at(TK::IgnoreBinsKeyword, wildcard ? 1 : 0)))
       return false;
+    // Conditional directives and unavailable macro expansions need the
+    // interrupted item path, which can resume at the enclosing coverpoint.
+    if (hasAnnexListInterruption(pos_, false)) return false;
 
     const LeafCheckpoint saved = leafCheckpoint();
     if (wildcard) consumeInto(line_);
     bool valid = consumeAnnexRule("bins_keyword", line_);
+    parseGrammarChildDirectiveLines();
     if (valid) valid = consumeAnnexRule("bin_identifier", line_);
+    parseGrammarChildDirectiveLines();
     bool bracketed = false;
     bool bracket_contents = false;
     if (valid && at(TK::OpenBracket)) {
@@ -11635,14 +11654,17 @@ class SVParser {
     }
     if (valid && at(TK::Equals)) consumeInto(line_);
     else valid = false;
+    parseGrammarChildDirectiveLines();
     const TK rhs = peek().kind;
     const bool named_coverpoint = at(TK::Identifier) &&
                                   at(TK::WithKeyword, 1);
     if (valid && rhs == TK::OpenBrace) {
       valid = consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace,
                                     "covergroup_range_list", line_);
+      parseGrammarChildDirectiveLines();
       if (valid && at(TK::WithKeyword)) {
         consumeInto(line_);
+        parseGrammarChildDirectiveLines();
         valid = consumeAnnexDelimited(TK::OpenParenthesis,
                                       TK::CloseParenthesis,
                                       "with_covergroup_expression", line_);
@@ -11656,8 +11678,10 @@ class SVParser {
       }
     } else if (valid && named_coverpoint) {
       valid = consumeAnnexRule("cover_point_identifier", line_);
+      parseGrammarChildDirectiveLines();
       if (valid && at(TK::WithKeyword)) consumeInto(line_);
       else valid = false;
+      parseGrammarChildDirectiveLines();
       if (valid)
         valid = consumeAnnexDelimited(TK::OpenParenthesis,
                                       TK::CloseParenthesis,
@@ -11672,11 +11696,14 @@ class SVParser {
       valid = consumeAnnexRule("set_covergroup_expression", line_,
                                TK::IffKeyword);
     }
+    parseGrammarChildDirectiveLines();
     if (valid && at(TK::IffKeyword)) {
       consumeInto(line_);
+      parseGrammarChildDirectiveLines();
       valid = consumeAnnexDelimited(TK::OpenParenthesis,
                                     TK::CloseParenthesis, "expression", line_);
     }
+    parseGrammarChildDirectiveLines();
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A covergroup bins item");
       recoverMalformedLeaf(saved);
