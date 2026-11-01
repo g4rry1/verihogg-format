@@ -4658,9 +4658,12 @@ class SVParser {
   // [ '(' [ checker_port_list ] ')' ] ';' { checker_or_generate_item }
   // endchecker [ ':' checker_identifier ].
   auto parseCheckerBlockRule() -> void {
+    const size_t identifier = afterOrdinaryDirectives(1);
+    const size_t ports = afterOrdinaryDirectives(identifier + 1);
     const bool conditional_ports =
-        at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
-        hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
+        at(TK::Identifier, identifier) &&
+        at(TK::OpenParenthesis, ports) &&
+        hasConditionalListMember(pos_ + ports + 1, TK::CloseParenthesis);
     if (hasAnnexHeaderInterruption(pos_, conditional_ports)) {
       parseAnnexDelimitedBlock(TK::EndCheckerKeyword,
                                "checker_declaration",
@@ -4741,9 +4744,15 @@ class SVParser {
   }
 
   auto parseCovergroupBlockRule() -> void {
+    const size_t header_start = afterOrdinaryDirectives(1);
+    const bool extends = at(TK::ExtendsKeyword, header_start);
+    const size_t identifier = afterOrdinaryDirectives(
+        header_start + (extends ? 1 : 0));
+    const size_t ports = afterOrdinaryDirectives(identifier + 1);
     const bool conditional_ports =
-        at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
-        hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
+        !extends && at(TK::Identifier, identifier) &&
+        at(TK::OpenParenthesis, ports) &&
+        hasConditionalListMember(pos_ + ports + 1, TK::CloseParenthesis);
     if (hasAnnexHeaderInterruption(pos_, conditional_ports)) {
       parseAnnexDelimitedBlock(TK::EndGroupKeyword,
                                "covergroup_declaration",
@@ -4752,8 +4761,6 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // covergroup
-    const bool extends = at(TK::ExtendsKeyword);
-    if (extends) consumeInto(line_);
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek())) {
         addLine();
@@ -4761,6 +4768,10 @@ class SVParser {
       }
     };
     skip_directives();
+    if (extends) {
+      consumeInto(line_);
+      skip_directives();
+    }
     if (!consumeAnnexRule("covergroup_identifier", line_)) {
       recordGrammarFallback("invalid Annex A covergroup identifier");
       recoverMalformedItem(saved);
