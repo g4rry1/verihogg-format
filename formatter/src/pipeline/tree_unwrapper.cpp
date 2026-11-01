@@ -6610,8 +6610,13 @@ class SVParser {
       recoverMalformedItem(saved);
       return;
     }
-    parseGrammarChildDirectiveLines();
     if (join_loop_begin) {
+      while (isCompilerDirective(peek()) &&
+             !isConditionalStartDirective(peek()) &&
+             !isConditionalBoundaryDirective(peek())) {
+        addLine();
+        parseDirectiveLine();
+      }
       if (atEnclosingBoundary()) {
         recordGrammarFallback("missing Annex A procedural timing body");
         recoverMalformedItem(saved);
@@ -6625,6 +6630,7 @@ class SVParser {
       }
       return;
     }
+    parseGrammarChildDirectiveLines();
     const bool compound =
         at(TK::BeginKeyword) || at(TK::ForkKeyword) || at(TK::IfKeyword) ||
         at(TK::CaseKeyword) || at(TK::CaseXKeyword) ||
