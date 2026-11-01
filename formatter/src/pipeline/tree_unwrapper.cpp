@@ -11196,8 +11196,58 @@ class SVParser {
   // rs_production ::= [ data_type_or_void ] rs_production_identifier
   // [ '(' tf_port_list ')' ] ':' rs_rule { '|' rs_rule } ';'. The parent
   // production remains live while each rs_rule is parsed as a child.
+  [[nodiscard]] auto parseRsProductionItemRule() -> bool {
+    if (!consumeAnnexRule("rs_production_identifier", line_)) return false;
+    parseGrammarChildDirectiveLines();
+    if (at(TK::OpenParenthesis))
+      return consumeAnnexDelimited(TK::OpenParenthesis,
+                                   TK::CloseParenthesis,
+                                   "list_of_arguments", line_);
+    return true;
+  }
+
+  [[nodiscard]] auto parseRsProdRule() -> bool {
+    if (at(TK::Identifier)) return parseRsProductionItemRule();
+    if (at(TK::OpenBrace))
+      return consumeAnnexRule("rs_code_block", line_);
+    if (at(TK::IfKeyword) || at(TK::RepeatKeyword)) {
+      const bool conditional = at(TK::IfKeyword);
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexDelimited(TK::OpenParenthesis,
+                                 TK::CloseParenthesis,
+                                 "expression", line_))
+        return false;
+      parseGrammarChildDirectiveLines();
+      if (!parseRsProductionItemRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (conditional && at(TK::ElseKeyword)) {
+        consumeInto(line_);
+        parseGrammarChildDirectiveLines();
+        if (!parseRsProductionItemRule()) return false;
+      }
+      return true;
+    }
+    if (at(TK::CaseKeyword)) return consumeAnnexRule("rs_case", line_);
+    return false;
+  }
+
+  [[nodiscard]] auto parseRsProductionListRule() -> bool {
+    // rand join has a distinct grammar branch. Conditional directives and
+    // unavailable expansions keep the interrupted child grammar path.
+    if (at(TK::RandKeyword) || hasAnnexListInterruption(pos_, false))
+      return consumeAnnexRule("rs_production_list", line_, TK::ColonEquals);
+    if (!parseRsProdRule()) return false;
+    parseGrammarChildDirectiveLines();
+    while (annexCanStart("rs_prod", peek().kind)) {
+      if (!parseRsProdRule()) return false;
+      parseGrammarChildDirectiveLines();
+    }
+    return true;
+  }
+
   [[nodiscard]] auto parseRsRule() -> bool {
-    if (!consumeAnnexRule("rs_production_list", line_, TK::ColonEquals))
+    if (!parseRsProductionListRule())
       return false;
     parseGrammarChildDirectiveLines();
     if (at(TK::ColonEquals)) {
