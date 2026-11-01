@@ -6329,10 +6329,10 @@ class SVParser {
       static_cast<void>(endGrammar());
       return true;
     }
-    consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                          "expression", line_);
+    const bool condition = consumeAnnexDelimited(
+        TK::OpenParenthesis, TK::CloseParenthesis, "expression", line_);
     const AnnexState prefix = endGrammar(false);
-    if (prefix.failed || prefix.interrupted ||
+    if (!condition || prefix.failed || prefix.interrupted ||
         !prefix.hasActiveRule("statement_or_null") ||
         line_.tokens.empty() ||
         line_.tokens.back().kind != TK::CloseParenthesis) {
@@ -8883,9 +8883,9 @@ class SVParser {
         recoverMalformedItem(saved);
         return true;
       }
-      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                            "expression", line_);
-      if (line_.tokens.empty() ||
+      const bool condition = consumeAnnexDelimited(
+          TK::OpenParenthesis, TK::CloseParenthesis, "expression", line_);
+      if (!condition || line_.tokens.empty() ||
           line_.tokens.back().kind != TK::CloseParenthesis) {
         recordGrammarFallback("incomplete Annex A constraint if condition");
         recoverMalformedItem(saved);
@@ -8925,7 +8925,11 @@ class SVParser {
         recoverMalformedItem(saved);
         return true;
       }
-      consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace, "dist_list", line_);
+      if (!consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace,
+                                 "dist_list", line_)) {
+        recoverMalformedItem(saved);
+        return true;
+      }
     }
     if (!at(TK::Semicolon)) {
       recordGrammarFallback("missing Annex A constraint semicolon");
@@ -11865,14 +11869,19 @@ class SVParser {
         consumeInto(line_);
       } else if (item_rule == "case_item") {
         valid = consumeAnnexRule("case_item_expression", line_, TK::Colon);
+        parseGrammarChildDirectiveLines();
         while (valid && at(TK::Comma)) {
           consumeInto(line_);
+          parseGrammarChildDirectiveLines();
           valid = consumeAnnexRule("case_item_expression", line_, TK::Colon);
+          parseGrammarChildDirectiveLines();
         }
       } else if (item_rule == "case_pattern_item") {
         valid = consumeAnnexRule("pattern", line_, TK::Colon);
+        parseGrammarChildDirectiveLines();
         if (valid && at(TK::TripleAnd)) {
           consumeInto(line_);
+          parseGrammarChildDirectiveLines();
           valid = consumeAnnexRule("expression", line_, TK::Colon);
         }
       } else if (item_rule == "case_inside_item") {
@@ -11881,9 +11890,12 @@ class SVParser {
         valid = consumeAnnexRule("expression", line_, TK::Colon);
       } else if (item_rule == "case_generate_item") {
         valid = consumeAnnexRule("constant_expression", line_, TK::Colon);
+        parseGrammarChildDirectiveLines();
         while (valid && at(TK::Comma)) {
           consumeInto(line_);
+          parseGrammarChildDirectiveLines();
           valid = consumeAnnexRule("constant_expression", line_, TK::Colon);
+          parseGrammarChildDirectiveLines();
         }
       } else {
         valid = false;
