@@ -959,6 +959,39 @@ class SVParser {
     return offset;
   }
 
+  [[nodiscard]] auto afterOrdinaryDirectives(size_t offset) const -> size_t {
+    while (isCompilerDirective(peek(offset)) &&
+           !isConditionalStartDirective(peek(offset)) &&
+           !isConditionalBoundaryDirective(peek(offset))) {
+      const std::string_view directive = peek(offset).rawText();
+      const bool continued = directive == "`define" ||
+                             directive == "`pragma" ||
+                             directive == "`timescale";
+      const size_t source_end =
+          std::min(tokens_.back().location().offset(), source_.size());
+      size_t end = std::min(peek(offset).location().offset(), source_end);
+      while (end < source_end) {
+        const size_t newline = source_.find_first_of("\r\n", end);
+        if (newline == std::string_view::npos || newline >= source_end) {
+          end = source_end;
+          break;
+        }
+        const bool next_line =
+            continued && newline > end && source_[newline - 1] == '\\';
+        end = newline + 1;
+        if (source_[newline] == '\r' && end < source_end &&
+            source_[end] == '\n')
+          ++end;
+        if (!next_line) break;
+      }
+      do {
+        ++offset;
+      } while (pos_ + offset < tokens_.size() &&
+               tokens_[pos_ + offset].location().offset() < end);
+    }
+    return offset;
+  }
+
   // Only distinguish a type name from the following declaration name here.
   // The data_type child validates scopes, parameters and dimensions when it
   // is consumed by the corresponding Annex A production.
@@ -3921,7 +3954,7 @@ class SVParser {
   // exports instead begin with a package identifier or '*'.
   auto parseDpiDeclarationRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
-        !at(TK::StringLiteral, 1))
+        !at(TK::StringLiteral, afterOrdinaryDirectives(1)))
       return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
@@ -3937,10 +3970,18 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     const bool import = at(TK::ImportKeyword);
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     consumeInto(line_);
+    skip_directives();
     const auto spec = peek().rawText();
     bool valid = (spec == "\"DPI-C\"" || spec == "\"DPI\"") &&
                  consumeAnnexRule("dpi_spec_string", line_);
+    skip_directives();
     const bool pure = at(TK::PureKeyword);
     if (valid && import &&
         (at(TK::ContextKeyword) || at(TK::PureKeyword))) {
@@ -3948,7 +3989,9 @@ class SVParser {
                                    ? "dpi_task_import_property"
                                    : "dpi_function_import_property", line_);
     }
-    if (valid && at(TK::Identifier) && at(TK::Equals, 1)) {
+    skip_directives();
+    if (valid && at(TK::Identifier) &&
+        at(TK::Equals, afterOrdinaryDirectives(1))) {
       // c_identifier is a character-level Annex A lexical production. slang
       // has already combined it into a token, so check that token's lexeme.
       const auto name = peek().rawText();
@@ -3962,7 +4005,9 @@ class SVParser {
                 (name[i] >= '0' && name[i] <= '9');
       if (valid) {
         consumeInto(line_);
+        skip_directives();
         consumeInto(line_);  // '='
+        skip_directives();
       }
     }
     if (valid && import) {
@@ -3985,6 +4030,7 @@ class SVParser {
         valid = false;
       }
     }
+    skip_directives();
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A DPI declaration");
       recoverMalformedLeaf(saved);
@@ -4072,7 +4118,7 @@ class SVParser {
 
   auto parsePackageImportExportRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
-        at(TK::StringLiteral, 1))
+        at(TK::StringLiteral, afterOrdinaryDirectives(1)))
       return false;
     const bool import = at(TK::ImportKeyword);
     const auto rule = import ? "package_import_declaration"
