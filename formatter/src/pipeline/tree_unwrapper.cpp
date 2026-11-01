@@ -6208,12 +6208,57 @@ class SVParser {
     return false;
   }
 
+  // procedural_continuous_assignment ::= 'assign' variable_assignment
+  // | 'deassign' variable_lvalue | 'force' (variable_assignment |
+  // net_assignment) | 'release' (variable_lvalue | net_lvalue).
+  // The force/release children retain their Annex A ambiguity locally.
+  auto parseProceduralContinuousAssignmentRule() -> bool {
+    const TK keyword = peek().kind;
+    if (keyword != TK::AssignKeyword && keyword != TK::DeassignKeyword &&
+        keyword != TK::ForceKeyword && keyword != TK::ReleaseKeyword)
+      return false;
+    const LeafCheckpoint saved = leafCheckpoint();
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    bool valid = false;
+    if (keyword == TK::AssignKeyword || keyword == TK::DeassignKeyword) {
+      valid = consumeAnnexRule(keyword == TK::AssignKeyword
+                                   ? "variable_assignment"
+                                   : "variable_lvalue",
+                               line_, TK::Semicolon);
+    } else {
+      const AnnexState child = parseAnnexItem(
+          keyword == TK::ForceKeyword
+              ? std::vector<std::string_view>{"variable_assignment",
+                                              "net_assignment"}
+              : std::vector<std::string_view>{"variable_lvalue",
+                                              "net_lvalue"},
+          false, true);
+      if (child.interrupted) return true;
+      valid = !child.failed && child.complete();
+    }
+    parseGrammarChildDirectiveLines();
+    if (!valid || !at(TK::Semicolon)) {
+      recordGrammarFallback("invalid Annex A procedural continuous assignment");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   // statement_item ::= ... | case_statement | conditional_statement |
   // loop_statement | par_block | seq_block | randcase_statement | ... .
   // These alternatives have distinct leading terminals. Leaf alternatives
   // continue through their local Annex A rule below.
   auto parseStatementItemRule() -> bool {
     switch (peek().kind) {
+      case TK::AssignKeyword:
+      case TK::DeassignKeyword:
+      case TK::ForceKeyword:
+      case TK::ReleaseKeyword:
+        return parseProceduralContinuousAssignmentRule();
       case TK::ReturnKeyword:
       case TK::BreakKeyword:
       case TK::ContinueKeyword:
@@ -6746,6 +6791,18 @@ class SVParser {
     return true;
   }
 
+  // statement_or_null and function_statement_or_null have an independent
+  // empty-statement alternative. A nonnullable statement cannot consume ';'.
+  auto parseNullStatementRule(std::string_view root) -> bool {
+    if (!at(TK::Semicolon) ||
+        (root != "statement_or_null" &&
+         root != "function_statement_or_null"))
+      return false;
+    consumeInto(line_);
+    addLine();
+    return true;
+  }
+
   // conditional_generate_construct and loop_generate_construct are shared by
   // module, interface, program, checker and generate items in Annex A.
   auto parseGenerateConstructRule() -> bool {
@@ -6870,7 +6927,8 @@ class SVParser {
       if (root == "statement_or_null" || root == "statement" ||
           root == "function_statement_or_null" ||
           root == "function_statement") {
-        if (parseAttributedStatementRule(root) ||
+        if (parseNullStatementRule(root) ||
+            parseAttributedStatementRule(root) ||
             parseStatementLabelRule(roots) ||
             parseQualifiedStatementRule() || parseStatementItemRule() ||
             parseIdentifierStatementRule()) {
