@@ -3184,6 +3184,10 @@ class SVParser {
 
   auto parseNettypeDeclarationRule() -> bool {
     if (!at(TK::NetTypeKeyword)) return false;
+    if (hasAnnexListInterruption(pos_, false)) {
+      static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
+      return true;
+    }
     bool has_resolver = false;
     for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
       if (tokens_[i].kind == TK::Semicolon ||
@@ -3200,29 +3204,20 @@ class SVParser {
         (has_resolver || (at(TK::Identifier, 1) && at(TK::Hash, 2)) ||
          (!at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1)));
     if (explicit_type) {
-      for (size_t i = pos_; i < tokens_.size(); ++i) {
-        const auto& token = tokens_[i];
-        if (isConditionalStartDirective(token) ||
-            token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
-          static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
-          return true;
-        }
-        if (token.kind == TK::Semicolon ||
-            token.kind == TK::EndOfFile)
-          break;
-      }
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // nettype
-      if (!consumeAnnexRule("data_type", line_) ||
-          !consumeAnnexRule("nettype_identifier", line_)) {
+      bool valid = consumeAnnexRule("data_type", line_);
+      parseGrammarChildDirectiveLines();
+      if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
+      if (!valid) {
         recordGrammarFallback("invalid Annex A nettype declaration");
         recoverMalformedItem(saved);
         return true;
       }
+      parseGrammarChildDirectiveLines();
       if (at(TK::WithKeyword)) {
         consumeInto(line_);
+        parseGrammarChildDirectiveLines();
         if ((at(TK::Identifier) && at(TK::DoubleColon, 1)) ||
             at(TK::UnitSystemName)) {
           beginGrammar({"package_scope", "class_scope"});
@@ -3254,6 +3249,7 @@ class SVParser {
           recoverMalformedItem(saved);
           return true;
         }
+        parseGrammarChildDirectiveLines();
       }
       if (!at(TK::Semicolon)) {
         recordGrammarFallback("missing Annex A nettype semicolon");
@@ -3266,18 +3262,9 @@ class SVParser {
     }
     // The second alternative is a nettype alias. A bare user type has the
     // same two-identifier spelling and follows the same line boundary.
-    for (size_t i = pos_; i < tokens_.size(); ++i) {
-      const auto& token = tokens_[i];
-      if (token.kind == TK::WithKeyword || token.kind == TK::Hash ||
-          isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
-        static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
-        return true;
-      }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
-        break;
+    if (has_resolver || at(TK::Hash, 2)) {
+      static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
+      return true;
     }
     if ((at(TK::Identifier, 1) &&
          (at(TK::Identifier, 2) || at(TK::DoubleColon, 2))) ||
@@ -3288,6 +3275,10 @@ class SVParser {
       if (at(TK::DoubleColon, 1) || at(TK::UnitSystemName)) {
         beginGrammar({"package_scope", "class_scope"});
         while (!at(TK::EndOfFile)) {
+          if (isCompilerDirective(peek())) {
+            parseGrammarChildDirectiveLines();
+            continue;
+          }
           const auto& scope = grammar_scopes_.back();
           if (scope.complete() && at(TK::Identifier) &&
               at(TK::Identifier, 1) && at(TK::Semicolon, 2))
@@ -3299,8 +3290,11 @@ class SVParser {
         const AnnexState scope = endGrammar(false);
         valid = !scope.failed && !scope.interrupted && scope.complete();
       }
+      parseGrammarChildDirectiveLines();
       if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
+      parseGrammarChildDirectiveLines();
       if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
+      parseGrammarChildDirectiveLines();
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A nettype alias");
         recoverMalformedLeaf(saved);
