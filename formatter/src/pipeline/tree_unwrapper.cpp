@@ -1650,7 +1650,7 @@ class SVParser {
         consumeInto(line_);
         break;
       }
-      if (matchingOpenFrame(peek().kind) ||
+      if ((depth.topLevel() && matchingOpenFrame(peek().kind)) ||
           (stop_at_conditional_boundary_ &&
            isConditionalBoundaryDirective(peek())))
         break;
@@ -6805,7 +6805,7 @@ class SVParser {
         if (parseSpecifyItemRule()) return true;
       }
       if (root == "coverage_spec_or_option") {
-        if (parseCoverageOptionRule() || parseCoverageSpecRule()) return true;
+        if (parseCoverageSpecOrOptionRule()) return true;
       }
       if (root == "bins_or_options") {
         if (parseBinsOrOptionsRule()) return true;
@@ -11954,9 +11954,22 @@ class SVParser {
   }
 
   // cross_body_item ::= function_declaration |
-  //                     bins_selection_or_option ';'. Attributes are consumed
-  // by parseStatementImpl before this rule is selected.
+  //                     bins_selection_or_option ';'. Only the second child
+  // has an attribute_instance prefix.
   auto parseCrossBodyItemRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && !at(TK::FunctionKeyword) && parseCrossBodyItemRule())
+        return true;
+      recordGrammarFallback("invalid Annex A attributed cross body item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (at(TK::FunctionKeyword)) {
       parseNamedBlock(TK::EndFunctionKeyword);
       return true;
@@ -12089,6 +12102,48 @@ class SVParser {
     return true;
   }
 
+  // bins_or_empty ::= '{' { attribute_instance }
+  //                   { bins_or_options ';' } '}' | ';'. The attributes belong
+  // to the body prefix, before the repeated bins_or_options children.
+  auto parseCoverpointBinsBodyRule() -> void {
+    pushOpenFrame(TK::CloseBrace);
+    block_stack_.back().grammar_body = "bins_or_options";
+    ++indent_level_;
+    while (!at(TK::CloseBrace) && !at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (at(TK::Directive) && isCompilerDirective(peek())) {
+        parseStatement();
+        continue;
+      }
+      if (!at(TK::OpenParenthesis) || !at(TK::Star, 1)) break;
+      const LeafCheckpoint saved = leafCheckpoint();
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        recordGrammarFallback("invalid Annex A coverpoint attribute");
+        recoverMalformedItem(saved);
+        break;
+      }
+    }
+    if (at(TK::CloseBrace) && !line_.tokens.empty()) addLine();
+    while (!at(TK::CloseBrace) && !at(TK::EndOfFile) &&
+           !(stop_at_conditional_boundary_ &&
+             isConditionalBoundaryDirective(peek()))) {
+      if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+        const LeafCheckpoint saved = leafCheckpoint();
+        recordGrammarFallback("attribute after Annex A coverpoint bins prefix");
+        recoverMalformedLeaf(saved);
+      } else {
+        parseStatement();
+      }
+    }
+    if (at(TK::CloseBrace)) {
+      parseOpenFrameClose();
+    } else if (!(stop_at_conditional_boundary_ &&
+                 isConditionalBoundaryDirective(peek()))) {
+      recordGrammarFallback("incomplete Annex A coverpoint bins body");
+    }
+  }
+
   // coverage_spec ::= cover_point | cover_cross. Direct headers enter their
   // expression and body children; a chart remains for interrupted headers.
   auto parseDirectCoverageSpecRule() -> bool {
@@ -12148,9 +12203,10 @@ class SVParser {
     const bool braced = at(TK::OpenBrace);
     consumeInto(line_);
     addLine();
-    if (braced)
-      parseDelimitedBody(TK::CloseBrace,
-                         point ? "bins_or_options" : "cross_body_item");
+    if (braced) {
+      if (point) parseCoverpointBinsBodyRule();
+      else parseDelimitedBody(TK::CloseBrace, "cross_body_item");
+    }
     return true;
   }
 
@@ -12202,11 +12258,28 @@ class SVParser {
     }
     addLine();
     if (braced) {
-      parseDelimitedBody(TK::CloseBrace,
-                         body_rule == "bins_or_empty" ? "bins_or_options"
-                                                      : "cross_body_item");
+      if (body_rule == "bins_or_empty") parseCoverpointBinsBodyRule();
+      else parseDelimitedBody(TK::CloseBrace, "cross_body_item");
     }
     return true;
+  }
+
+  // coverage_spec_or_option ::= { attribute_instance } coverage_spec |
+  //                              { attribute_instance } coverage_option ';'.
+  auto parseCoverageSpecOrOptionRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseCoverageSpecOrOptionRule()) return true;
+      recordGrammarFallback("invalid Annex A attributed coverage item");
+      recoverMalformedItem(saved);
+      return true;
+    }
+    return parseCoverageOptionRule() || parseCoverageSpecRule();
   }
 
   auto parseCaseItem() -> void {
