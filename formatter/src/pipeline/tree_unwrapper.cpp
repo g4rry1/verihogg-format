@@ -8046,6 +8046,10 @@ class SVParser {
     if (at(TK::Identifier) &&
         !consumeAnnexRule("name_of_instance", line_))
       return false;
+    while (afterOrdinaryDirectives(0) > 0) {
+      addLine();
+      parseDirectiveLine();
+    }
     if (!at(TK::OpenParenthesis)) return false;
     consumeInto(line_);
     const auto terminal = [&](std::string_view rule) -> bool {
@@ -8142,19 +8146,28 @@ class SVParser {
       return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     bool valid = true;
     if (type == "pulldown" || type == "pullup")
       consumeInto(line_);
     else
       valid = consumeAnnexRule(type, line_);
+    skip_directives();
     const bool has_strength =
         valid && !strength.empty() && at(TK::OpenParenthesis) &&
         (annexCanStart("strength0", peek(1).kind) ||
          annexCanStart("strength1", peek(1).kind) ||
          at(TK::HighZ0Keyword, 1) || at(TK::HighZ1Keyword, 1));
     if (has_strength) valid = consumeAnnexRule(strength, line_);
+    skip_directives();
     if (valid && !delay.empty() && at(TK::Hash))
       valid = consumeAnnexRule(delay, line_);
+    skip_directives();
     do {
       if (!valid) break;
       parseGrammarChildDirectiveLines();
@@ -8177,26 +8190,39 @@ class SVParser {
   // The immediate '(' of an unnamed UDP instance or drive_strength, and a
   // non-parenthesized delay2, distinguish these forms from module instances.
   [[nodiscard]] auto parseUdpInstantiationRule() -> bool {
+    const size_t after_identifier = afterOrdinaryDirectives(1);
     if (!at(TK::Identifier) ||
-        !(at(TK::OpenParenthesis, 1) ||
-          (at(TK::Hash, 1) && !at(TK::OpenParenthesis, 2))))
+        !(at(TK::OpenParenthesis, after_identifier) ||
+          (at(TK::Hash, after_identifier) &&
+           !at(TK::OpenParenthesis,
+               afterOrdinaryDirectives(after_identifier + 1)))))
       return false;
     if (hasAnnexListInterruption(pos_, false)) return false;
     const LeafCheckpoint saved = leafCheckpoint();
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     bool valid = consumeAnnexRule("udp_identifier", line_);
+    skip_directives();
     const bool strength = valid && at(TK::OpenParenthesis) &&
                           (annexCanStart("strength0", peek(1).kind) ||
                            annexCanStart("strength1", peek(1).kind) ||
                            at(TK::HighZ0Keyword, 1) ||
                            at(TK::HighZ1Keyword, 1));
     if (valid && strength) valid = consumeAnnexRule("drive_strength", line_);
+    skip_directives();
     if (valid && at(TK::Hash))
       valid = consumeAnnexRule("delay2", line_);
+    skip_directives();
     do {
       if (!valid) break;
       parseGrammarChildDirectiveLines();
       if (at(TK::Identifier))
         valid = consumeAnnexRule("name_of_instance", line_);
+      skip_directives();
       if (!valid || !at(TK::OpenParenthesis)) {
         valid = false;
         break;
