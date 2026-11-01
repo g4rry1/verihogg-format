@@ -6601,7 +6601,8 @@ class SVParser {
   // procedural_timing_control_statement ::= procedural_timing_control
   // statement_or_null. The control is one Annex A child; the body calls the
   // statement production while output lines are emitted from this pass.
-  auto parseProceduralTimingControlStatementRule() -> void {
+  auto parseProceduralTimingControlStatementRule(
+      bool join_loop_begin = false) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool control = consumeAnnexRule("procedural_timing_control", line_);
     if (!control) {
@@ -6610,6 +6611,20 @@ class SVParser {
       return;
     }
     parseGrammarChildDirectiveLines();
+    if (join_loop_begin) {
+      if (atEnclosingBoundary()) {
+        recordGrammarFallback("missing Annex A procedural timing body");
+        recoverMalformedItem(saved);
+        return;
+      }
+      if (at(TK::BeginKeyword)) {
+        parseBeginEnd(TK::EndKeyword);
+      } else {
+        addLine();
+        parseIndentedStatement({"statement_or_null"});
+      }
+      return;
+    }
     const bool compound =
         at(TK::BeginKeyword) || at(TK::ForkKeyword) || at(TK::IfKeyword) ||
         at(TK::CaseKeyword) || at(TK::CaseXKeyword) ||
@@ -12809,17 +12824,8 @@ class SVParser {
     }
     parseGrammarChildDirectiveLines();
     if (!generate && at(TK::At)) {
-      if (!consumeAnnexRule("event_control", line_)) {
-        recoverMalformedItem(saved);
-        return;
-      }
-      if (at(TK::BeginKeyword)) {
-        consumeInto(line_);
-        consumeLabel();
-        addLine();
-        parseDelimitedBody(TK::EndKeyword);
-        return;
-      }
+      parseProceduralTimingControlStatementRule(true);
+      return;
     }
     if (atEnclosingBoundary()) {
       recordGrammarFallback("missing Annex A loop body");
