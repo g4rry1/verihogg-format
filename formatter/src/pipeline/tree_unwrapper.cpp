@@ -10362,8 +10362,9 @@ class SVParser {
     if (!at(TK::Identifier)) return true;
     const auto next = afterBalancedDimensions(1);
     if (!next) return true;
-    return at(TK::Identifier, *next) || at(TK::DoubleColon, *next) ||
-           at(TK::Hash, *next) || at(TK::Dot, *next);
+    const size_t boundary = afterOrdinaryDirectives(*next);
+    return at(TK::Identifier, boundary) || at(TK::DoubleColon, boundary) ||
+           at(TK::Hash, boundary) || at(TK::Dot, boundary);
   }
 
   // parameter_port_declaration can select type_parameter_declaration when
@@ -10371,7 +10372,7 @@ class SVParser {
   // assignments after commas, so this function emits its first child now.
   [[nodiscard]] auto parseTypeParameterPortDeclarationRule() -> bool {
     if (at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) {
-      if (!at(TK::TypeKeyword, 1)) return false;
+      if (!at(TK::TypeKeyword, afterOrdinaryDirectives(1))) return false;
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
     }
@@ -10422,21 +10423,24 @@ class SVParser {
         parseGrammarChildDirectiveLines();
         const bool declaration =
             !bare_assignments && startsParameterPortDeclaration();
+        const size_t type_start = afterOrdinaryDirectives(1);
         if (declaration) {
           assignment =
               (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) ||
                       ((at(TK::ParameterKeyword) ||
                         at(TK::LocalParamKeyword)) &&
-                       at(TK::TypeKeyword, 1) &&
-                       !at(TK::OpenParenthesis, 2))
+                       at(TK::TypeKeyword, type_start) &&
+                       !at(TK::OpenParenthesis,
+                           afterOrdinaryDirectives(type_start + 1)))
                   ? "type_assignment"
                   : "param_assignment";
         }
         const bool type_declaration = declaration &&
             ((at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) ||
              ((at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) &&
-              at(TK::TypeKeyword, 1) &&
-              !at(TK::OpenParenthesis, 2)));
+              at(TK::TypeKeyword, type_start) &&
+              !at(TK::OpenParenthesis,
+                  afterOrdinaryDirectives(type_start + 1))));
         const bool data_declaration = declaration &&
             ((at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) ||
              annexCanStart("data_type", peek().kind));
