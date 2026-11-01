@@ -6142,10 +6142,18 @@ class SVParser {
     beginGrammar({"continuous_assign"});
     bool valid = grammarAllows(TK::AssignKeyword);
     if (valid) consumeInto(line_);
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
     bool net_possible = true;
     bool variable_possible = true;
     if (valid && at(TK::OpenParenthesis)) {
       valid = consumeAnnexRule("drive_strength", line_);
+      skip_directives();
       if (valid && at(TK::Hash))
         valid = consumeAnnexRule("delay3", line_);
       variable_possible = false;
@@ -6237,9 +6245,17 @@ class SVParser {
         parseConditionalContinuousAssignmentRule();
         return true;
       }
-      if (at(TK::Hash, 1)) {
+      const size_t item_start = afterOrdinaryDirectives(1);
+      const auto skip_directives = [&] {
+        while (afterOrdinaryDirectives(0) > 0) {
+          addLine();
+          parseDirectiveLine();
+        }
+      };
+      if (at(TK::Hash, item_start)) {
         const LeafCheckpoint saved = leafCheckpoint();
         consumeInto(line_);  // assign
+        skip_directives();
         const AnnexState delay =
             parseAnnexItem({"delay3", "delay_control"}, false, true);
         if (delay.failed || delay.interrupted || !delay.complete()) {
@@ -6265,10 +6281,12 @@ class SVParser {
         addLine();
         return true;
       }
-      if (at(TK::OpenParenthesis, 1)) {
+      if (at(TK::OpenParenthesis, item_start)) {
         const LeafCheckpoint saved = leafCheckpoint();
         consumeInto(line_);  // assign
+        skip_directives();
         bool valid = consumeAnnexRule("drive_strength", line_);
+        skip_directives();
         if (valid && at(TK::Hash))
           valid = consumeAnnexRule("delay3", line_);
         if (valid) valid = parseContinuousAssignmentListRule(true, false);
