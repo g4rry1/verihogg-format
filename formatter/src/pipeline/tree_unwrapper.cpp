@@ -11206,6 +11206,56 @@ class SVParser {
     return true;
   }
 
+  [[nodiscard]] auto parseRsCaseItemRule() -> bool {
+    parseGrammarChildDirectiveLines();
+    if (at(TK::DefaultKeyword)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (at(TK::Colon)) consumeInto(line_);
+    } else {
+      if (!consumeAnnexRule("case_item_expression", line_, TK::Colon))
+        return false;
+      parseGrammarChildDirectiveLines();
+      while (at(TK::Comma)) {
+        consumeInto(line_);
+        parseGrammarChildDirectiveLines();
+        if (!consumeAnnexRule("case_item_expression", line_, TK::Colon))
+          return false;
+        parseGrammarChildDirectiveLines();
+      }
+      if (!at(TK::Colon)) return false;
+      consumeInto(line_);
+    }
+    parseGrammarChildDirectiveLines();
+    if (!parseRsProductionItemRule()) return false;
+    parseGrammarChildDirectiveLines();
+    if (!at(TK::Semicolon)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
+  [[nodiscard]] auto parseRsCaseRule() -> bool {
+    if (!at(TK::CaseKeyword)) return false;
+    consumeInto(line_);
+    parseGrammarChildDirectiveLines();
+    if (!consumeAnnexDelimited(TK::OpenParenthesis,
+                               TK::CloseParenthesis,
+                               "case_expression", line_))
+      return false;
+    parseGrammarChildDirectiveLines();
+    if (!parseRsCaseItemRule()) return false;
+    parseGrammarChildDirectiveLines();
+    while (!at(TK::EndCaseKeyword) && !at(TK::EndOfFile)) {
+      if (!annexCanStart("rs_case_item", peek().kind) ||
+          !parseRsCaseItemRule())
+        return false;
+      parseGrammarChildDirectiveLines();
+    }
+    if (!at(TK::EndCaseKeyword)) return false;
+    consumeInto(line_);
+    return true;
+  }
+
   [[nodiscard]] auto parseRsProdRule() -> bool {
     if (at(TK::Identifier)) return parseRsProductionItemRule();
     if (at(TK::OpenBrace))
@@ -11228,7 +11278,7 @@ class SVParser {
       }
       return true;
     }
-    if (at(TK::CaseKeyword)) return consumeAnnexRule("rs_case", line_);
+    if (at(TK::CaseKeyword)) return parseRsCaseRule();
     return false;
   }
 
