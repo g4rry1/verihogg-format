@@ -11283,10 +11283,31 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseRsProductionListRule() -> bool {
-    // rand join has a distinct grammar branch. Conditional directives and
-    // unavailable expansions keep the interrupted child grammar path.
-    if (at(TK::RandKeyword) || hasAnnexListInterruption(pos_, false))
+    // Conditional directives and unavailable expansions keep the
+    // interrupted child grammar path.
+    if (hasAnnexListInterruption(pos_, false))
       return consumeAnnexRule("rs_production_list", line_, TK::ColonEquals);
+    if (at(TK::RandKeyword)) {
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::JoinKeyword)) return false;
+      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (at(TK::OpenParenthesis) &&
+          !consumeAnnexDelimited(TK::OpenParenthesis,
+                                 TK::CloseParenthesis, "expression", line_))
+        return false;
+      parseGrammarChildDirectiveLines();
+      if (!parseRsProductionItemRule()) return false;
+      parseGrammarChildDirectiveLines();
+      if (!parseRsProductionItemRule()) return false;
+      parseGrammarChildDirectiveLines();
+      while (at(TK::Identifier)) {
+        if (!parseRsProductionItemRule()) return false;
+        parseGrammarChildDirectiveLines();
+      }
+      return true;
+    }
     if (!parseRsProdRule()) return false;
     parseGrammarChildDirectiveLines();
     while (annexCanStart("rs_prod", peek().kind)) {
