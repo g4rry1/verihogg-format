@@ -6201,7 +6201,7 @@ class SVParser {
       // alternatives already include one. Preserve that literal production.
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A bind directive");
-        recoverMalformedItem(saved);
+        recoverMalformedLeaf(saved);
         return true;
       }
       consumeInto(line_);
