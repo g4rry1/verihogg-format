@@ -12231,7 +12231,8 @@ class SVParser {
   // coverage_option ::= option '.' member_identifier '=' expression |
   // type_option '.' member_identifier '=' constant_expression.
   auto parseCoverageOptionRule() -> bool {
-    if (!at(TK::Identifier) || !at(TK::Dot, 1) ||
+    if (!at(TK::Identifier) ||
+        !at(TK::Dot, afterOrdinaryDirectives(1)) ||
         (peek().rawText() != "option" &&
          peek().rawText() != "type_option")) {
       return false;
@@ -12240,6 +12241,10 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool constant = peek().rawText() == "type_option";
     consumeInto(line_);
+    while (afterOrdinaryDirectives(0) > 0) {
+      addLine();
+      parseDirectiveLine();
+    }
     consumeInto(line_);
     const bool member = consumeAnnexRule("member_identifier", line_);
     parseGrammarChildDirectiveLines();
