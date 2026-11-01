@@ -5383,6 +5383,29 @@ class SVParser {
   }
 
   auto parseProgramItemRule(bool allow_port_declaration) -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      // The attributed non_port_program_item alternatives are declaration,
+      // continuous assignment, initial/final and concurrent assertion.
+      // program_generate_item and timeunits_declaration are separate.
+      const TK kind = peek().kind;
+      const bool eligible = kind != TK::GenerateKeyword &&
+                            kind != TK::IfKeyword &&
+                            kind != TK::ForKeyword &&
+                            kind != TK::CaseKeyword &&
+                            kind != TK::SystemIdentifier &&
+                            kind != TK::TimeUnitKeyword &&
+                            kind != TK::TimePrecisionKeyword;
+      if (valid && eligible && parseProgramItemRule(false)) return true;
+      recordGrammarFallback("invalid Annex A attributed program item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (parseTimeunitsRule()) return true;
     if (parseDefaultClockingOrDisableRule(false)) return true;
     if (allow_port_declaration &&
