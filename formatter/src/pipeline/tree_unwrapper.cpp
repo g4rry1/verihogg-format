@@ -5458,16 +5458,7 @@ class SVParser {
     }
     skip_directives();
     const auto next_port_after_comma = [&] {
-      size_t next = pos_ + 1;
-      while (next < tokens_.size() &&
-             isCompilerDirective(tokens_[next])) {
-        ++next;
-        while (next < tokens_.size() &&
-               !hasLeadingNewline(tokens_[next]))
-          ++next;
-      }
-      const TK kind = next < tokens_.size()
-                          ? tokens_[next].kind : TK::EndOfFile;
+      const TK kind = peek(afterOrdinaryDirectives(1)).kind;
       return kind == TK::Identifier || kind == TK::Dot ||
              (tf && (kind == TK::FunctionKeyword ||
                      kind == TK::TaskKeyword));
@@ -5515,10 +5506,6 @@ class SVParser {
       if ((isConditionalStartDirective(token) &&
            !conditional_members) ||
           token.kind == TK::MacroUsage ||
-          (isCompilerDirective(token) &&
-           (token.rawText() == "`define" ||
-            token.rawText() == "`pragma" ||
-            token.rawText() == "`timescale")) ||
           (token.kind == TK::Directive &&
            !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
@@ -12173,15 +12160,18 @@ class SVParser {
 
   auto parseRsProductionRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
+    const size_t after_identifier = afterOrdinaryDirectives(1);
     const bool untyped = at(TK::Identifier) &&
-                         (at(TK::Colon, 1) ||
-                          at(TK::OpenParenthesis, 1));
+                         (at(TK::Colon, after_identifier) ||
+                          at(TK::OpenParenthesis, after_identifier));
     const auto after_user_type =
         at(TK::Identifier) ? afterUserTypePrefix(0) : std::nullopt;
     const bool typed =
         (peek().kind != TK::Identifier &&
          annexCanStart("data_type_or_void", peek().kind)) ||
-        (after_user_type && at(TK::Identifier, *after_user_type));
+        (after_user_type &&
+         at(TK::Identifier,
+            afterOrdinaryDirectives(*after_user_type)));
     if (untyped || typed) {
       bool valid = !typed || consumeAnnexRule("data_type_or_void", line_);
       parseGrammarChildDirectiveLines();
@@ -12224,52 +12214,8 @@ class SVParser {
       addLine();
       return;
     }
-    beginGrammar({"rs_production"});
-    while (!at(TK::EndOfFile) &&
-           !grammar_scopes_.back().hasActiveRule("rs_rule")) {
-      if (isConditionalStartDirective(peek())) {
-        bool header_ended = true;
-        if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_))
-          break;
-        continue;
-      }
-      if (isCompilerDirective(peek())) {
-        addLine();
-        parseDirectiveLine();
-        continue;
-      }
-      if (!grammar_scopes_.back().accepts(peek().kind)) break;
-      consumeInto(line_);
-    }
-    bool valid = !grammar_scopes_.back().failed &&
-                 !grammar_scopes_.back().interrupted &&
-                 grammar_scopes_.back().hasActiveRule("rs_rule");
-    if (valid) {
-      do {
-        const size_t before = pos_;
-        const bool child = parseRsRule();
-        valid = child && pos_ > before &&
-                !grammar_scopes_.back().failed &&
-                !grammar_scopes_.back().interrupted;
-        if (!valid || !at(TK::Or)) break;
-        consumeInto(line_);
-        addLine();
-      } while (true);
-    }
-    if (valid && at(TK::Semicolon) && grammarAllows(TK::Semicolon)) {
-      consumeInto(line_);
-    } else {
-      valid = false;
-    }
-    const AnnexState production = endGrammar(false);
-    if (!valid || production.failed || production.interrupted ||
-        !production.complete()) {
-      recordGrammarFallback("invalid Annex A randsequence production");
-      recoverMalformedItem(saved);
-      return;
-    }
-    addLine();
+    recordGrammarFallback("unavailable Annex A randsequence production prefix");
+    recoverMalformedItem(saved);
   }
 
   // clocking_item ::= default default_skew ';'
