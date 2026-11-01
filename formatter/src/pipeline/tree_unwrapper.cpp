@@ -11918,13 +11918,19 @@ class SVParser {
       consumeInto(line_);
       addLine();
       parseIndentedStatement({"statement_or_null"});
+      parseGrammarChildDirectiveLines();
       if (!at(TK::WhileKeyword)) {
         recordGrammarFallback("do statement requires Annex A while tail");
         return;
       }
       consumeInto(line_);
-      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                            "expression", line_);
+      parseGrammarChildDirectiveLines();
+      if (!consumeAnnexDelimited(TK::OpenParenthesis,
+                                 TK::CloseParenthesis, "expression", line_)) {
+        recoverMalformedItem(saved);
+        return;
+      }
+      parseGrammarChildDirectiveLines();
       if (at(TK::Semicolon)) {
         consumeInto(line_);
       } else {
@@ -11936,6 +11942,7 @@ class SVParser {
     const TK loop_kind = peek().kind;
     const bool foreach = loop_kind == TK::ForeachKeyword;
     consumeInto(line_);
+    parseGrammarChildDirectiveLines();
     if (loop_kind == TK::ForKeyword) {
       if (!consumeForHeader(line_, generate)) {
         recoverMalformedItem(saved);
@@ -11943,9 +11950,9 @@ class SVParser {
       }
     } else if (loop_kind == TK::WhileKeyword ||
                loop_kind == TK::RepeatKeyword) {
-      consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
-                            "expression", line_);
-      if (line_.tokens.empty() ||
+      const bool expression = consumeAnnexDelimited(
+          TK::OpenParenthesis, TK::CloseParenthesis, "expression", line_);
+      if (!expression || line_.tokens.empty() ||
           line_.tokens.back().kind != TK::CloseParenthesis) {
         recordGrammarFallback("incomplete Annex A loop header");
         recoverMalformedItem(saved);
@@ -11958,6 +11965,7 @@ class SVParser {
         return;
       }
     }
+    parseGrammarChildDirectiveLines();
     if (!generate && at(TK::At)) {
       if (!consumeAnnexRule("event_control", line_)) {
         recoverMalformedItem(saved);
