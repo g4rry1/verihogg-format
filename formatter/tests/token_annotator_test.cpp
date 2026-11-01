@@ -41,20 +41,20 @@ class TokenAnnotatorTest : public ::testing::Test {
   LexContext ctx_;
 };
 
-TEST_F(TokenAnnotatorTest, InvalidBracketBecomesOpaqueWithWarning) {
+TEST_F(TokenAnnotatorTest, ParserPreservesMalformedBracketBeforeAnnotation) {
   auto result = annotateWithDiagnostics(
       "module m;\n"
       "  logic a;\n"
       "  assign y  = foo]bar;   // bad\n"
       "  logic b;\n"
       "endmodule\n");
-  ASSERT_EQ(result.warnings.size(), 1U);
-  EXPECT_EQ(result.warnings.front().code, "invalid-annotation");
+  EXPECT_TRUE(result.warnings.empty());
   size_t opaque_count = 0;
   for (const auto& line : result.lines) {
     if (line.is_opaque) {
       ++opaque_count;
-      EXPECT_EQ(line.raw_text, "\n  assign y  = foo]bar;   // bad\n");
+      EXPECT_NE(line.raw_text.find("assign y  = foo]bar;"), std::string::npos);
+      EXPECT_NE(line.raw_text.find("logic b;"), std::string::npos);
     }
   }
   EXPECT_EQ(opaque_count, 1U);
@@ -63,9 +63,11 @@ TEST_F(TokenAnnotatorTest, InvalidBracketBecomesOpaqueWithWarning) {
 TEST_F(TokenAnnotatorTest, BasedLiteralWildcardsStayExact) {
   auto result = annotateWithDiagnostics(
       "module m;\n"
-      "  casez (x)\n"
-      "    4'b10??: y = 1;\n"
-      "  endcase\n"
+      "  initial begin\n"
+      "    casez (x)\n"
+      "      4'b10??: y = 1;\n"
+      "    endcase\n"
+      "  end\n"
       "endmodule\n");
   ASSERT_EQ(result.warnings.size(), 1U);
   EXPECT_EQ(result.warnings.front().code, "invalid-annotation");
@@ -73,7 +75,7 @@ TEST_F(TokenAnnotatorTest, BasedLiteralWildcardsStayExact) {
   for (const auto& line : result.lines) {
     if (line.is_opaque) {
       ++opaque_count;
-      EXPECT_EQ(line.raw_text, "\n    4'b10??: y = 1;\n");
+      EXPECT_EQ(line.raw_text, "\n      4'b10??: y = 1;\n");
     }
   }
   EXPECT_EQ(opaque_count, 1U);

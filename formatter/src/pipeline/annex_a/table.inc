@@ -1,5 +1,5 @@
 // Generated from IEEE 1800-2023 Annex A during development of this formatter.
-static constexpr std::string_view kTokenNames[] = {
+static constexpr std::array<std::string_view, 352> kTokenNames = {
     "Unknown",
     "EndOfFile",
     "Identifier",
@@ -353,7 +353,7 @@ static constexpr std::string_view kTokenNames[] = {
     "EmptyMacroArgument",
     "LineContinuation",
 };
-static constexpr std::string_view kRuleNames[] = {
+static constexpr std::array<std::string_view, 1628> kRuleNames = {
     "@lexer_output_symbol",
     "@lexer_level_symbol",
     "@lexer_edge_symbol",
@@ -1983,7 +1983,7 @@ static constexpr std::string_view kRuleNames[] = {
     "?formfeed",
     "?eof",
 };
-static constexpr Production kProductions[] = {
+static constexpr std::array<Production, 3409> kProductions = {{
     {0, 0, 1},
     {0, 1, 1},
     {1, 2, 1},
@@ -5393,8 +5393,8 @@ static constexpr Production kProductions[] = {
     {1592, 5829, 1},
     {1592, 5830, 1},
     {323, 5837, 1},
-};
-static constexpr int16_t kSymbols[] = {
+}};
+static constexpr std::array<int16_t, 5838> kSymbols = {
     -6, -3, -6, -3, -46, -3, -28, -6, -3, -6, -3, -6, -7, -6, -6, -7, -6, -7, -3, -6,
     -7, -3, -7, -46, -6, -7, -46, -7, -46, -3, -6, -7, -46, -3, -6, 6, -3, 7, -46, 8,
     -3, 7, -46, 8, -46, 8, -6, 6, -3, 7, -46, 8, -6, 10, -3, 11, -46, 12, -3, 11,

@@ -23,6 +23,13 @@ using PP = format::PartitionPolicy;
 
 constexpr size_t kColumnLimit = 100;
 constexpr size_t kIndent = 2;
+constexpr size_t kLongExpressionTerms = 1000;
+constexpr size_t kLargeBodyItems = 1500;
+constexpr size_t kVeryLargeBodyItems = 10000;
+constexpr int kRepeatedItems = 120;
+constexpr size_t kManyModuleItems = 700;
+constexpr size_t kLongBodyItems = 5000;
+constexpr size_t kCaseLabelTokens = 6;
 
 // ---------------------------------------------------------------------------
 // Snapshot types — a lightweight copy of the tree that supports operator==
@@ -118,9 +125,9 @@ class TreeUnwrapperTest : public ::testing::Test {
     for (const auto& line : lines) {
       for (const auto& token : line.tokens) {
         ASSERT_LT(index, tokens_.size());
-        EXPECT_EQ(token.kind, tokens_[index].kind);
-        EXPECT_EQ(token.rawText(), tokens_[index].rawText());
-        EXPECT_EQ(token.location(), tokens_[index].location());
+        EXPECT_EQ(token.kind, tokens_.at(index).kind);
+        EXPECT_EQ(token.rawText(), tokens_.at(index).rawText());
+        EXPECT_EQ(token.location(), tokens_.at(index).location());
         ++index;
       }
     }
@@ -353,7 +360,9 @@ TEST_F(TreeUnwrapperTest, IdentifierLedItemsUseViableAnnexProductions) {
   bool saw_instance_list = false;
   bool saw_assignment = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty() || line.is_opaque) continue;
+    if (line.tokens.empty() || line.is_opaque) {
+      continue;
+    }
     saw_declaration |= line.tokens.front().rawText() == "type_t" &&
                        line.tokens.back().kind == TK::Semicolon;
     saw_instance_list |= line.tokens.front().rawText() == "child" &&
@@ -375,12 +384,14 @@ TEST_F(TreeUnwrapperTest, ConditionalParameterListResumesAnnexInstantiation) {
   bool saw_instance_ports = false;
   bool saw_second_port = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty() || line.is_opaque) continue;
+    if (line.tokens.empty() || line.is_opaque) {
+      continue;
+    }
     saw_instance_ports |= line.tokens.front().kind == TK::CloseParenthesis &&
                           line.tokens.back().kind == TK::OpenParenthesis;
     saw_second_port |= line.tokens.front().kind == TK::Dot &&
                        line.tokens.size() > 1 &&
-                       line.tokens[1].rawText() == "b";
+                       line.tokens.at(1).rawText() == "b";
   }
   EXPECT_TRUE(saw_instance_ports);
   EXPECT_TRUE(saw_second_port);
@@ -406,7 +417,7 @@ TEST_F(TreeUnwrapperTest, ConditionalWholeModuleHeaderResumesAnnexGrammar) {
       "module m\n`ifdef A\n(input logic a)\n`else\n"
       "(input logic b)\n`endif\n; logic x; endmodule");
   EXPECT_TRUE(result.warnings.empty());
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -416,7 +427,7 @@ TEST_F(TreeUnwrapperTest, ConditionalFunctionHeaderResumesAnnexGrammar) {
       "`else\n(input int b)\n`endif\n; return 0; "
       "endfunction endmodule");
   EXPECT_TRUE(result.warnings.empty());
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndFunctionKeyword);
 }
 
@@ -426,7 +437,7 @@ TEST_F(TreeUnwrapperTest, ConditionalModuleParametersResumeAnnexHeader) {
       "`else\nparameter int X = 2\n`endif\n)(); "
       "logic x; endmodule");
   EXPECT_TRUE(result.warnings.empty());
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -449,29 +460,27 @@ TEST_F(TreeUnwrapperTest, InvalidConditionalPortPathFallsBackAtHeader) {
   const auto result = parseWithDiagnostics(
       "module m(\n`ifdef A\ninput logic a\n`else\ninput logic b,\n"
       "`endif\n); logic x; endmodule");
-  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(),
-                          [](const auto& warning) {
-                            return warning.code == "annex-a-fallback";
-                          }));
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_TRUE(std::any_of(
+      result.warnings.begin(), result.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
 TEST_F(TreeUnwrapperTest, MissingHeaderListCloseLeavesEndmoduleUnread) {
-  const auto result = parseWithDiagnostics(
-      "module m(input logic a; logic x; endmodule");
+  const auto result =
+      parseWithDiagnostics("module m(input logic a; logic x; endmodule");
   ASSERT_FALSE(result.warnings.empty());
   EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
 TEST_F(TreeUnwrapperTest, MissingInstanceListCloseLeavesEndmoduleUnread) {
-  const auto result = parseWithDiagnostics(
-      "module m; child u(a, b; endmodule");
+  const auto result = parseWithDiagnostics("module m; child u(a, b; endmodule");
   ASSERT_FALSE(result.warnings.empty());
   EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -485,9 +494,9 @@ TEST_F(TreeUnwrapperTest, NestedModuleOutsideBodyRuleRecoversAtOuterEnd) {
                warning.message.find("outside the current Annex A body rule") !=
                    std::string::npos;
       }));
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndKeyword);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -511,7 +520,9 @@ TEST_F(TreeUnwrapperTest, NestedConditionalInsideCaseKeepsOuterBranchOpen) {
   bool found_second_item = false;
   bool found_endcase = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_second_item |= line.tokens.front().rawText() == "1";
     found_endcase |= line.tokens.front().kind == TK::EndCaseKeyword;
     EXPECT_FALSE(line.is_opaque);
@@ -544,9 +555,10 @@ TEST_F(TreeUnwrapperTest, ConditionalUdpEntriesKeepAnnexTableState) {
   EXPECT_TRUE(std::any_of(
       missing_branch.warnings.begin(), missing_branch.warnings.end(),
       [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
-  EXPECT_EQ(
-      missing_branch.lines[missing_branch.lines.size() - 2].tokens.front().kind,
-      TK::EndModuleKeyword);
+  EXPECT_EQ(missing_branch.lines.at(missing_branch.lines.size() - 2)
+                .tokens.front()
+                .kind,
+            TK::EndModuleKeyword);
 }
 
 TEST_F(TreeUnwrapperTest, ConditionalUdpPortsKeepAnnexBodyState) {
@@ -591,7 +603,7 @@ TEST_F(TreeUnwrapperTest, ExternUdpDeclarationEndsAtAnnexHeader) {
   const auto result =
       parseWithDiagnostics("extern primitive p(out, a); module m; endmodule");
   EXPECT_TRUE(result.warnings.empty());
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -607,7 +619,9 @@ TEST_F(TreeUnwrapperTest, UdpTableMacroSuspendsAnnexEntryRule) {
   bool saw_entry = false;
   bool saw_close = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     saw_entry |= line.tokens.front().rawText() == "0";
     saw_close |= line.tokens.front().kind == TK::EndTableKeyword;
   }
@@ -647,9 +661,9 @@ TEST_F(TreeUnwrapperTest, SequentialBlockDeclarationOrderFollowsAnnexA) {
   EXPECT_TRUE(std::any_of(
       invalid.warnings.begin(), invalid.warnings.end(),
       [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
-  EXPECT_EQ(invalid.lines[invalid.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(invalid.lines.at(invalid.lines.size() - 3).tokens.front().kind,
             TK::EndKeyword);
-  EXPECT_EQ(invalid.lines[invalid.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(invalid.lines.at(invalid.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -657,9 +671,9 @@ TEST_F(TreeUnwrapperTest, MissingOpeningLabelLeavesBlockCloseUnread) {
   const auto result =
       parseWithDiagnostics("module m; initial begin : end endmodule");
   EXPECT_FALSE(result.warnings.empty());
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndKeyword);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -1437,7 +1451,7 @@ TEST_F(TreeUnwrapperTest, AssertionPropertySpecUsesAnnexRule) {
   for (const auto& line : malformed.lines) {
     if (line.tokens.size() >= 2 && !line.is_opaque &&
         line.tokens.front().kind == TK::LogicKeyword &&
-        line.tokens[1].rawText() == "y") {
+        line.tokens.at(1).rawText() == "y") {
       parsed_second_module = true;
     }
   }
@@ -1479,7 +1493,9 @@ TEST_F(TreeUnwrapperTest, ConditionalForHeaderResumesAnnexRule) {
   bool saw_for = false;
   bool saw_body = false;
   for (const auto& line : result.lines) {
-    if (line.is_opaque) continue;
+    if (line.is_opaque) {
+      continue;
+    }
     for (const auto& token : line.tokens) {
       saw_for |= token.kind == TK::ForKeyword;
       saw_body |= token.kind == TK::Identifier && token.rawText() == "q";
@@ -1491,7 +1507,9 @@ TEST_F(TreeUnwrapperTest, ConditionalForHeaderResumesAnnexRule) {
 
 TEST_F(TreeUnwrapperTest, LongBinaryExpressionStaysOnAnnexPath) {
   std::string source = "module m; logic y; assign y = a";
-  for (size_t i = 1; i < 1000; ++i) source += " && a";
+  for (size_t i = 1; i < kLongExpressionTerms; ++i) {
+    source += " && a";
+  }
   source += "; logic z; endmodule";
   const auto result = parseWithDiagnostics(source);
   EXPECT_TRUE(result.warnings.empty());
@@ -1499,7 +1517,7 @@ TEST_F(TreeUnwrapperTest, LongBinaryExpressionStaysOnAnnexPath) {
   for (const auto& line : result.lines) {
     if (line.tokens.size() >= 2 && !line.is_opaque &&
         line.tokens.front().kind == TK::LogicKeyword &&
-        line.tokens[1].rawText() == "z") {
+        line.tokens.at(1).rawText() == "z") {
       saw_next_declaration = true;
     }
   }
@@ -1918,7 +1936,7 @@ TEST_F(TreeUnwrapperTest, UdpRecoveryKeepsOuterPrimitiveClose) {
 
 TEST_F(TreeUnwrapperTest, LargeAnnexABodiesUseItemScopes) {
   std::string source = "module m; covergroup cg;\n";
-  for (size_t i = 0; i < 1500; ++i) {
+  for (size_t i = 0; i < kLargeBodyItems; ++i) {
     source += "p" + std::to_string(i) + ": coverpoint a;\n";
   }
   source += "endgroup endmodule\n";
@@ -1926,7 +1944,7 @@ TEST_F(TreeUnwrapperTest, LargeAnnexABodiesUseItemScopes) {
   EXPECT_TRUE(result.warnings.empty());
 
   source = "config cfg; design lib.top;\n";
-  for (size_t i = 0; i < 1500; ++i) {
+  for (size_t i = 0; i < kLargeBodyItems; ++i) {
     source += "default liblist lib;\n";
   }
   source += "endconfig\n";
@@ -1934,7 +1952,7 @@ TEST_F(TreeUnwrapperTest, LargeAnnexABodiesUseItemScopes) {
   EXPECT_TRUE(result.warnings.empty());
 
   source = "primitive p(out, a); output out; input a; table\n";
-  for (size_t i = 0; i < 1500; ++i) {
+  for (size_t i = 0; i < kLargeBodyItems; ++i) {
     source += "0 : 0;\n";
   }
   source += "endtable endprimitive\n";
@@ -1944,7 +1962,7 @@ TEST_F(TreeUnwrapperTest, LargeAnnexABodiesUseItemScopes) {
 
 TEST_F(TreeUnwrapperTest, LongPropertyDeclarationStaysOnGrammarPath) {
   std::string source = "module m; property p;\n";
-  for (size_t i = 0; i < 10000; ++i) {
+  for (size_t i = 0; i < kVeryLargeBodyItems; ++i) {
     source += "logic v" + std::to_string(i) + ";\n";
   }
   source += "a; endproperty endmodule\n";
@@ -1969,7 +1987,7 @@ TEST_F(TreeUnwrapperTest,
 
 TEST_F(TreeUnwrapperTest, LongSequenceDeclarationStaysOnGrammarPath) {
   std::string source = "module m; sequence s;\n";
-  for (size_t i = 0; i < 10000; ++i) {
+  for (size_t i = 0; i < kVeryLargeBodyItems; ++i) {
     source += "logic v" + std::to_string(i) + ";\n";
   }
   source += "a ##1 b; endsequence endmodule\n";
@@ -2027,7 +2045,7 @@ TEST_F(TreeUnwrapperTest, IncompatiblePropertyBranchesRecoverAtClose) {
   for (const auto& line : result.lines) {
     resumed |= !line.tokens.empty() &&
                line.tokens.front().rawText() == "logic" &&
-               line.tokens.size() > 1 && line.tokens[1].rawText() == "b";
+               line.tokens.size() > 1 && line.tokens.at(1).rawText() == "b";
   }
   EXPECT_TRUE(resumed);
 }
@@ -2048,9 +2066,9 @@ TEST_F(TreeUnwrapperTest, MalformedCovergroupItemPreservesTokensAndResumes) {
   bool resumed = false;
   for (const auto& line : result.lines) {
     if (!line.tokens.empty() && line.tokens.front().rawText() == "logic") {
-      retained_body |=
-          line.tokens.size() > 1 && line.tokens[1].rawText() == "should_stay";
-      resumed |= line.tokens.size() > 1 && line.tokens[1].rawText() == "b";
+      retained_body |= line.tokens.size() > 1 &&
+                       line.tokens.at(1).rawText() == "should_stay";
+      resumed |= line.tokens.size() > 1 && line.tokens.at(1).rawText() == "b";
     }
   }
   EXPECT_TRUE(retained_body);
@@ -2144,7 +2162,7 @@ TEST_F(TreeUnwrapperTest, ConstraintUsesAnnexAAndKeepsFollowingItems) {
 
 TEST_F(TreeUnwrapperTest, LongConstraintBlockStaysOnGrammarPath) {
   std::string source = "class c; constraint r {\n";
-  for (size_t i = 0; i < 10000; ++i) {
+  for (size_t i = 0; i < kVeryLargeBodyItems; ++i) {
     source += "x" + std::to_string(i) + " > 0;\n";
   }
   source += "} endclass\n";
@@ -2199,7 +2217,9 @@ TEST_F(TreeUnwrapperTest, NestedConstraintIfAndUniqueUseChildRules) {
   bool found_else = false;
   bool found_unique = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_if |= line.tokens.front().kind == TK::IfKeyword;
     found_else |= line.tokens.front().kind == TK::ElseKeyword;
     found_unique |= line.tokens.front().kind == TK::UniqueKeyword;
@@ -2218,7 +2238,9 @@ TEST_F(TreeUnwrapperTest, SolveBeforeUsesConstraintPrimaryLists) {
   bool found_solve = false;
   bool found_disable = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_solve |= line.tokens.front().kind == TK::SolveKeyword &&
                    line.tokens.back().kind == TK::Semicolon;
     found_disable |= line.tokens.front().kind == TK::DisableKeyword &&
@@ -2236,7 +2258,9 @@ TEST_F(TreeUnwrapperTest, ConstraintForeachCallsArrayAndLoopRules) {
   expectTokenConservation(result.lines);
   bool found_foreach = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_foreach |= line.tokens.front().kind == TK::ForeachKeyword;
   }
   EXPECT_TRUE(found_foreach);
@@ -2324,7 +2348,9 @@ TEST_F(TreeUnwrapperTest, MissingConstraintSetRecoversAtOuterBrace) {
   expectTokenConservation(result.lines);
   bool found_module = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_module |= line.tokens.front().kind == TK::ModuleKeyword;
   }
   EXPECT_TRUE(found_module);
@@ -2399,7 +2425,7 @@ TEST_F(TreeUnwrapperTest, AnnexAAttributePrefixSelectsModuleHeader) {
   ASSERT_GE(result.lines.size(), 3U);
   EXPECT_EQ(result.lines.front().tokens.front().kind, TK::OpenParenthesis);
   EXPECT_EQ(result.lines.front().tokens.at(7).kind, TK::ModuleKeyword);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -2410,13 +2436,13 @@ TEST_F(TreeUnwrapperTest, AnnexAHeaderIncludesPackageImportsBeforePorts) {
   bool found_body = false;
   for (const auto& line : result.lines) {
     if (!line.tokens.empty() && line.tokens.front().rawText() == "logic" &&
-        line.tokens.size() >= 3 && line.tokens[1].rawText() == "b" &&
+        line.tokens.size() >= 3 && line.tokens.at(1).rawText() == "b" &&
         line.tokens.back().kind == TK::Semicolon) {
       found_body = true;
     }
   }
   EXPECT_TRUE(found_body);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -2433,14 +2459,14 @@ TEST_F(TreeUnwrapperTest, ConditionalPackageItemsResumeAnnexAAfterEndif) {
   EXPECT_TRUE(result.warnings.empty());
   bool found_after_endif = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.size() == 3 && line.tokens[0].kind == TK::IntKeyword &&
-        line.tokens[1].rawText() == "c" &&
-        line.tokens[2].kind == TK::Semicolon) {
+    if (line.tokens.size() == 3 && line.tokens.at(0).kind == TK::IntKeyword &&
+        line.tokens.at(1).rawText() == "c" &&
+        line.tokens.at(2).kind == TK::Semicolon) {
       found_after_endif = true;
     }
   }
   EXPECT_TRUE(found_after_endif);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndPackageKeyword);
 }
 
@@ -2457,13 +2483,13 @@ TEST_F(TreeUnwrapperTest, StandaloneMacroSkipsOnePackageItem) {
   bool found_declaration = false;
   for (const auto& line : result.lines) {
     if (line.tokens.size() == 3 && line.tokens.front().kind == TK::IntKeyword &&
-        line.tokens[1].rawText() == "a" &&
+        line.tokens.at(1).rawText() == "a" &&
         line.tokens.back().kind == TK::Semicolon) {
       found_declaration = true;
     }
   }
   EXPECT_TRUE(found_declaration);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndPackageKeyword);
 }
 
@@ -2482,7 +2508,7 @@ TEST_F(TreeUnwrapperTest, MacroInFunctionItemResumesAnnexABody) {
     }
   }
   EXPECT_TRUE(found_return);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndPackageKeyword);
 }
 
@@ -2496,9 +2522,9 @@ TEST_F(TreeUnwrapperTest, MacroAfterConditionalPredicateKeepsOuterClose) {
   EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
   EXPECT_NE(result.warnings.front().message.find("macro expansion"),
             std::string::npos);
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndKeyword);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -2519,7 +2545,7 @@ TEST_F(TreeUnwrapperTest, MacroCaseItemResumesAtFollowingLabel) {
     }
   }
   EXPECT_TRUE(found_default);
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndCaseKeyword);
 }
 
@@ -2529,9 +2555,9 @@ TEST_F(TreeUnwrapperTest, MacroWithoutSemicolonLeavesOuterCloseUnread) {
   ASSERT_EQ(result.warnings.size(), 1U);
   EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
   ASSERT_GE(result.lines.size(), 5U);
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndKeyword);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -2543,7 +2569,7 @@ TEST_F(TreeUnwrapperTest, AttributedMacroLeavesNextPackageItemUnread) {
   bool found_declaration = false;
   for (const auto& line : result.lines) {
     if (line.tokens.size() == 3 && line.tokens.front().kind == TK::IntKeyword &&
-        line.tokens[1].rawText() == "a") {
+        line.tokens.at(1).rawText() == "a") {
       found_declaration = true;
     }
   }
@@ -2562,8 +2588,8 @@ TEST_F(TreeUnwrapperTest, UniquePrefixSelectsAnnexAIfAndCase) {
   for (const auto& line : result.lines) {
     if (line.tokens.size() >= 2 &&
         line.tokens.front().kind == TK::UniqueKeyword) {
-      found_if |= line.tokens[1].kind == TK::IfKeyword;
-      found_case |= line.tokens[1].kind == TK::CaseKeyword;
+      found_if |= line.tokens.at(1).kind == TK::IfKeyword;
+      found_case |= line.tokens.at(1).kind == TK::CaseKeyword;
     }
   }
   EXPECT_TRUE(found_if);
@@ -2580,13 +2606,13 @@ TEST_F(TreeUnwrapperTest, LabeledPriorityAndUnique0CallStatementRules) {
   bool found_priority_if = false;
   bool found_unique0_case = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.size() < 4 || line.tokens[1].kind != TK::Colon) {
+    if (line.tokens.size() < 4 || line.tokens.at(1).kind != TK::Colon) {
       continue;
     }
-    found_priority_if |= line.tokens[2].kind == TK::PriorityKeyword &&
-                         line.tokens[3].kind == TK::IfKeyword;
-    found_unique0_case |= line.tokens[2].kind == TK::Unique0Keyword &&
-                          line.tokens[3].kind == TK::CaseKeyword;
+    found_priority_if |= line.tokens.at(2).kind == TK::PriorityKeyword &&
+                         line.tokens.at(3).kind == TK::IfKeyword;
+    found_unique0_case |= line.tokens.at(2).kind == TK::Unique0Keyword &&
+                          line.tokens.at(3).kind == TK::CaseKeyword;
   }
   EXPECT_TRUE(found_priority_if);
   EXPECT_TRUE(found_unique0_case);
@@ -2616,7 +2642,9 @@ TEST_F(TreeUnwrapperTest, ModuleCommonLeafRulesKeepTheirContexts) {
   size_t assignments = 0;
   bool found_alias = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     assignments += line.tokens.front().kind == TK::AssignKeyword;
     found_alias |= line.tokens.front().kind == TK::AliasKeyword;
   }
@@ -2656,7 +2684,7 @@ TEST_F(TreeUnwrapperTest, MalformedAliasPreservesTokensAndNextModule) {
   for (const auto& line : result.lines) {
     if (line.tokens.size() >= 2 &&
         line.tokens.front().kind == TK::ModuleKeyword &&
-        line.tokens[1].rawText() == "next") {
+        line.tokens.at(1).rawText() == "next") {
       found_next = true;
     }
   }
@@ -2674,7 +2702,9 @@ TEST_F(TreeUnwrapperTest, SpecparamUsesAnnexRuleAndResumesModuleItems) {
   bool found_specparam = false;
   bool found_logic = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_specparam |= line.tokens.front().kind == TK::SpecParamKeyword &&
                        line.tokens.back().kind == TK::Semicolon;
     found_logic |= line.tokens.front().kind == TK::LogicKeyword;
@@ -2693,7 +2723,8 @@ TEST_F(TreeUnwrapperTest, TypedefUsesTypeRuleInModulePackageAndInterfaceClass) {
   }
   size_t typedefs = 0;
   for (const auto& line : result.lines) {
-    if (!line.tokens.empty() && line.tokens.front().kind == TK::TypedefKeyword) {
+    if (!line.tokens.empty() &&
+        line.tokens.front().kind == TK::TypedefKeyword) {
       ++typedefs;
     }
   }
@@ -2714,7 +2745,9 @@ TEST_F(TreeUnwrapperTest, BuiltInDataTypesCallDeclarationRule) {
   bool found_struct = false;
   bool found_string = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_logic |= line.tokens.front().kind == TK::LogicKeyword;
     found_struct |= line.tokens.front().kind == TK::StructKeyword;
     found_string |= line.tokens.front().kind == TK::StringKeyword;
@@ -2735,7 +2768,9 @@ TEST_F(TreeUnwrapperTest, NetTypesCallNetDeclarationRule) {
   bool found_tri = false;
   bool found_uwire = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_wire |= line.tokens.front().kind == TK::WireKeyword;
     found_tri |= line.tokens.front().kind == TK::TriKeyword;
     found_uwire |= line.tokens.front().kind == TK::UWireKeyword;
@@ -2778,7 +2813,9 @@ TEST_F(TreeUnwrapperTest, AnsiInterfaceAndProgramItemsCallTheirRules) {
   bool found_interface_close = false;
   bool found_program_close = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     assignments += line.tokens.front().kind == TK::AssignKeyword;
     found_interface_close |=
         line.tokens.front().kind == TK::EndInterfaceKeyword;
@@ -2799,7 +2836,9 @@ TEST_F(TreeUnwrapperTest, NonAnsiPortItemsUseChildAndParentRules) {
   }
   size_t port_items = 0;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     if (line.tokens.front().kind == TK::InputKeyword ||
         line.tokens.front().kind == TK::OutputKeyword) {
       EXPECT_EQ(line.tokens.back().kind, TK::Semicolon);
@@ -2818,11 +2857,14 @@ TEST_F(TreeUnwrapperTest, AnsiHeaderDoesNotAdmitBodyPortDeclaration) {
   bool found_following_module = false;
   bool found_ready = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_following_module |=
         line.tokens.front().kind == TK::ModuleKeyword &&
-        std::any_of(line.tokens.begin(), line.tokens.end(),
-                    [](const auto& token) { return token.rawText() == "after"; });
+        std::any_of(
+            line.tokens.begin(), line.tokens.end(),
+            [](const auto& token) { return token.rawText() == "after"; });
     found_ready |= line.tokens.front().kind == TK::LogicKeyword;
   }
   EXPECT_TRUE(found_following_module);
@@ -2838,12 +2880,15 @@ TEST_F(TreeUnwrapperTest, MissingNonAnsiPortSemicolonKeepsOuterClose) {
   bool found_first_close = false;
   bool found_following_module = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_first_close |= line.tokens.front().kind == TK::EndModuleKeyword;
     found_following_module |=
         line.tokens.front().kind == TK::ModuleKeyword &&
-        std::any_of(line.tokens.begin(), line.tokens.end(),
-                    [](const auto& token) { return token.rawText() == "after"; });
+        std::any_of(
+            line.tokens.begin(), line.tokens.end(),
+            [](const auto& token) { return token.rawText() == "after"; });
   }
   EXPECT_TRUE(found_first_close);
   EXPECT_TRUE(found_following_module);
@@ -2859,7 +2904,9 @@ TEST_F(TreeUnwrapperTest, TaskPortDeclarationsUseTfRule) {
   size_t port_items = 0;
   bool found_ready = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     port_items += line.tokens.front().kind == TK::InputKeyword ||
                   line.tokens.front().kind == TK::OutputKeyword;
     found_ready |= line.tokens.front().kind == TK::LogicKeyword;
@@ -2881,7 +2928,9 @@ TEST_F(TreeUnwrapperTest, ParameterItemsUseChildAndParentRules) {
   }
   size_t parameter_items = 0;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     if (line.tokens.front().kind == TK::ParameterKeyword ||
         line.tokens.front().kind == TK::LocalParamKeyword) {
       EXPECT_EQ(line.tokens.back().kind, TK::Semicolon);
@@ -2901,7 +2950,9 @@ TEST_F(TreeUnwrapperTest, NettypeDeclarationsUseAnnexRule) {
   }
   size_t nettypes = 0;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     if (line.tokens.front().kind == TK::NetTypeKeyword) {
       EXPECT_EQ(line.tokens.back().kind, TK::Semicolon);
       ++nettypes;
@@ -2919,8 +2970,9 @@ TEST_F(TreeUnwrapperTest, LetDeclarationsUseBlockItemRule) {
   }
   size_t let_items = 0;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty() || line.tokens.front().kind != TK::LetKeyword)
+    if (line.tokens.empty() || line.tokens.front().kind != TK::LetKeyword) {
       continue;
+    }
     EXPECT_EQ(line.tokens.back().kind, TK::Semicolon);
     ++let_items;
   }
@@ -2940,7 +2992,9 @@ TEST_F(TreeUnwrapperTest, InterfaceModportAndClockingCallAnnexRules) {
   bool found_clocking = false;
   bool found_close = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_modport |= line.tokens.front().kind == TK::ModPortKeyword;
     found_clocking |= line.tokens.front().kind == TK::ClockingKeyword;
     found_close |= line.tokens.front().kind == TK::EndClockingKeyword;
@@ -2961,7 +3015,9 @@ TEST_F(TreeUnwrapperTest, InterfaceExternMethodsUseAnnexRule) {
   size_t extern_items = 0;
   bool found_logic = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     extern_items += line.tokens.front().kind == TK::ExternKeyword &&
                     line.tokens.back().kind == TK::Semicolon;
     found_logic |= line.tokens.front().kind == TK::LogicKeyword;
@@ -2982,11 +3038,13 @@ TEST_F(TreeUnwrapperTest, VirtualClassAndStaticConstraintUseDeclarationRules) {
   bool found_constraint = false;
   bool found_method = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.size() < 2) continue;
+    if (line.tokens.size() < 2) {
+      continue;
+    }
     found_constraint |= line.tokens.front().kind == TK::StaticKeyword &&
-                        line.tokens[1].kind == TK::ConstraintKeyword;
+                        line.tokens.at(1).kind == TK::ConstraintKeyword;
     found_method |= line.tokens.front().kind == TK::VirtualKeyword &&
-                    line.tokens[1].kind == TK::FunctionKeyword;
+                    line.tokens.at(1).kind == TK::FunctionKeyword;
   }
   EXPECT_TRUE(found_constraint);
   EXPECT_TRUE(found_method);
@@ -3008,18 +3066,18 @@ TEST_F(TreeUnwrapperTest, RandomAndConstClassPropertiesUseAnnexRule) {
   bool found_local = false;
   bool found_method = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
-    direct_properties +=
-        line.tokens.front().kind == TK::RandKeyword ||
-        line.tokens.front().kind == TK::RandCKeyword ||
-        line.tokens.front().kind == TK::ConstKeyword;
+    if (line.tokens.empty()) {
+      continue;
+    }
+    direct_properties += line.tokens.front().kind == TK::RandKeyword ||
+                         line.tokens.front().kind == TK::RandCKeyword ||
+                         line.tokens.front().kind == TK::ConstKeyword;
     found_static |= line.tokens.front().kind == TK::StaticKeyword;
     found_protected |= line.tokens.front().kind == TK::ProtectedKeyword;
     found_local |= line.tokens.front().kind == TK::LocalKeyword;
-    found_method |= std::any_of(line.tokens.begin(), line.tokens.end(),
-                                [](const auto& token) {
-                                  return token.kind == TK::FunctionKeyword;
-                                });
+    found_method |= std::any_of(
+        line.tokens.begin(), line.tokens.end(),
+        [](const auto& token) { return token.kind == TK::FunctionKeyword; });
   }
   EXPECT_EQ(direct_properties, 3U);
   EXPECT_TRUE(found_static);
@@ -3038,7 +3096,9 @@ TEST_F(TreeUnwrapperTest, PureVirtualMethodPrototypeKeepsItsSemicolon) {
   bool found_prototype = false;
   bool found_module = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_prototype |= line.tokens.front().kind == TK::PureKeyword &&
                        line.tokens.back().kind == TK::Semicolon;
     found_module |= line.tokens.front().kind == TK::ModuleKeyword;
@@ -3058,7 +3118,9 @@ TEST_F(TreeUnwrapperTest, ExternClassMethodsUsePrototypeProduction) {
   size_t extern_methods = 0;
   bool found_constraint = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     extern_methods += line.tokens.front().kind == TK::ExternKeyword &&
                       line.tokens.back().kind == TK::Semicolon;
     found_constraint |= line.tokens.front().kind == TK::ConstraintKeyword;
@@ -3082,7 +3144,9 @@ TEST_F(TreeUnwrapperTest, ConstraintPrototypesUseAnnexProduction) {
   bool found_external_definition = false;
   bool found_following_module = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     prototypes += line.tokens.back().kind == TK::Semicolon &&
                   (line.tokens.front().kind == TK::ExternKeyword ||
                    line.tokens.front().kind == TK::PureKeyword ||
@@ -3109,7 +3173,9 @@ TEST_F(TreeUnwrapperTest, ScopedConstraintUsesExternConstraintProduction) {
   bool found_constraint = false;
   bool found_parameter = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_constraint |= line.tokens.front().kind == TK::ConstraintKeyword;
     found_parameter |= line.tokens.front().kind == TK::LocalParamKeyword;
   }
@@ -3126,7 +3192,9 @@ TEST_F(TreeUnwrapperTest, BindRuleFailureRecoversAtModuleClose) {
   bool found_program = false;
   bool found_assignment = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_program |= line.tokens.front().kind == TK::ProgramKeyword;
     found_assignment |= line.tokens.front().kind == TK::AssignKeyword;
   }
@@ -3143,12 +3211,15 @@ TEST_F(TreeUnwrapperTest, AssertPropertyHeaderRecoversAtModuleClose) {
   bool found_next = false;
   bool found_assert = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_next |= line.tokens.front().kind == TK::ModuleKeyword &&
-                  line.tokens.size() > 1 && line.tokens[1].rawText() == "next";
+                  line.tokens.size() > 1 &&
+                  line.tokens.at(1).rawText() == "next";
     found_assert |= line.tokens.front().kind == TK::AssertKeyword &&
                     line.tokens.size() > 1 &&
-                    line.tokens[1].kind == TK::PropertyKeyword;
+                    line.tokens.at(1).kind == TK::PropertyKeyword;
   }
   EXPECT_TRUE(found_next);
   EXPECT_TRUE(found_assert);
@@ -3156,9 +3227,9 @@ TEST_F(TreeUnwrapperTest, AssertPropertyHeaderRecoversAtModuleClose) {
 
 TEST_F(TreeUnwrapperTest, RepeatedCaseBlocksKeepAnnexAItemsIndependent) {
   std::string source = "module m; always_comb begin case (sel) ";
-  for (int i = 0; i < 120; ++i) {
-    source += std::to_string(i) + ": begin value = " + std::to_string(i) +
-              "; end ";
+  for (int i = 0; i < kRepeatedItems; ++i) {
+    source +=
+        std::to_string(i) + ": begin value = " + std::to_string(i) + "; end ";
   }
   source += "endcase end endmodule";
 
@@ -3168,7 +3239,7 @@ TEST_F(TreeUnwrapperTest, RepeatedCaseBlocksKeepAnnexAItemsIndependent) {
   for (const auto& line : result.lines) {
     if (line.tokens.size() >= 2 &&
         line.tokens.front().kind == TK::IntegerLiteral &&
-        line.tokens[1].kind == TK::Colon) {
+        line.tokens.at(1).kind == TK::Colon) {
       ++case_items;
     }
   }
@@ -3186,7 +3257,7 @@ TEST_F(TreeUnwrapperTest, NestedCaseBodyResumesAtNextAnnexAItem) {
   for (const auto& line : result.lines) {
     found_next_item |= line.tokens.size() >= 2 &&
                        line.tokens.front().rawText() == "1" &&
-                       line.tokens[1].kind == TK::Colon;
+                       line.tokens.at(1).kind == TK::Colon;
   }
   EXPECT_TRUE(found_next_item);
 }
@@ -3200,11 +3271,13 @@ TEST_F(TreeUnwrapperTest, NestedCaseAcrossDirectiveKeepsItemBoundaries) {
   size_t case_items = 0;
   size_t case_closes = 0;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     case_headers += line.tokens.front().kind == TK::CaseKeyword;
     case_items += line.tokens.size() >= 2 &&
-                  line.tokens[0].kind == TK::IntegerLiteral &&
-                  line.tokens[1].kind == TK::Colon;
+                  line.tokens.at(0).kind == TK::IntegerLiteral &&
+                  line.tokens.at(1).kind == TK::Colon;
     case_closes += line.tokens.front().kind == TK::EndCaseKeyword;
   }
   EXPECT_EQ(case_headers, 2U);
@@ -3229,7 +3302,7 @@ TEST_F(TreeUnwrapperTest, ConditionalCaseLabelResumesSameAnnexRule) {
       "`ifdef A\n+ 1\n`else\n+ 2\n`endif\n"
       ": x = 1; endcase endmodule");
   EXPECT_TRUE(result.warnings.empty());
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -3241,7 +3314,9 @@ TEST_F(TreeUnwrapperTest, RandcaseUsesAnnexAItems) {
   bool found_randcase = false;
   bool found_endcase = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_randcase |= line.tokens.front().kind == TK::RandCaseKeyword;
     found_endcase |= line.tokens.front().kind == TK::EndCaseKeyword;
   }
@@ -3261,13 +3336,14 @@ TEST_F(TreeUnwrapperTest, RandsequenceCallsProductionRulePerItem) {
   bool found_close = false;
   bool found_done = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
-    production_items += line.tokens.front().kind == TK::Identifier &&
-                        line.tokens.back().kind == TK::Semicolon &&
-                        std::any_of(line.tokens.begin(), line.tokens.end(),
-                                    [](const auto& token) {
-                                      return token.kind == TK::Colon;
-                                    });
+    if (line.tokens.empty()) {
+      continue;
+    }
+    production_items +=
+        line.tokens.front().kind == TK::Identifier &&
+        line.tokens.back().kind == TK::Semicolon &&
+        std::any_of(line.tokens.begin(), line.tokens.end(),
+                    [](const auto& token) { return token.kind == TK::Colon; });
     found_close |= line.tokens.front().kind == TK::EndSequenceKeyword;
     found_done |= line.tokens.front().kind == TK::LogicKeyword;
   }
@@ -3293,8 +3369,9 @@ TEST_F(TreeUnwrapperTest, RandsequenceResumesProductionsAcrossDirective) {
   size_t productions = 0;
   for (const auto& line : result.lines) {
     if (!line.tokens.empty() && line.tokens.front().kind == TK::Identifier &&
-        std::any_of(line.tokens.begin(), line.tokens.end(),
-                    [](const auto& token) { return token.kind == TK::Colon; })) {
+        std::any_of(
+            line.tokens.begin(), line.tokens.end(),
+            [](const auto& token) { return token.kind == TK::Colon; })) {
       ++productions;
     }
   }
@@ -3310,7 +3387,9 @@ TEST_F(TreeUnwrapperTest, MalformedRandsequenceKeepsOuterEnd) {
   bool found_end = false;
   bool found_ready = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_end |= line.tokens.front().kind == TK::EndKeyword;
     found_ready |= line.tokens.front().kind == TK::LogicKeyword;
   }
@@ -3324,7 +3403,7 @@ TEST_F(TreeUnwrapperTest, EmptyCaseReportsAnnexARuleFailure) {
   EXPECT_TRUE(std::any_of(
       result.warnings.begin(), result.warnings.end(),
       [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndCaseKeyword);
 }
 
@@ -3348,7 +3427,7 @@ TEST_F(TreeUnwrapperTest, MalformedCaseItemRecoversAfterEndcase) {
 
 TEST_F(TreeUnwrapperTest, GenerateRegionParsesRepeatedAnnexAItems) {
   std::string source = "module m; generate ";
-  for (int i = 0; i < 120; ++i) {
+  for (int i = 0; i < kRepeatedItems; ++i) {
     source += "wire w" + std::to_string(i) + "; ";
   }
   source += "endgenerate endmodule";
@@ -3373,7 +3452,9 @@ TEST_F(TreeUnwrapperTest, DescriptionCallsNestedModuleAndGenerateRules) {
   size_t module_headers = 0;
   bool found_generate = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     module_headers += line.tokens.front().kind == TK::ModuleKeyword ||
                       line.tokens.front().kind == TK::MacromoduleKeyword;
     found_generate |= line.tokens.front().kind == TK::GenerateKeyword;
@@ -3392,13 +3473,15 @@ TEST_F(TreeUnwrapperTest, ProceduralAndGenerateIfCallDifferentBodyRules) {
   bool found_else_if = false;
   bool found_generate_body = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     found_else_if |= line.tokens.size() >= 2 &&
                      line.tokens.front().kind == TK::ElseKeyword &&
-                     line.tokens[1].kind == TK::IfKeyword;
+                     line.tokens.at(1).kind == TK::IfKeyword;
     for (size_t i = 1; i < line.tokens.size(); ++i) {
-      found_generate_body |= line.tokens[i - 1].kind == TK::WireKeyword &&
-                             line.tokens[i].rawText() == "n";
+      found_generate_body |= line.tokens.at(i - 1).kind == TK::WireKeyword &&
+                             line.tokens.at(i).rawText() == "n";
     }
   }
   EXPECT_TRUE(found_else_if);
@@ -3415,7 +3498,9 @@ TEST_F(TreeUnwrapperTest, GenerateBlockRuleCallsNestedItemRules) {
   size_t begin_count = 0;
   size_t end_count = 0;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     begin_count += line.tokens.front().kind == TK::BeginKeyword ||
                    (line.tokens.front().kind == TK::Identifier &&
                     line.tokens.front().rawText() == "g");
@@ -3436,7 +3521,7 @@ TEST_F(TreeUnwrapperTest, MissingConditionalDelimitersRecoverAtOuterBlock) {
                             [](const auto& warning) {
                               return warning.code == "annex-a-fallback";
                             }));
-    EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+    EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
               TK::EndModuleKeyword);
   }
 }
@@ -3488,7 +3573,7 @@ TEST_F(TreeUnwrapperTest, ConditionalForeachIndicesResumeAnnexLoop) {
       "`ifdef A\ni\n`else\nj\n`endif\n"
       "]) a[i] = 0; endmodule");
   EXPECT_TRUE(result.warnings.empty());
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -3496,18 +3581,17 @@ TEST_F(TreeUnwrapperTest, MalformedForeachHeaderRecoversAtOuterEnd) {
   const auto result = parseWithDiagnostics(
       "module m; initial begin foreach (a[i + 1]) x = 0; "
       "end endmodule");
-  EXPECT_TRUE(std::any_of(result.lines.begin(), result.lines.end(),
-                          [](const auto& line) {
-                            return !line.tokens.empty() &&
-                                   line.tokens.front().kind == TK::ForeachKeyword;
-                          }));
-  EXPECT_TRUE(std::any_of(result.warnings.begin(), result.warnings.end(),
-                          [](const auto& warning) {
-                            return warning.code == "annex-a-fallback";
-                          }));
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_TRUE(std::any_of(
+      result.lines.begin(), result.lines.end(), [](const auto& line) {
+        return !line.tokens.empty() &&
+               line.tokens.front().kind == TK::ForeachKeyword;
+      }));
+  EXPECT_TRUE(std::any_of(
+      result.warnings.begin(), result.warnings.end(),
+      [](const auto& warning) { return warning.code == "annex-a-fallback"; }));
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndKeyword);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
@@ -3592,7 +3676,7 @@ TEST_F(TreeUnwrapperTest, CaseXInsideFallsBackAndResumesAtModuleClose) {
   for (const auto& line : result.lines) {
     if (line.tokens.size() >= 2 &&
         line.tokens.front().kind == TK::ModuleKeyword &&
-        line.tokens[1].rawText() == "after") {
+        line.tokens.at(1).rawText() == "after") {
       found_after = true;
     }
   }
@@ -3615,17 +3699,19 @@ TEST_F(TreeUnwrapperTest, AnnexABodyRuleFallbackResumesAtNextItem) {
   bool resumed = false;
   for (const auto& line : result.lines) {
     if (line.tokens.size() >= 3 && line.tokens.front().rawText() == "logic" &&
-        line.tokens[1].rawText() == "c" &&
+        line.tokens.at(1).rawText() == "c" &&
         line.tokens.back().kind == TK::Semicolon) {
       resumed = true;
     }
   }
   EXPECT_TRUE(resumed);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndModuleKeyword);
 }
 
 TEST_F(TreeUnwrapperTest, AnnexAConstructFamiliesKeepTokenOrder) {
+  // Adjacent literals keep each SystemVerilog sample readable.
+  // NOLINTBEGIN(bugprone-suspicious-missing-comma)
   const std::vector<std::string_view> sources = {
       "interface bus(input logic clk); logic ready; endinterface : bus",
       "package p; parameter int N = 2; endpackage : p",
@@ -3641,6 +3727,7 @@ TEST_F(TreeUnwrapperTest, AnnexAConstructFamiliesKeepTokenOrder) {
       "module m; `define VALUE 1\n logic a; `ifdef FLAG\n assign a = `VALUE; "
       "`else\n assign a = 0; `endif\n endmodule",
   };
+  // NOLINTEND(bugprone-suspicious-missing-comma)
   for (const auto source : sources) {
     SCOPED_TRACE(source);
     const auto result = parseWithDiagnostics(source);
@@ -3698,10 +3785,12 @@ TEST_F(TreeUnwrapperTest, AnnexACaseSeparatorFollowsCompleteExpression) {
   bool found_label = false;
   bool found_body = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty()) continue;
+    if (line.tokens.empty()) {
+      continue;
+    }
     if (line.tokens.front().rawText() == "a") {
-      found_label =
-          line.tokens.size() == 6 && line.tokens.back().kind == TK::Colon;
+      found_label = line.tokens.size() == kCaseLabelTokens &&
+                    line.tokens.back().kind == TK::Colon;
     }
     if (line.tokens.front().rawText() == "y") {
       found_body = line.tokens.back().kind == TK::Semicolon;
@@ -3713,7 +3802,7 @@ TEST_F(TreeUnwrapperTest, AnnexACaseSeparatorFollowsCompleteExpression) {
 
 TEST_F(TreeUnwrapperTest, LongModuleUsesGrammarItemsWithoutTokenCutoff) {
   std::string source = "module m;\n";
-  for (size_t i = 0; i < 700; ++i) {
+  for (size_t i = 0; i < kManyModuleItems; ++i) {
     source += "logic a" + std::to_string(i) + ";\n";
   }
   source += "endmodule\n";
@@ -3728,7 +3817,7 @@ TEST_F(TreeUnwrapperTest, LongModuleUsesGrammarItemsWithoutTokenCutoff) {
 
 TEST_F(TreeUnwrapperTest, LongAttributedModuleUsesGrammarItems) {
   std::string source = "(* keep = 1 *) module m;\n";
-  for (size_t i = 0; i < 5000; ++i) {
+  for (size_t i = 0; i < kLongBodyItems; ++i) {
     source += "int a" + std::to_string(i) + ";\n";
   }
   source += "endmodule\n";
@@ -3743,7 +3832,7 @@ TEST_F(TreeUnwrapperTest, LongAttributedModuleUsesGrammarItems) {
 
 TEST_F(TreeUnwrapperTest, LongPackageUsesGrammarItemsWithoutTokenCutoff) {
   std::string source = "package p;\n";
-  for (size_t i = 0; i < 5000; ++i) {
+  for (size_t i = 0; i < kLongBodyItems; ++i) {
     source += "int a" + std::to_string(i) + ";\n";
   }
   source += "endpackage\n";
@@ -3758,11 +3847,11 @@ TEST_F(TreeUnwrapperTest, LongPackageUsesGrammarItemsWithoutTokenCutoff) {
 
 TEST_F(TreeUnwrapperTest, LongNamedBodiesUsePerItemGrammar) {
   std::string source = "virtual class c;\n";
-  for (size_t i = 0; i < 5000; ++i) {
+  for (size_t i = 0; i < kLongBodyItems; ++i) {
     source += "int a" + std::to_string(i) + ";\n";
   }
   source += "endclass\nmodule m; function int f();\n";
-  for (size_t i = 0; i < 5000; ++i) {
+  for (size_t i = 0; i < kLongBodyItems; ++i) {
     source += "a = " + std::to_string(i) + ";\n";
   }
   source += "endfunction endmodule\n";
@@ -3781,7 +3870,7 @@ TEST_F(TreeUnwrapperTest, PackageTimeunitsRemainAnnexAItems) {
       "int a; endpackage");
   ASSERT_TRUE(result.warnings.empty()) << result.warnings.front().message;
   expectTokenConservation(result.lines);
-  EXPECT_EQ(result.lines[result.lines.size() - 2].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 2).tokens.front().kind,
             TK::EndPackageKeyword);
   const auto reverse = parseWithDiagnostics(
       "package p; timeprecision 1ps; timeunit 1ns; endpackage");
@@ -3844,7 +3933,7 @@ TEST_F(TreeUnwrapperTest, MalformedPackageHeaderResumesAfterEndpackage) {
   for (const auto& line : result.lines) {
     if (line.tokens.size() >= 2 &&
         line.tokens.front().kind == TK::ModuleKeyword &&
-        line.tokens[1].rawText() == "after") {
+        line.tokens.at(1).rawText() == "after") {
       found_after = true;
     }
   }
@@ -3887,7 +3976,7 @@ TEST_F(TreeUnwrapperTest, FunctionDeclarationsStopAtFirstStatement) {
       "endfunction endmodule");
   ASSERT_FALSE(result.warnings.empty());
   EXPECT_EQ(result.warnings.front().code, "annex-a-fallback");
-  EXPECT_EQ(result.lines[result.lines.size() - 3].tokens.front().kind,
+  EXPECT_EQ(result.lines.at(result.lines.size() - 3).tokens.front().kind,
             TK::EndFunctionKeyword);
 }
 
@@ -3898,9 +3987,10 @@ TEST_F(TreeUnwrapperTest, GenerateLabelsStayWithTheirBlockKeywords) {
   for (const auto& label : {"g", "h"}) {
     bool found = false;
     for (const auto& line : result.lines) {
-      if (line.tokens.size() >= 3 && line.tokens[0].kind == TK::BeginKeyword &&
-          line.tokens[1].kind == TK::Colon &&
-          line.tokens[2].rawText() == label) {
+      if (line.tokens.size() >= 3 &&
+          line.tokens.at(0).kind == TK::BeginKeyword &&
+          line.tokens.at(1).kind == TK::Colon &&
+          line.tokens.at(2).rawText() == label) {
         found = true;
       }
     }
@@ -3916,16 +4006,16 @@ TEST_F(TreeUnwrapperTest, GrammarTimingControlKeepsSimpleAlwaysLine) {
        }) {
     const auto result = parseWithDiagnostics(source);
     ASSERT_GE(result.lines.size(), 3U);
-    EXPECT_EQ(result.lines[1].tokens.front().kind, TK::AlwaysKeyword);
-    EXPECT_EQ(result.lines[1].tokens.back().kind, TK::Semicolon);
+    EXPECT_EQ(result.lines.at(1).tokens.front().kind, TK::AlwaysKeyword);
+    EXPECT_EQ(result.lines.at(1).tokens.back().kind, TK::Semicolon);
     EXPECT_TRUE(result.warnings.empty()) << source;
   }
   const auto event =
       parseWithDiagnostics("module m; always @* clk = ~clk; endmodule");
   EXPECT_TRUE(event.warnings.empty());
   ASSERT_GE(event.lines.size(), 4U);
-  EXPECT_EQ(event.lines[1].tokens.front().kind, TK::AlwaysKeyword);
-  EXPECT_EQ(event.lines[2].tokens.back().kind, TK::Semicolon);
+  EXPECT_EQ(event.lines.at(1).tokens.front().kind, TK::AlwaysKeyword);
+  EXPECT_EQ(event.lines.at(2).tokens.back().kind, TK::Semicolon);
 }
 
 TEST_F(TreeUnwrapperTest, ConditionalEventControlResumesAnnexRule) {
@@ -3961,10 +4051,14 @@ TEST_F(TreeUnwrapperTest, MalformedEventControlRecoversAtOuterClose) {
   size_t module_closes = 0;
   bool parsed_second_module = false;
   for (const auto& line : result.lines) {
-    if (line.tokens.empty() || line.is_opaque) continue;
-    if (line.tokens.front().kind == TK::EndModuleKeyword) ++module_closes;
+    if (line.tokens.empty() || line.is_opaque) {
+      continue;
+    }
+    if (line.tokens.front().kind == TK::EndModuleKeyword) {
+      ++module_closes;
+    }
     if (line.tokens.front().kind == TK::LogicKeyword &&
-        line.tokens.size() >= 2 && line.tokens[1].rawText() == "y") {
+        line.tokens.size() >= 2 && line.tokens.at(1).rawText() == "y") {
       parsed_second_module = true;
     }
   }
@@ -4006,7 +4100,7 @@ TEST_F(TreeUnwrapperTest, RepeatEventControlUsesAnnexAndRecoversAtOuterClose) {
   for (const auto& line : malformed.lines) {
     if (line.tokens.size() >= 2 && !line.is_opaque &&
         line.tokens.front().kind == TK::LogicKeyword &&
-        line.tokens[1].rawText() == "y") {
+        line.tokens.at(1).rawText() == "y") {
       parsed_second_module = true;
     }
   }

@@ -4,12 +4,15 @@
 #include <slang/parsing/TokenKind.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <gsl/span>
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -36,6 +39,9 @@ struct Production {
   uint16_t count;
 };
 
+constexpr int kAnnexCompleteSymbol = -32768;
+constexpr size_t kAnnexChartItemLimit = 2'000'000;
+
 #include "annex_a/table.inc"
 
 // The table records token names from the slang revision used by the Annex A
@@ -44,7 +50,7 @@ struct Production {
   static const auto names = [] {
     std::unordered_map<std::string_view, int> result;
     for (size_t i = 0; i < std::size(kTokenNames); ++i) {
-      result.emplace(kTokenNames[i], static_cast<int>(i));
+      result.emplace(kTokenNames.at(i), static_cast<int>(i));
     }
     return result;
   }();
@@ -56,7 +62,7 @@ struct Production {
   static const auto names = [] {
     std::unordered_map<std::string_view, int> result;
     for (size_t i = 0; i < std::size(kRuleNames); ++i) {
-      result.emplace(kRuleNames[i], static_cast<int>(i));
+      result.emplace(kRuleNames.at(i), static_cast<int>(i));
     }
     return result;
   }();
@@ -79,24 +85,24 @@ struct Production {
       for (const auto& production : kProductions) {
         bool all_nullable = true;
         for (size_t i = 0; i < production.count; ++i) {
-          const int symbol = kSymbols[production.offset + i];
+          const int symbol = kSymbols.at(production.offset + i);
           if (symbol < 0) {
             changed |=
-                result.terminals[production.left].insert(-symbol - 1).second;
+                result.terminals.at(production.left).insert(-symbol - 1).second;
             all_nullable = false;
             break;
           }
-          for (const int terminal : result.terminals[symbol]) {
+          for (const int terminal : result.terminals.at(symbol)) {
             changed |=
-                result.terminals[production.left].insert(terminal).second;
+                result.terminals.at(production.left).insert(terminal).second;
           }
-          if (!result.nullable[symbol]) {
+          if (!result.nullable.at(symbol)) {
             all_nullable = false;
             break;
           }
         }
-        if (all_nullable && !result.nullable[production.left]) {
-          result.nullable[production.left] = true;
+        if (all_nullable && !result.nullable.at(production.left)) {
+          result.nullable.at(production.left) = true;
           changed = true;
         }
       }
@@ -106,7 +112,7 @@ struct Production {
   const int rule = annexRule(name);
   const int terminal = annexTerminal(kind);
   return rule >= 0 && terminal >= 0 &&
-         sets.terminals[static_cast<size_t>(rule)].contains(terminal);
+         sets.terminals.at(static_cast<size_t>(rule)).contains(terminal);
 }
 
 [[nodiscard]] auto annexCanStartAny(
@@ -122,16 +128,22 @@ struct Production {
   static const std::string_view rule = []() -> std::string_view {
     const int constructor = annexRule("class_constructor_declaration");
     const int super = annexTerminal(TK::SuperKeyword);
-    if (constructor < 0 || super < 0) return {};
+    if (constructor < 0 || super < 0) {
+      return {};
+    }
     for (const auto& parent : kProductions) {
-      if (parent.left != constructor) continue;
+      if (parent.left != constructor) {
+        continue;
+      }
       for (size_t i = 0; i < parent.count; ++i) {
-        const int child = kSymbols[parent.offset + i];
-        if (child < 0) continue;
+        const int child = kSymbols.at(parent.offset + i);
+        if (child < 0) {
+          continue;
+        }
         for (const auto& production : kProductions) {
           if (production.left == child && production.count > 0 &&
-              kSymbols[production.offset] == -super - 1) {
-            return kRuleNames[child];
+              kSymbols.at(production.offset) == -super - 1) {
+            return kRuleNames.at(child);
           }
         }
       }
@@ -150,19 +162,21 @@ struct AnnexItem {
 
 struct AnnexItemHash {
   auto operator()(AnnexItem item) const -> size_t {
+    constexpr size_t kMix = 0x9e3779b9U;
+    constexpr unsigned kShift = 6;
     size_t hash = item.origin;
-    hash ^= static_cast<size_t>(item.production) + 0x9e3779b9U + (hash << 6U) +
+    hash ^= static_cast<size_t>(item.production) + kMix + (hash << kShift) +
             (hash >> 2U);
-    hash ^= static_cast<size_t>(item.dot) + 0x9e3779b9U + (hash << 6U) +
-            (hash >> 2U);
+    hash ^=
+        static_cast<size_t>(item.dot) + kMix + (hash << kShift) + (hash >> 2U);
     return hash;
   }
 };
 
 [[nodiscard]] auto annexNext(AnnexItem item) -> int {
-  const auto& production = kProductions[item.production];
-  return item.dot < production.count ? kSymbols[production.offset + item.dot]
-                                     : -32768;
+  const auto& production = kProductions.at(item.production);
+  return item.dot < production.count ? kSymbols.at(production.offset + item.dot)
+                                     : kAnnexCompleteSymbol;
 }
 
 // Some Annex A lexical terminals share slang token kinds with other spellings.
@@ -175,15 +189,19 @@ struct AnnexItemHash {
   static const int severity = annexRule("severity_system_task");
   static const int fatal_severity_suffix = [] {
     for (const auto& production : kProductions) {
-      if (production.left != severity || production.count < 2) continue;
-      const int suffix = kSymbols[production.offset + 1];
+      if (production.left != severity || production.count < 2) {
+        continue;
+      }
+      const int suffix = kSymbols.at(production.offset + 1);
       for (const auto& child : kProductions) {
-        if (child.left != suffix) continue;
-        if (std::ranges::find(kSymbols + child.offset,
-                              kSymbols + child.offset + child.count,
-                              finish_number) !=
-            kSymbols + child.offset + child.count)
+        if (child.left != suffix) {
+          continue;
+        }
+        const auto symbols =
+            std::span(kSymbols).subspan(child.offset, child.count);
+        if (std::ranges::find(symbols, finish_number) != symbols.end()) {
           return suffix;
+        }
       }
     }
     return -1;
@@ -194,28 +212,40 @@ struct AnnexItemHash {
   static const int binary_number = annexRule("binary_number");
   static const int octal_number = annexRule("octal_number");
   static const int hex_number = annexRule("hex_number");
-  const int rule = kProductions[item.production].left;
+  const int rule = kProductions.at(item.production).left;
   const std::string_view lexeme = token.rawText();
-  const std::string_view rule_name = kRuleNames[rule];
+  const std::string_view rule_name = kRuleNames.at(rule);
   const auto matches_base = [&](char lower, char upper) {
-    return lexeme.size() >= 2 && lexeme.size() <= 3 && lexeme[0] == '\'' &&
-           (lexeme.size() == 2 || lexeme[1] == 's' || lexeme[1] == 'S') &&
+    return lexeme.size() >= 2 && lexeme.size() <= 3 && lexeme.at(0) == '\'' &&
+           (lexeme.size() == 2 || lexeme.at(1) == 's' || lexeme.at(1) == 'S') &&
            (lexeme.back() == lower || lexeme.back() == upper);
   };
   if (token.kind == TK::IntegerBase) {
-    if (rule == binary_number) return matches_base('b', 'B');
-    if (rule == octal_number) return matches_base('o', 'O');
-    if (rule == hex_number) return matches_base('h', 'H');
-    if (rule_name == "@lexer_decimal_number") return matches_base('d', 'D');
+    if (rule == binary_number) {
+      return matches_base('b', 'B');
+    }
+    if (rule == octal_number) {
+      return matches_base('o', 'O');
+    }
+    if (rule == hex_number) {
+      return matches_base('h', 'H');
+    }
+    if (rule_name == "@lexer_decimal_number") {
+      return matches_base('d', 'D');
+    }
   }
+  constexpr int kOctalBase = 8;
+  constexpr int kHexadecimalBase = 16;
   const auto digit_in_base = [&](int base) {
     return !lexeme.empty() && std::ranges::all_of(lexeme, [&](char ch) {
       if (ch == '_' || ch == 'x' || ch == 'X' || ch == 'z' || ch == 'Z' ||
           ch == '?') {
         return true;
       }
-      if (ch >= '0' && ch <= '9') return ch - '0' < base;
-      return base == 16 &&
+      if (ch >= '0' && ch <= '9') {
+        return ch - '0' < base;
+      }
+      return base == kHexadecimalBase &&
              ((ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'));
     });
   };
@@ -224,11 +254,11 @@ struct AnnexItemHash {
            (rule_name != "@lexer_binary_value" || lexeme.front() != '_');
   }
   if (rule_name.starts_with("@lexer_octal_value")) {
-    return digit_in_base(8) &&
+    return digit_in_base(kOctalBase) &&
            (rule_name != "@lexer_octal_value" || lexeme.front() != '_');
   }
   if (rule_name.starts_with("@lexer_hex_value")) {
-    return digit_in_base(16) &&
+    return digit_in_base(kHexadecimalBase) &&
            (rule_name != "@lexer_hex_value" || lexeme.front() != '_');
   }
   if (rule_name == "@lexer_decimal_number") {
@@ -238,16 +268,16 @@ struct AnnexItemHash {
       });
     }
     if (token.kind == TK::Identifier) {
-      const auto& production = kProductions[item.production];
+      const auto& production = kProductions.at(item.production);
       const bool after_question =
-          item.dot > 0 && kSymbols[production.offset + item.dot - 1] ==
+          item.dot > 0 && kSymbols.at(production.offset + item.dot - 1) ==
                               -annexTerminal(TK::Question) - 1;
       return !lexeme.empty() &&
              (after_question
                   ? std::ranges::all_of(lexeme,
                                         [](char ch) { return ch == '_'; })
-                  : (lexeme[0] == 'x' || lexeme[0] == 'X' || lexeme[0] == 'z' ||
-                     lexeme[0] == 'Z') &&
+                  : (lexeme.at(0) == 'x' || lexeme.at(0) == 'X' ||
+                     lexeme.at(0) == 'z' || lexeme.at(0) == 'Z') &&
                         std::ranges::all_of(lexeme.substr(1),
                                             [](char ch) { return ch == '_'; }));
     }
@@ -259,11 +289,12 @@ struct AnnexItemHash {
                0, rule_name.size() - std::string_view("_timing_check").size());
   }
   if (rule == severity && item.dot == 0) {
-    const auto& production = kProductions[item.production];
-    const int suffix = kSymbols[production.offset + 1];
-    return suffix == fatal_severity_suffix ? lexeme == "$fatal"
-                 : lexeme == "$error" || lexeme == "$warning" ||
-                       lexeme == "$info";
+    const auto& production = kProductions.at(item.production);
+    const int suffix = kSymbols.at(production.offset + 1);
+    return suffix == fatal_severity_suffix
+               ? lexeme == "$fatal"
+               : lexeme == "$error" || lexeme == "$warning" ||
+                     lexeme == "$info";
   }
   if (rule == output) {
     return lexeme == "0" || lexeme == "1" || lexeme == "x" || lexeme == "X";
@@ -281,7 +312,7 @@ struct AnnexItemHash {
            lexeme == "*";
   }
   if (rule == edge_descriptor) {
-    if (kProductions[item.production].count == 2) {
+    if (kProductions.at(item.production).count == 2) {
       return item.dot == 0 ? lexeme == "0" || lexeme == "1"
                            : lexeme == "x" || lexeme == "X" || lexeme == "z" ||
                                  lexeme == "Z";
@@ -293,7 +324,9 @@ struct AnnexItemHash {
            lexeme == "1x" || lexeme == "1X" || lexeme == "0z" ||
            lexeme == "0Z" || lexeme == "1z" || lexeme == "1Z";
   }
-  if (rule == x_digit) return lexeme == "x" || lexeme == "X";
+  if (rule == x_digit) {
+    return lexeme == "x" || lexeme == "X";
+  }
   if (rule == z_digit) {
     return lexeme == "z" || lexeme == "Z" || lexeme == "?";
   }
@@ -314,16 +347,22 @@ struct AnnexChart {
 
   auto add(AnnexItem item) -> void {
     const size_t offset = items.size();
-    if (!index.emplace(item, offset).second) return;
+    if (!index.emplace(item, offset).second) {
+      return;
+    }
     items.push_back(item);
     const int symbol = annexNext(item);
     if (symbol >= 0) {
       waiting[symbol].push_back(offset);
-    } else if (symbol == -32768) {
-      const int rule = kProductions[item.production].left;
+    } else if (symbol == kAnnexCompleteSymbol) {
+      const int rule = kProductions.at(item.production).left;
       completed_origins[rule].push_back(item.origin);
-      if (item.origin == position) nullable[rule].push_back(offset);
-      if (item.origin == 0) completed_roots.insert(rule);
+      if (item.origin == position) {
+        nullable[rule].push_back(offset);
+      }
+      if (item.origin == 0) {
+        completed_roots.insert(rule);
+      }
     } else {
       scanning[-symbol - 1].push_back(offset);
     }
@@ -356,16 +395,18 @@ struct AnnexState {
     static const auto by_left = [] {
       std::vector<std::vector<uint16_t>> result(std::size(kRuleNames));
       for (size_t i = 0; i < std::size(kProductions); ++i) {
-        result[kProductions[i].left].push_back(static_cast<uint16_t>(i));
+        result.at(kProductions.at(i).left).push_back(static_cast<uint16_t>(i));
       }
       return result;
     }();
     charts.emplace_back(0);
     for (const auto name : names) {
       const int rule = annexRule(name);
-      if (rule < 0) continue;
+      if (rule < 0) {
+        continue;
+      }
       roots.push_back(static_cast<uint16_t>(rule));
-      for (const auto production : by_left[static_cast<size_t>(rule)]) {
+      for (const auto production : by_left.at(static_cast<size_t>(rule))) {
         charts.back().add({production, 0, 0});
       }
     }
@@ -376,7 +417,7 @@ struct AnnexState {
     static const auto by_left = [] {
       std::vector<std::vector<uint16_t>> result(std::size(kRuleNames));
       for (size_t i = 0; i < std::size(kProductions); ++i) {
-        result[kProductions[i].left].push_back(static_cast<uint16_t>(i));
+        result.at(kProductions.at(i).left).push_back(static_cast<uint16_t>(i));
       }
       return result;
     }();
@@ -387,15 +428,15 @@ struct AnnexState {
     const size_t position = charts.size() - 1;
     auto& chart = charts.back();
     for (size_t cursor = 0; cursor < chart.items.size(); ++cursor) {
-      if (total_items + chart.items.size() > 2000000) {
+      if (total_items + chart.items.size() > kAnnexChartItemLimit) {
         failed = true;
         failure_reason = "Annex A ambiguity resource limit";
         return;
       }
-      const AnnexItem item = chart.items[cursor];
+      const AnnexItem item = chart.items.at(cursor);
       const int symbol = annexNext(item);
       if (symbol >= 0) {
-        for (const auto child : by_left[static_cast<size_t>(symbol)]) {
+        for (const auto child : by_left.at(static_cast<size_t>(symbol))) {
           chart.add({child, 0, position});
         }
         if (const auto found = chart.nullable.find(symbol);
@@ -403,9 +444,9 @@ struct AnnexState {
           chart.add({item.production, static_cast<uint16_t>(item.dot + 1),
                      item.origin});
         }
-      } else if (symbol == -32768) {
-        const auto& production = kProductions[item.production];
-        const auto& origin = charts[item.origin];
+      } else if (symbol == kAnnexCompleteSymbol) {
+        const auto& production = kProductions.at(item.production);
+        const auto& origin = charts.at(item.origin);
         if (const auto found = origin.waiting.find(production.left);
             found != origin.waiting.end()) {
           const auto parents = found->second;
@@ -418,9 +459,11 @@ struct AnnexState {
           size_t longest_constant_expression = position;
           if (binary_operator) {
             for (const size_t index : parents) {
-              const AnnexItem parent = origin.items[index];
-              if (parent.dot != 1) continue;
-              const int left = kProductions[parent.production].left;
+              const AnnexItem parent = origin.items.at(index);
+              if (parent.dot != 1) {
+                continue;
+              }
+              const int left = kProductions.at(parent.production).left;
               if (left == expression_rule) {
                 longest_expression =
                     std::min(longest_expression, parent.origin);
@@ -431,9 +474,9 @@ struct AnnexState {
             }
           }
           for (const size_t index : parents) {
-            const AnnexItem parent = origin.items[index];
+            const AnnexItem parent = origin.items.at(index);
             if (binary_operator && parent.dot == 1) {
-              const int left = kProductions[parent.production].left;
+              const int left = kProductions.at(parent.production).left;
               if ((left == expression_rule &&
                    parent.origin != longest_expression) ||
                   (left == constant_expression_rule &&
@@ -452,8 +495,12 @@ struct AnnexState {
 
   [[nodiscard]] auto accepts(TK kind) const -> bool {
     const int terminal = annexTerminal(kind);
-    if (terminal < 0 || failed || interrupted) return false;
-    if (charts.back().scanning.contains(terminal)) return true;
+    if (terminal < 0 || failed || interrupted) {
+      return false;
+    }
+    if (charts.back().scanning.contains(terminal)) {
+      return true;
+    }
     return std::ranges::any_of(alternatives, [&](const AnnexState& path) {
       return !path.failed && !path.interrupted &&
              path.charts.back().scanning.contains(terminal);
@@ -462,14 +509,17 @@ struct AnnexState {
 
   [[nodiscard]] auto checkpoint() const -> Checkpoint {
     Checkpoint saved{charts.size(), total_items, !failed && !interrupted, {}};
-    if (!alternatives.empty()) saved.branched_paths.push_back(*this);
+    if (!alternatives.empty()) {
+      saved.branched_paths.push_back(*this);
+    }
     return saved;
   }
 
   // An opaque item occupies one grammar nonterminal. Resume the enclosing
   // grammar after that item without treating its unknown tokens as terminals.
-  [[nodiscard]] auto skipOpaqueItem(
-      Checkpoint saved, const std::vector<uint16_t>& item_roots) -> bool {
+  [[nodiscard]] auto skipOpaqueItem(Checkpoint saved,
+                                    const std::vector<uint16_t>& item_roots)
+      -> bool {
     if (!saved.branched_paths.empty()) {
       // Restore every continuation to the point before the unavailable item.
       // A macro may have invalidated some paths while its tokens were read.
@@ -477,10 +527,11 @@ struct AnnexState {
       auto paths = std::move(restored.alternatives);
       restored.alternatives.clear();
       const auto resume = [&](AnnexState& path) {
-        return path.skipOpaqueItem(
-            {path.charts.size(), path.total_items,
-             !path.failed && !path.interrupted, {}},
-            item_roots);
+        return path.skipOpaqueItem({path.charts.size(),
+                                    path.total_items,
+                                    !path.failed && !path.interrupted,
+                                    {}},
+                                   item_roots);
       };
       bool valid = resume(restored);
       for (auto& path : paths) {
@@ -488,7 +539,9 @@ struct AnnexState {
         restored.addContinuation(path);
       }
       *this = std::move(restored);
-      if (!valid) interrupted = true;
+      if (!valid) {
+        interrupted = true;
+      }
       return valid;
     }
     if (!saved.healthy || saved.chart_count == 0 ||
@@ -510,7 +563,7 @@ struct AnnexState {
       if (const auto found = origin.waiting.find(rule);
           found != origin.waiting.end()) {
         for (const auto index : found->second) {
-          const AnnexItem parent = origin.items[index];
+          const AnnexItem parent = origin.items.at(index);
           next.add({parent.production, static_cast<uint16_t>(parent.dot + 1),
                     parent.origin});
         }
@@ -531,13 +584,19 @@ struct AnnexState {
         lost_continuation != other.lost_continuation) {
       return false;
     }
-    if (failed || interrupted) return true;
+    if (failed || interrupted) {
+      return true;
+    }
     // Earley completions consult the origin chart, so equal FIRST sets at the
     // current position do not imply equal continuations. Keep a single chart
     // only when every item and its origin history agree between branches.
-    if (charts.size() != other.charts.size()) return false;
+    if (charts.size() != other.charts.size()) {
+      return false;
+    }
     for (size_t i = 0; i < charts.size(); ++i) {
-      if (charts[i].items != other.charts[i].items) return false;
+      if (charts.at(i).items != other.charts.at(i).items) {
+        return false;
+      }
     }
     return true;
   }
@@ -557,7 +616,9 @@ struct AnnexState {
   }
 
   [[nodiscard]] auto complete() const -> bool {
-    if (failed || lost_continuation || charts.size() == 1) return false;
+    if (failed || lost_continuation || charts.size() == 1) {
+      return false;
+    }
     bool primary_complete = false;
     for (const auto root : roots) {
       primary_complete |= charts.back().completed_roots.contains(root);
@@ -579,10 +640,12 @@ struct AnnexState {
            });
   }
 
-  [[nodiscard]] auto completedFrom(std::string_view name,
-                                   size_t origin) const -> bool {
+  [[nodiscard]] auto completedFrom(std::string_view name, size_t origin) const
+      -> bool {
     const int rule = annexRule(name);
-    if (rule < 0 || failed) return false;
+    if (rule < 0 || failed) {
+      return false;
+    }
     const auto found = charts.back().completed_origins.find(rule);
     return (found != charts.back().completed_origins.end() &&
             std::find(found->second.begin(), found->second.end(), origin) !=
@@ -600,9 +663,9 @@ struct AnnexState {
       return false;
     }
     for (const auto item : charts.back().items) {
-      const auto& production = kProductions[item.production];
+      const auto& production = kProductions.at(item.production);
       if (production.left == rule && item.dot > 0 &&
-          kSymbols[production.offset + item.dot - 1] == -terminal - 1) {
+          kSymbols.at(production.offset + item.dot - 1) == -terminal - 1) {
         return true;
       }
     }
@@ -613,31 +676,44 @@ struct AnnexState {
 
   [[nodiscard]] auto hasViableRule(std::string_view name) const -> bool {
     const int rule = annexRule(name);
-    if (rule < 0 || failed || charts.empty()) return false;
-    return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
-      return item.origin == 0 && kProductions[item.production].left == rule;
-    }) || std::ranges::any_of(alternatives, [&](const AnnexState& path) {
-      return path.hasViableRule(name);
-    });
+    if (rule < 0 || failed || charts.empty()) {
+      return false;
+    }
+    return std::ranges::any_of(charts.back().items,
+                               [&](AnnexItem item) {
+                                 return item.origin == 0 &&
+                                        kProductions.at(item.production).left ==
+                                            rule;
+                               }) ||
+           std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+             return path.hasViableRule(name);
+           });
   }
 
   [[nodiscard]] auto hasActiveRule(std::string_view name) const -> bool {
     const int rule = annexRule(name);
-    if (rule < 0 || failed || charts.empty()) return false;
-    return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
-      return kProductions[item.production].left == rule;
-    }) || std::ranges::any_of(alternatives, [&](const AnnexState& path) {
-      return path.hasActiveRule(name);
-    });
+    if (rule < 0 || failed || charts.empty()) {
+      return false;
+    }
+    return std::ranges::any_of(charts.back().items,
+                               [&](AnnexItem item) {
+                                 return kProductions.at(item.production).left ==
+                                        rule;
+                               }) ||
+           std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+             return path.hasActiveRule(name);
+           });
   }
 
   [[nodiscard]] auto allPathsHaveActiveRule(std::string_view name) const
       -> bool {
     const int rule = annexRule(name);
-    if (rule < 0 || failed || interrupted || charts.empty()) return false;
-    const bool current = std::ranges::any_of(
-        charts.back().items, [&](AnnexItem item) {
-          return kProductions[item.production].left == rule;
+    if (rule < 0 || failed || interrupted || charts.empty()) {
+      return false;
+    }
+    const bool current =
+        std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
+          return kProductions.at(item.production).left == rule;
         });
     return current &&
            std::ranges::all_of(alternatives, [&](const AnnexState& path) {
@@ -649,40 +725,55 @@ struct AnnexState {
                                                      TK kind) const -> bool {
     const int rule = annexRule(name);
     const int terminal = annexTerminal(kind);
-    if (rule < 0 || terminal < 0 || failed || charts.empty()) return false;
-    return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
-      const auto& production = kProductions[item.production];
-      return item.origin == 0 && item.dot > 0 && production.left == rule &&
-             production.count > 0 &&
-             kSymbols[production.offset] == -terminal - 1;
-    }) || std::ranges::any_of(alternatives, [&](const AnnexState& path) {
-      return path.hasViableProductionStartingWith(name, kind);
-    });
+    if (rule < 0 || terminal < 0 || failed || charts.empty()) {
+      return false;
+    }
+    return std::ranges::any_of(
+               charts.back().items,
+               [&](AnnexItem item) {
+                 const auto& production = kProductions.at(item.production);
+                 return item.origin == 0 && item.dot > 0 &&
+                        production.left == rule && production.count > 0 &&
+                        kSymbols.at(production.offset) == -terminal - 1;
+               }) ||
+           std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+             return path.hasViableProductionStartingWith(name, kind);
+           });
   }
 
   [[nodiscard]] auto hasActiveProductionContaining(std::string_view name,
-                                                    TK kind) const -> bool {
+                                                   TK kind) const -> bool {
     const int rule = annexRule(name);
     const int terminal = annexTerminal(kind);
-    if (rule < 0 || terminal < 0 || failed || charts.empty()) return false;
-    return std::ranges::any_of(charts.back().items, [&](AnnexItem item) {
-      const auto& production = kProductions[item.production];
-      if (production.left != rule) return false;
-      const auto begin = kSymbols + production.offset;
-      return std::find(begin, begin + production.count, -terminal - 1) !=
-             begin + production.count;
-    }) || std::ranges::any_of(alternatives, [&](const AnnexState& path) {
-      return path.hasActiveProductionContaining(name, kind);
-    });
+    if (rule < 0 || terminal < 0 || failed || charts.empty()) {
+      return false;
+    }
+    return std::ranges::any_of(
+               charts.back().items,
+               [&](AnnexItem item) {
+                 const auto& production = kProductions.at(item.production);
+                 if (production.left != rule) {
+                   return false;
+                 }
+                 const auto symbols = std::span(kSymbols).subspan(
+                     production.offset, production.count);
+                 return std::ranges::find(symbols, -terminal - 1) !=
+                        symbols.end();
+               }) ||
+           std::ranges::any_of(alternatives, [&](const AnnexState& path) {
+             return path.hasActiveProductionContaining(name, kind);
+           });
   }
 
   [[nodiscard]] auto expectsRootTerminal(TK kind) const -> bool {
     const int terminal = annexTerminal(kind);
-    if (terminal < 0 || failed) return false;
+    if (terminal < 0 || failed) {
+      return false;
+    }
     for (const auto item : charts.back().items) {
       if (item.origin == 0 && annexNext(item) == -terminal - 1 &&
           std::find(roots.begin(), roots.end(),
-                    kProductions[item.production].left) != roots.end()) {
+                    kProductions.at(item.production).left) != roots.end()) {
         return true;
       }
     }
@@ -692,12 +783,16 @@ struct AnnexState {
   }
 
   auto advance(Token token) -> void {
-    if (failed || interrupted) return;
+    if (failed || interrupted) {
+      return;
+    }
     auto other_paths = std::move(alternatives);
     advanceOne(token);
-    for (auto& path : other_paths) path.advanceOne(token);
-    lost_continuation |= std::ranges::any_of(
-        other_paths, [](const AnnexState& path) {
+    for (auto& path : other_paths) {
+      path.advanceOne(token);
+    }
+    lost_continuation |=
+        std::ranges::any_of(other_paths, [](const AnnexState& path) {
           return path.failed || path.interrupted || path.lost_continuation;
         });
     std::erase_if(other_paths, [](const AnnexState& path) {
@@ -715,7 +810,9 @@ struct AnnexState {
 
  private:
   auto advanceOne(Token token) -> void {
-    if (failed) return;
+    if (failed) {
+      return;
+    }
     const int terminal = annexTerminal(token.kind);
     if (terminal < 0) {
       failed = true;
@@ -726,8 +823,10 @@ struct AnnexState {
     if (const auto found = charts.back().scanning.find(terminal);
         found != charts.back().scanning.end()) {
       for (const size_t index : found->second) {
-        const AnnexItem item = charts.back().items[index];
-        if (!annexLexemeMatches(item, token)) continue;
+        const AnnexItem item = charts.back().items.at(index);
+        if (!annexLexemeMatches(item, token)) {
+          continue;
+        }
         next.add({item.production, static_cast<uint16_t>(item.dot + 1),
                   item.origin});
       }
@@ -910,50 +1009,68 @@ class SVParser {
       -> std::optional<size_t> {
     while (at(TK::OpenBracket, offset)) {
       int depth = 0;
-      do {
-        if (at(TK::MacroUsage, offset) || at(TK::Directive, offset))
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+        if (at(TK::MacroUsage, offset) || at(TK::Directive, offset)) {
           return std::nullopt;
+        }
         if (at(TK::Semicolon, offset) || at(TK::EndOfFile, offset) ||
             (!block_stack_.empty() &&
              matchesBlockClose(block_stack_.back().close_kind,
-                               peek(offset).kind)))
+                               peek(offset).kind))) {
           return std::nullopt;
-        if (at(TK::OpenBracket, offset)) ++depth;
-        if (at(TK::CloseBracket, offset)) --depth;
+        }
+        if (at(TK::OpenBracket, offset)) {
+          ++depth;
+        }
+        if (at(TK::CloseBracket, offset)) {
+          --depth;
+        }
         ++offset;
       } while (depth > 0 && pos_ + offset < tokens_.size());
-      if (depth != 0) return std::nullopt;
+      if (depth != 0) {
+        return std::nullopt;
+      }
     }
     return offset;
   }
 
   [[nodiscard]] auto afterBalancedParentheses(size_t offset) const
       -> std::optional<size_t> {
-    if (!at(TK::OpenParenthesis, offset)) return std::nullopt;
+    if (!at(TK::OpenParenthesis, offset)) {
+      return std::nullopt;
+    }
     int depth = 0;
-    do {
-      if (at(TK::MacroUsage, offset) || at(TK::Directive, offset))
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (at(TK::MacroUsage, offset) || at(TK::Directive, offset)) {
         return std::nullopt;
+      }
       if (at(TK::Semicolon, offset) || at(TK::EndOfFile, offset) ||
           (!block_stack_.empty() &&
            matchesBlockClose(block_stack_.back().close_kind,
-                             peek(offset).kind)))
+                             peek(offset).kind))) {
         return std::nullopt;
-      if (at(TK::OpenParenthesis, offset)) ++depth;
-      if (at(TK::CloseParenthesis, offset)) --depth;
+      }
+      if (at(TK::OpenParenthesis, offset)) {
+        ++depth;
+      }
+      if (at(TK::CloseParenthesis, offset)) {
+        --depth;
+      }
       ++offset;
     } while (depth > 0 && pos_ + offset < tokens_.size());
-    if (depth != 0) return std::nullopt;
+    if (depth != 0) {
+      return std::nullopt;
+    }
     return offset;
   }
 
-  [[nodiscard]] auto afterAttributePrefix() const
-      -> std::optional<size_t> {
+  [[nodiscard]] auto afterAttributePrefix() const -> std::optional<size_t> {
     size_t offset = 0;
-    while (at(TK::OpenParenthesis, offset) &&
-           at(TK::Star, offset + 1)) {
+    while (at(TK::OpenParenthesis, offset) && at(TK::Star, offset + 1)) {
       const auto after = afterBalancedParentheses(offset);
-      if (!after || !at(TK::Star, *after - 2)) return std::nullopt;
+      if (!after || !at(TK::Star, *after - 2)) {
+        return std::nullopt;
+      }
       offset = *after;
     }
     return offset;
@@ -964,8 +1081,7 @@ class SVParser {
            !isConditionalStartDirective(peek(offset)) &&
            !isConditionalBoundaryDirective(peek(offset))) {
       const std::string_view directive = peek(offset).rawText();
-      const bool continued = directive == "`define" ||
-                             directive == "`pragma" ||
+      const bool continued = directive == "`define" || directive == "`pragma" ||
                              directive == "`timescale";
       const size_t source_end =
           std::min(tokens_.back().location().offset(), source_.size());
@@ -977,14 +1093,17 @@ class SVParser {
           break;
         }
         const bool next_line =
-            continued && newline > end && source_[newline - 1] == '\\';
+            continued && newline > end && source_.at(newline - 1) == '\\';
         end = newline + 1;
-        if (source_[newline] == '\r' && end < source_end &&
-            source_[end] == '\n')
+        if (source_.at(newline) == '\r' && end < source_end &&
+            source_.at(end) == '\n') {
           ++end;
-        if (!next_line) break;
+        }
+        if (!next_line) {
+          break;
+        }
       }
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         ++offset;
       } while (pos_ + offset < tokens_.size() &&
                tokens_[pos_ + offset].location().offset() < end);
@@ -997,16 +1116,21 @@ class SVParser {
   // is consumed by the corresponding Annex A production.
   [[nodiscard]] auto afterUserTypePrefix(size_t identifier_offset) const
       -> std::optional<size_t> {
-    if (!at(TK::Identifier, identifier_offset)) return std::nullopt;
+    if (!at(TK::Identifier, identifier_offset)) {
+      return std::nullopt;
+    }
     size_t next = identifier_offset + 1;
     while (true) {
       if (at(TK::Hash, next) && at(TK::OpenParenthesis, next + 1)) {
         const auto after_parameters = afterBalancedParentheses(next + 1);
-        if (!after_parameters) return std::nullopt;
+        if (!after_parameters) {
+          return std::nullopt;
+        }
         next = *after_parameters;
       }
-      if (!at(TK::DoubleColon, next) || !at(TK::Identifier, next + 1))
+      if (!at(TK::DoubleColon, next) || !at(TK::Identifier, next + 1)) {
         break;
+      }
       next += 2;
     }
     return afterBalancedDimensions(next);
@@ -1014,17 +1138,20 @@ class SVParser {
 
   [[nodiscard]] auto implicitIdentifierBefore(
       std::initializer_list<TK> boundaries) const -> bool {
-    if (!at(TK::Identifier)) return false;
+    if (!at(TK::Identifier)) {
+      return false;
+    }
     const auto after_dimensions = afterBalancedDimensions(1);
     return after_dimensions &&
            std::ranges::any_of(boundaries, [&](TK boundary) {
-             return at(boundary,
-                       afterOrdinaryDirectives(*after_dimensions));
+             return at(boundary, afterOrdinaryDirectives(*after_dimensions));
            });
   }
 
   auto consume() -> Token {
-    if (pos_ >= tokens_.size()) return tokens_.back();
+    if (pos_ >= tokens_.size()) {
+      return tokens_.back();
+    }
     const Token token = tokens_[pos_];
     if (!grammar_suspended_ && token.kind == TK::Directive &&
         !isCompilerDirective(token)) {
@@ -1032,9 +1159,13 @@ class SVParser {
     }
     if (!grammar_suspended_ && token.kind != TK::Directive) {
       for (size_t i = 0; i < grammar_scopes_.size(); ++i) {
-        if (grammar_paused_[i]) continue;
-        auto& scope = grammar_scopes_[i];
-        if (scope.failed || scope.interrupted) continue;
+        if (grammar_paused_.at(i)) {
+          continue;
+        }
+        auto& scope = grammar_scopes_.at(i);
+        if (scope.failed || scope.interrupted) {
+          continue;
+        }
         if (token.kind == TK::MacroUsage) {
           scope.interrupted = true;
           recordGrammarFallback("macro expansion unavailable to Annex A");
@@ -1067,7 +1198,9 @@ class SVParser {
 
   auto consumeBalancedInto(TK open, TK close, Line& line,
                            TK recovery_close = TK::EndOfFile) -> bool {
-    if (!at(open)) return false;
+    if (!at(open)) {
+      return false;
+    }
     consumeInto(line);
     ListDepth depth;
     bool valid = true;
@@ -1095,11 +1228,10 @@ class SVParser {
           matchesBlockClose(recovery_close, peek().kind)) {
         break;
       }
-      if (isConditionalStartDirective(peek()) &&
-          !grammar_scopes_.empty()) {
+      if (isConditionalStartDirective(peek()) && !grammar_scopes_.empty()) {
         bool header_ended = true;
-        const bool resumed = parseAnnexConditional(
-            TK::EndOfFile, header_ended, indent_level_, &depth);
+        const bool resumed = parseAnnexConditional(TK::EndOfFile, header_ended,
+                                                   indent_level_, &depth);
         valid &= resumed;
         diagnosed |= !resumed;
         continue;
@@ -1146,7 +1278,9 @@ class SVParser {
     if (!diagnosed) {
       recordGrammarFallback("unterminated Annex A delimited header");
     }
-    if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
+    if (!grammar_scopes_.empty()) {
+      grammar_scopes_.back().interrupted = true;
+    }
     return false;
   }
 
@@ -1154,7 +1288,9 @@ class SVParser {
   // Delimiter counting is only used after that scope cannot parse the input.
   auto consumeAnnexDelimited(TK open, TK close, std::string_view rule,
                              Line& line) -> bool {
-    if (!at(open)) return false;
+    if (!at(open)) {
+      return false;
+    }
     consumeInto(line);
     beginGrammar({rule});
     int depth = 1;
@@ -1183,8 +1319,12 @@ class SVParser {
           !grammar.accepts(peek().kind)) {
         break;
       }
-      if (at(open)) ++depth;
-      if (at(close)) --depth;
+      if (at(open)) {
+        ++depth;
+      }
+      if (at(close)) {
+        --depth;
+      }
       consumeInto(line);
     }
     recordGrammarFallback("expression outside Annex A rule");
@@ -1196,8 +1336,12 @@ class SVParser {
              isConditionalBoundaryDirective(peek())) &&
            (block_stack_.empty() ||
             !matchesBlockClose(block_stack_.back().close_kind, peek().kind))) {
-      if (at(open)) ++depth;
-      if (at(close)) --depth;
+      if (at(open)) {
+        ++depth;
+      }
+      if (at(close)) {
+        --depth;
+      }
       consumeInto(line);
     }
     return false;
@@ -1215,18 +1359,15 @@ class SVParser {
     return false;
   }
 
-  [[nodiscard]] auto consumeAnnexRule(std::string_view rule,
-                                      Line& line,
-                                      std::optional<TK> stop = std::nullopt,
-                                      std::function<bool()> should_stop = {})
-      -> bool {
+  [[nodiscard]] auto consumeAnnexRule(
+      std::string_view rule, Line& line, std::optional<TK> stop = std::nullopt,
+      const std::function<bool()>& should_stop = {}) -> bool {
     beginGrammar({rule});
     while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
                                    isConditionalBoundaryDirective(peek()))) {
       const auto& grammar = grammar_scopes_.back();
       if (grammar.complete() &&
-          ((stop && at(*stop)) ||
-           (should_stop && should_stop()) ||
+          ((stop && at(*stop)) || (should_stop && should_stop()) ||
            !grammar.accepts(peek().kind))) {
         static_cast<void>(endGrammar());
         return true;
@@ -1252,16 +1393,18 @@ class SVParser {
     }
     const bool complete = grammar_scopes_.back().complete();
     static_cast<void>(endGrammar(false));
-    if (!complete) recordGrammarFallback("control outside Annex A rule");
+    if (!complete) {
+      recordGrammarFallback("control outside Annex A rule");
+    }
     return complete;
   }
 
   // Parse a grammar subrule up to its enclosing for-header separator.
   // The second stop protects recovery when a separator is missing.
   auto consumeAnnexUntil(TK stop, TK alternate_stop,
-                         std::vector<std::string_view> grammar_rules,
+                         const std::vector<std::string_view>& grammar_rules,
                          Line& line) -> bool {
-    beginGrammar(std::move(grammar_rules));
+    beginGrammar(grammar_rules);
     int parens = 0;
     int brackets = 0;
     int braces = 0;
@@ -1295,20 +1438,26 @@ class SVParser {
           ++parens;
           break;
         case TK::CloseParenthesis:
-          if (parens > 0) --parens;
+          if (parens > 0) {
+            --parens;
+          }
           break;
         case TK::OpenBracket:
           ++brackets;
           break;
         case TK::CloseBracket:
-          if (brackets > 0) --brackets;
+          if (brackets > 0) {
+            --brackets;
+          }
           break;
         case TK::OpenBrace:
         case TK::ApostropheOpenBrace:
           ++braces;
           break;
         case TK::CloseBrace:
-          if (braces > 0) --braces;
+          if (braces > 0) {
+            --braces;
+          }
           break;
         default:
           break;
@@ -1390,7 +1539,9 @@ class SVParser {
           isConditionalBoundaryDirective(peek())) {
         break;
       }
-      if (matchingOpenFrame(peek().kind)) break;
+      if (matchingOpenFrame(peek().kind)) {
+        break;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -1417,8 +1568,7 @@ class SVParser {
         }
         if (isConditionalStartDirective(peek())) {
           ++conditional_depth;
-        } else if (isConditionalEndDirective(peek()) &&
-                   conditional_depth > 0) {
+        } else if (isConditionalEndDirective(peek()) && conditional_depth > 0) {
           --conditional_depth;
         }
         addLine();
@@ -1428,7 +1578,9 @@ class SVParser {
       const TK kind = peek().kind;
       if (kind == TK::CloseBrace && brace_depth == 1) {
         addLine();
-        if (indent_level_ > 0) --indent_level_;
+        if (indent_level_ > 0) {
+          --indent_level_;
+        }
       }
       consumeInto(line_);
       if (kind == TK::OpenBrace || kind == TK::ApostropheOpenBrace) {
@@ -1438,7 +1590,9 @@ class SVParser {
       }
       if (kind == TK::Semicolon) {
         addLine();
-        if (brace_depth == 0) return;
+        if (brace_depth == 0) {
+          return;
+        }
       }
     }
     addLine();
@@ -1533,8 +1687,7 @@ class SVParser {
       // Annex A uses these keyword pairs inside assertion statements; they
       // do not open property_declaration or sequence_declaration blocks.
       if ((kind == TK::PropertyKeyword &&
-           (preceding == TK::AssertKeyword ||
-            preceding == TK::AssumeKeyword ||
+           (preceding == TK::AssertKeyword || preceding == TK::AssumeKeyword ||
             preceding == TK::CoverKeyword ||
             preceding == TK::RestrictKeyword)) ||
           (kind == TK::SequenceKeyword && preceding == TK::CoverKeyword)) {
@@ -1571,8 +1724,8 @@ class SVParser {
 
   // Skip an unsupported block using the same delimiter table as the normal
   // parser. Inner blocks cannot terminate the outer unsupported block.
-  [[nodiscard]] auto findPairedEnd(size_t start,
-                                   TK close) const -> std::optional<size_t> {
+  [[nodiscard]] auto findPairedEnd(size_t start, TK close) const
+      -> std::optional<size_t> {
     std::vector<TK> expected{close};
     for (size_t i = start + 1;
          i < tokens_.size() && tokens_[i].kind != TK::EndOfFile; ++i) {
@@ -1647,14 +1800,17 @@ class SVParser {
       lines_.push_back(Line{.tokens = {}, .raw_text = {}, .is_opaque = true});
     }
     auto& out = lines_.back().tokens;
-    out.insert(out.end(), tokens_.begin() + begin, tokens_.begin() + end);
+    out.insert(out.end(), tokens_.begin() + static_cast<std::ptrdiff_t>(begin),
+               tokens_.begin() + static_cast<std::ptrdiff_t>(end));
   }
 
   // Include trivia after the previous formatted token. When resuming on a
   // clean source line, leave that line's indentation to the printer.
   auto emitOpaque(size_t begin, size_t resume) -> void {
     // The unsupported-construct diagnostic already identifies this fallback.
-    for (auto& scope : grammar_scopes_) scope.interrupted = true;
+    for (auto& scope : grammar_scopes_) {
+      scope.interrupted = true;
+    }
     addLine();
     const size_t raw_begin =
         begin == 0 ? 0
@@ -1705,8 +1861,9 @@ class SVParser {
       }
       if ((depth.topLevel() && matchingOpenFrame(peek().kind)) ||
           (stop_at_conditional_boundary_ &&
-           isConditionalBoundaryDirective(peek())))
+           isConditionalBoundaryDirective(peek()))) {
         break;
+      }
       if (depth.topLevel() && isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -1719,7 +1876,7 @@ class SVParser {
   }
 
   auto parseGrammarLeaf(bool recover_to_outer = false,
-                        std::optional<LeafCheckpoint> checkpoint = {},
+                        const std::optional<LeafCheckpoint>& checkpoint = {},
                         bool stop_at_complete_semicolon = false,
                         bool keep_completed_line_open = false) -> void {
     const LeafCheckpoint saved = checkpoint.value_or(leafCheckpoint());
@@ -1734,7 +1891,9 @@ class SVParser {
                                    isConditionalBoundaryDirective(peek()))) {
       if (!grammar_scopes_.empty() && grammar_scopes_.back().complete() &&
           !grammar_scopes_.back().accepts(peek().kind)) {
-        if (!keep_completed_line_open) addLine();
+        if (!keep_completed_line_open) {
+          addLine();
+        }
         return;
       }
       if (at(TK::MacroUsage) ||
@@ -1775,19 +1934,25 @@ class SVParser {
         consumeUntilSemi();
         return;
       }
-      if (!grammar.accepts(peek().kind)) break;
+      if (!grammar.accepts(peek().kind)) {
+        break;
+      }
       const TK kind = peek().kind;
       if (kind == TK::StructKeyword || kind == TK::UnionKeyword) {
         aggregate_type = true;
       }
       if (aggregate_type && kind == TK::CloseBrace && aggregate_braces == 1) {
         addLine();
-        if (indent_level_ > 0) --indent_level_;
+        if (indent_level_ > 0) {
+          --indent_level_;
+        }
       }
       if (constraint_block && kind == TK::CloseBrace &&
           constraint_braces == 1) {
         addLine();
-        if (indent_level_ > 0) --indent_level_;
+        if (indent_level_ > 0) {
+          --indent_level_;
+        }
       }
       consumeInto(line_);
       if (stop_at_complete_semicolon && kind == TK::Semicolon &&
@@ -1819,10 +1984,14 @@ class SVParser {
                  aggregate_braces == 1) {
         addLine();
       }
-      if (grammar_scopes_.back().failed) break;
+      if (grammar_scopes_.back().failed) {
+        break;
+      }
     }
     if (!grammar_scopes_.empty() && grammar_scopes_.back().complete()) {
-      if (!keep_completed_line_open) addLine();
+      if (!keep_completed_line_open) {
+        addLine();
+      }
       return;
     }
     if (!recover_to_outer) {
@@ -1830,7 +1999,9 @@ class SVParser {
                                     grammar_scopes_.back().failed
                                 ? grammar_scopes_.back().failure_reason
                                 : "malformed Annex A item");
-      if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
+      if (!grammar_scopes_.empty()) {
+        grammar_scopes_.back().interrupted = true;
+      }
       indent_level_ = saved.indent_level;
       consumeUntilSemi();
       return;
@@ -1897,7 +2068,9 @@ class SVParser {
 
   // Optional `: label` after end/endmodule/endfunction/etc.
   auto consumeLabel() -> void {
-    if (!at(TK::Colon)) return;
+    if (!at(TK::Colon)) {
+      return;
+    }
     if (!grammarAllows(TK::Colon)) {
       recordGrammarFallback("opening label outside Annex A rule");
       return;
@@ -1940,8 +2113,9 @@ class SVParser {
     pending_if_begin_ = state.pending_if_begin;
   }
 
-  [[nodiscard]] auto structuralStateCompatible(
-      const ParserState& lhs, const ParserState& rhs) const -> bool {
+  [[nodiscard]] auto structuralStateCompatible(const ParserState& lhs,
+                                               const ParserState& rhs) const
+      -> bool {
     if (lhs.indent_level != rhs.indent_level ||
         lhs.block_stack.size() != rhs.block_stack.size() ||
         lhs.grammar_contexts != rhs.grammar_contexts ||
@@ -1953,8 +2127,8 @@ class SVParser {
       return false;
     }
     for (size_t i = 0; i < lhs.block_stack.size(); ++i) {
-      const auto& left = lhs.block_stack[i];
-      const auto& right = rhs.block_stack[i];
+      const auto& left = lhs.block_stack.at(i);
+      const auto& right = rhs.block_stack.at(i);
       if (left.close_kind != right.close_kind ||
           left.extra_dedent_after_close != right.extra_dedent_after_close ||
           left.grammar_body != right.grammar_body ||
@@ -1968,8 +2142,8 @@ class SVParser {
       }
     }
     for (size_t i = 0; i < lhs.grammar_scopes.size(); ++i) {
-      const auto& left = lhs.grammar_scopes[i];
-      const auto& right = rhs.grammar_scopes[i];
+      const auto& left = lhs.grammar_scopes.at(i);
+      const auto& right = rhs.grammar_scopes.at(i);
       if (left.roots != right.roots || left.failed != right.failed ||
           left.interrupted != right.interrupted) {
         return false;
@@ -1992,23 +2166,23 @@ class SVParser {
         return std::nullopt;
       }
       for (size_t i = 0; i < joined.block_stack.size(); ++i) {
-        joined.block_stack[i].statement_phase |=
-            state.block_stack[i].statement_phase;
-        joined.block_stack[i].udp_has_entry &=
-            state.block_stack[i].udp_has_entry;
-        joined.block_stack[i].udp_sequential |=
-            state.block_stack[i].udp_sequential;
-        joined.block_stack[i].udp_combinational |=
-            state.block_stack[i].udp_combinational;
-        joined.block_stack[i].udp_port_on_all_paths &=
-            state.block_stack[i].udp_port_on_all_paths;
-        joined.block_stack[i].udp_port_on_any_path |=
-            state.block_stack[i].udp_port_on_any_path;
-        joined.block_stack[i].udp_initial_seen |=
-            state.block_stack[i].udp_initial_seen;
+        joined.block_stack.at(i).statement_phase |=
+            state.block_stack.at(i).statement_phase;
+        joined.block_stack.at(i).udp_has_entry &=
+            state.block_stack.at(i).udp_has_entry;
+        joined.block_stack.at(i).udp_sequential |=
+            state.block_stack.at(i).udp_sequential;
+        joined.block_stack.at(i).udp_combinational |=
+            state.block_stack.at(i).udp_combinational;
+        joined.block_stack.at(i).udp_port_on_all_paths &=
+            state.block_stack.at(i).udp_port_on_all_paths;
+        joined.block_stack.at(i).udp_port_on_any_path |=
+            state.block_stack.at(i).udp_port_on_any_path;
+        joined.block_stack.at(i).udp_initial_seen |=
+            state.block_stack.at(i).udp_initial_seen;
       }
       for (size_t i = 0; i < joined.grammar_scopes.size(); ++i) {
-        joined.grammar_scopes[i].addContinuation(state.grammar_scopes[i]);
+        joined.grammar_scopes.at(i).addContinuation(state.grammar_scopes.at(i));
       }
       joined.source_modes |= state.source_modes;
     }
@@ -2025,7 +2199,9 @@ class SVParser {
     const bool outer_suspension = grammar_suspended_;
 
     restoreState(state);
-    for (auto& frame : block_stack_) frame.conditional_entry_frame = true;
+    for (auto& frame : block_stack_) {
+      frame.conditional_entry_frame = true;
+    }
     lines_.clear();
     warnings_.clear();
     stop_at_conditional_boundary_ = true;
@@ -2062,10 +2238,10 @@ class SVParser {
   }
 
   [[nodiscard]] auto atEnclosingBoundary() const -> bool {
-    if (at(TK::EndOfFile) ||
-        (stop_at_conditional_boundary_ &&
-         isConditionalBoundaryDirective(peek())))
+    if (at(TK::EndOfFile) || (stop_at_conditional_boundary_ &&
+                              isConditionalBoundaryDirective(peek()))) {
       return true;
+    }
     return std::ranges::any_of(block_stack_, [&](const BlockFrame& frame) {
       return matchesBlockClose(frame.close_kind, peek().kind);
     });
@@ -2117,9 +2293,9 @@ class SVParser {
             frame.grammar_body == "anonymous_program_item") &&
           !(frame.close_kind == TK::EndSequenceKeyword &&
             frame.grammar_body == "rs_production");
-      const bool label_terminal =
-          frame.constructor_body ? at(TK::NewKeyword, 1)
-                                 : at(TK::Identifier, 1);
+      const bool label_terminal = frame.constructor_body
+                                      ? at(TK::NewKeyword, 1)
+                                      : at(TK::Identifier, 1);
       if (label_allowed && label_terminal) {
         consumeInto(line_);
         consumeInto(line_);
@@ -2135,9 +2311,10 @@ class SVParser {
     // before the recursive parseIf() call regains control. Continue that
     // Annex A conditional_statement inside the branch.
     if (stop_at_conditional_boundary_ && frame.conditional_entry_frame &&
-        frame.if_statement_body &&
-        at(TK::ElseKeyword)) {
-      if (indent_level_ > 0) --indent_level_;
+        frame.if_statement_body && at(TK::ElseKeyword)) {
+      if (indent_level_ > 0) {
+        --indent_level_;
+      }
       consumeInto(line_);
       if (at(TK::IfKeyword)) {
         parseIf(false);
@@ -2183,9 +2360,13 @@ class SVParser {
       const auto& waiting = grammar_scopes_.back().charts.back().waiting;
       std::vector<std::string_view> expected;
       for (const auto root : roots) {
-        if (waiting.contains(annexRule(root))) expected.push_back(root);
+        if (waiting.contains(annexRule(root))) {
+          expected.push_back(root);
+        }
       }
-      if (!expected.empty()) roots = std::move(expected);
+      if (!expected.empty()) {
+        roots = std::move(expected);
+      }
     }
     ++indent_level_;
     grammar_contexts_.push_back({block_stack_.size(), std::move(roots)});
@@ -2204,7 +2385,9 @@ class SVParser {
   }
 
   auto recordGrammarFallback(std::string_view reason) -> void {
-    if (last_grammar_warning_pos_ == pos_) return;
+    if (last_grammar_warning_pos_ == pos_) {
+      return;
+    }
     last_grammar_warning_pos_ = pos_;
     warnings_.push_back({.location = peek().location(),
                          .code = "annex-a-fallback",
@@ -2217,17 +2400,24 @@ class SVParser {
   [[nodiscard]] auto grammarRoots() const -> std::vector<std::string_view> {
     for (auto it = grammar_contexts_.rbegin(); it != grammar_contexts_.rend();
          ++it) {
-      if (it->block_depth == block_stack_.size()) return it->roots;
+      if (it->block_depth == block_stack_.size()) {
+        return it->roots;
+      }
     }
     if (block_stack_.empty()) {
       std::vector<std::string_view> roots;
-      if (source_modes_ & (kSourceBeforeDescription | kSourceAfterTimeunits |
-                           kSourceAfterDescription))
-        roots.push_back("description");
-      if (source_modes_ & kSourceBeforeDescription)
-        roots.push_back("timeunits_declaration");
-      if (source_modes_ & kLibraryText)
-        roots.push_back("library_description");
+      if (static_cast<unsigned>(source_modes_) &
+          (static_cast<unsigned>(kSourceBeforeDescription) |
+           static_cast<unsigned>(kSourceAfterTimeunits) |
+           static_cast<unsigned>(kSourceAfterDescription))) {
+        roots.emplace_back("description");
+      }
+      if (source_modes_ & kSourceBeforeDescription) {
+        roots.emplace_back("timeunits_declaration");
+      }
+      if (source_modes_ & kLibraryText) {
+        roots.emplace_back("library_description");
+      }
       return roots;
     }
     if (!block_stack_.back().grammar_body.empty()) {
@@ -2239,22 +2429,28 @@ class SVParser {
       }
       if (block_stack_.back().grammar_body == "udp_body") {
         const auto& udp = block_stack_.back();
-        if (udp.statement_phase) return {};
+        if (udp.statement_phase) {
+          return {};
+        }
         std::vector<std::string_view> roots;
         if (!udp.udp_initial_seen) {
-          if (!udp.udp_ansi_header) roots.push_back("udp_port_declaration");
-          roots.push_back("udp_initial_statement");
-          roots.push_back("combinational_body");
+          if (!udp.udp_ansi_header) {
+            roots.emplace_back("udp_port_declaration");
+          }
+          roots.emplace_back("udp_initial_statement");
+          roots.emplace_back("combinational_body");
         }
-        roots.push_back("sequential_body");
+        roots.emplace_back("sequential_body");
         return roots;
       }
       if (block_stack_.back().grammar_body == "udp_table_entry") {
         std::vector<std::string_view> roots;
-        if (!block_stack_.back().udp_sequential)
-          roots.push_back("combinational_entry");
-        if (!block_stack_.back().udp_combinational)
-          roots.push_back("sequential_entry");
+        if (!block_stack_.back().udp_sequential) {
+          roots.emplace_back("combinational_entry");
+        }
+        if (!block_stack_.back().udp_combinational) {
+          roots.emplace_back("sequential_entry");
+        }
         return roots;
       }
       return {block_stack_.back().grammar_body};
@@ -2275,29 +2471,27 @@ class SVParser {
       case TK::EndFunctionKeyword:
         if (block_stack_.back().constructor_body) {
           return block_stack_.back().statement_phase
-                     ? std::vector<std::string_view>{
-                           "function_statement_or_null"}
+                     ? std::vector<
+                           std::string_view>{"function_statement_or_null"}
                      : std::vector<std::string_view>{
                            "block_item_declaration",
                            "function_statement_or_null"};
         }
         return block_stack_.back().statement_phase
                    ? std::vector<std::string_view>{"function_statement_or_null"}
-                   : block_stack_.back().tf_ports_in_header
-                         ? std::vector<std::string_view>{
-                               "block_item_declaration",
-                               "function_statement_or_null"}
-                         : std::vector<std::string_view>{
-                               "tf_item_declaration",
-                               "function_statement_or_null"};
+               : block_stack_.back().tf_ports_in_header
+                   ? std::vector<std::string_view>{"block_item_declaration",
+                                                   "function_statement_or_null"}
+                   : std::vector<std::string_view>{
+                         "tf_item_declaration", "function_statement_or_null"};
       case TK::EndTaskKeyword:
         return block_stack_.back().statement_phase
                    ? std::vector<std::string_view>{"statement_or_null"}
-                   : block_stack_.back().tf_ports_in_header
-                         ? std::vector<std::string_view>{
-                               "block_item_declaration", "statement_or_null"}
-                         : std::vector<std::string_view>{
-                               "tf_item_declaration", "statement_or_null"};
+               : block_stack_.back().tf_ports_in_header
+                   ? std::vector<std::string_view>{"block_item_declaration",
+                                                   "statement_or_null"}
+                   : std::vector<std::string_view>{"tf_item_declaration",
+                                                   "statement_or_null"};
       case TK::EndCaseKeyword:
         return {"case_item", "case_generate_item"};
       case TK::EndKeyword:
@@ -2311,7 +2505,7 @@ class SVParser {
     }
   }
 
-  auto beginGrammar(std::vector<std::string_view> roots,
+  auto beginGrammar(const std::vector<std::string_view>& roots,
                     bool resumable_item = false) -> void {
     grammar_checkpoints_.push_back(
         resumable_item && !grammar_scopes_.empty()
@@ -2325,22 +2519,28 @@ class SVParser {
   // The parent chart can consume a completed child nonterminal directly.
   // Pause it while that child is parsed, then advance it once at endGrammar().
   auto summarizeChildInParent() -> void {
-    if (grammar_scopes_.size() < 2 || !grammar_checkpoints_.back()) return;
-    const size_t parent_index = grammar_scopes_.size() - 2;
-    const auto& parent = grammar_scopes_[parent_index];
-    if (grammar_paused_[parent_index] || parent.failed || parent.interrupted)
+    if (grammar_scopes_.size() < 2 || !grammar_checkpoints_.back()) {
       return;
+    }
+    const size_t parent_index = grammar_scopes_.size() - 2;
+    const auto& parent = grammar_scopes_.at(parent_index);
+    if (grammar_paused_.at(parent_index) || parent.failed ||
+        parent.interrupted) {
+      return;
+    }
     const auto& waiting = parent.charts.back().waiting;
     const auto& roots = grammar_scopes_.back().roots;
     bool has_candidate = false;
     bool all_candidates_waited = true;
     for (const uint16_t root : roots) {
-      if (!annexCanStart(kRuleNames[root], peek().kind)) continue;
+      if (!annexCanStart(kRuleNames.at(root), peek().kind)) {
+        continue;
+      }
       has_candidate = true;
       all_candidates_waited &= waiting.contains(root);
     }
     if (has_candidate && all_candidates_waited) {
-      grammar_paused_[parent_index] = true;
+      grammar_paused_.at(parent_index) = true;
       grammar_summary_owner_.back() = true;
     }
   }
@@ -2367,14 +2567,16 @@ class SVParser {
     }
     if (checkpoint && !grammar_scopes_.empty() &&
         (summarized || !grammar_paused_.back())) {
-      if (summarized) grammar_paused_.back() = false;
+      if (summarized) {
+        grammar_paused_.back() = false;
+      }
       if (summarized || state.failed || state.interrupted) {
         std::vector<uint16_t> completed_roots;
         if (summarized && state.complete()) {
           for (const uint16_t root : state.roots) {
-            if (state.completed(kRuleNames[root]) &&
+            if (state.completed(kRuleNames.at(root)) &&
                 grammar_scopes_.back()
-                    .charts[checkpoint->chart_count - 1]
+                    .charts.at(checkpoint->chart_count - 1)
                     .waiting.contains(root)) {
               completed_roots.push_back(root);
             }
@@ -2411,7 +2613,9 @@ class SVParser {
         interrupted = true;
       }
     }
-    if (interrupted) recordGrammarFallback(reason);
+    if (interrupted) {
+      recordGrammarFallback(reason);
+    }
   }
 
   // ---- grammar ----
@@ -2428,8 +2632,10 @@ class SVParser {
         annexCanStart("timeunits_declaration", first)) {
       next |= kSourceAfterTimeunits;
     }
-    if ((source_modes_ & (kSourceBeforeDescription | kSourceAfterTimeunits |
-                         kSourceAfterDescription)) &&
+    if ((static_cast<unsigned>(source_modes_) &
+         (static_cast<unsigned>(kSourceBeforeDescription) |
+          static_cast<unsigned>(kSourceAfterTimeunits) |
+          static_cast<unsigned>(kSourceAfterDescription))) &&
         annexCanStart("description", first)) {
       next |= kSourceAfterDescription;
     }
@@ -2456,8 +2662,9 @@ class SVParser {
 
   [[nodiscard]] auto parseAttributeMacroInterruptionRule() -> bool {
     if (!at(TK::MacroUsage) &&
-        !(at(TK::Directive) && !isCompilerDirective(peek())))
+        !(at(TK::Directive) && !isCompilerDirective(peek()))) {
       return false;
+    }
     parseMacroStatement();
     return true;
   }
@@ -2471,21 +2678,24 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
       // description admits attributes on structural headers, package_item
       // and bind_directive, but not on config or extern alternatives.
       if (valid &&
-          annexCanStartAny({"module_nonansi_header", "udp_declaration",
-                            "interface_nonansi_header",
-                            "program_nonansi_header", "package_declaration",
-                            "package_item", "bind_directive"},
-                           peek().kind) &&
-          parseDescriptionRule())
+          annexCanStartAny(
+              {"module_nonansi_header", "udp_declaration",
+               "interface_nonansi_header", "program_nonansi_header",
+               "package_declaration", "package_item", "bind_directive"},
+              peek().kind) &&
+          parseDescriptionRule()) {
         return true;
+      }
       recordGrammarFallback("invalid Annex A attributed description");
       recoverMalformedItem(saved);
       return true;
@@ -2503,12 +2713,15 @@ class SVParser {
         parseStructuralBlock(TK::EndModuleKeyword);
         return true;
       case TK::InterfaceKeyword:
-        if (at(TK::ClassKeyword, 1))
+        if (at(TK::ClassKeyword, 1)) {
           return parsePackageOrGenerateDeclarationRule();
+        }
         parseStructuralBlock(TK::EndInterfaceKeyword);
         return true;
       case TK::ProgramKeyword:
-        if (at(TK::Semicolon, 1)) return parseAnonymousProgramRule();
+        if (at(TK::Semicolon, 1)) {
+          return parseAnonymousProgramRule();
+        }
         parseStructuralBlock(TK::EndProgramKeyword);
         return true;
       case TK::PackageKeyword:
@@ -2530,7 +2743,6 @@ class SVParser {
       case TK::ConstraintKeyword:
         return parsePackageOrGenerateDeclarationRule();
       case TK::StaticKeyword:
-        return parsePackageItemRule();
       case TK::VirtualKeyword:
         return parsePackageItemRule();
       case TK::BindKeyword:
@@ -2572,10 +2784,12 @@ class SVParser {
     } else {
       return false;
     }
-    if (parseStructuralHeaderRule(close_kw, true)) return true;
+    if (parseStructuralHeaderRule(close_kw, true)) {
+      return true;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // extern
-    beginGrammar(std::move(headers));
+    beginGrammar(headers);
     parseGrammarLeaf(false, {}, true);
     const AnnexState header = endGrammar();
     if (header.failed || header.interrupted || !header.complete()) {
@@ -2592,37 +2806,48 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
       // non_port_module_item admits this prefix only for these children.
       if (valid &&
-          annexCanStartAny({"module_or_generate_item",
-                            "specparam_declaration"},
+          annexCanStartAny({"module_or_generate_item", "specparam_declaration"},
                            peek().kind) &&
-          parseModuleItemRule(false))
+          parseModuleItemRule(false)) {
         return true;
+      }
       recordGrammarFallback("invalid Annex A attributed module item");
       recoverMalformedItem(saved);
       return true;
     }
-    if (parseTimeunitsRule()) return true;
-    if (parseDefaultClockingOrDisableRule(false)) return true;
+    if (parseTimeunitsRule()) {
+      return true;
+    }
+    if (parseDefaultClockingOrDisableRule(false)) {
+      return true;
+    }
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
       parsePortDeclarationRule();
       return true;
     }
-    if (allow_port_declaration && parseQualifiedInterfacePortDeclarationRule())
+    if (allow_port_declaration &&
+        parseQualifiedInterfacePortDeclarationRule()) {
       return true;
-    if (parseParameterDeclarationRule()) return true;
+    }
+    if (parseParameterDeclarationRule()) {
+      return true;
+    }
     if (at(TK::UnitSystemName) &&
         annexCanStart("checker_instantiation", peek().kind) &&
-        parseStructuralInstantiationRule())
+        parseStructuralInstantiationRule()) {
       return true;
+    }
     switch (peek().kind) {
       case TK::GenerateKeyword:
         parseSimpleBlock(TK::EndGenerateKeyword);
@@ -2632,8 +2857,9 @@ class SVParser {
         parseStructuralBlock(TK::EndModuleKeyword);
         return true;
       case TK::InterfaceKeyword:
-        if (at(TK::ClassKeyword, 1))
+        if (at(TK::ClassKeyword, 1)) {
           return parsePackageOrGenerateDeclarationRule();
+        }
         parseStructuralBlock(TK::EndInterfaceKeyword);
         return true;
       case TK::ProgramKeyword:
@@ -2650,22 +2876,26 @@ class SVParser {
     }
     if (parseTypeDeclarationRule() || parseExplicitDataDeclarationRule() ||
         parseNettypeDeclarationRule() || parseNetDeclarationRule() ||
-        parseParameterOverrideRule() ||
-        parseAssertionItemRule() || parseModuleCommonLeafRule() ||
+        parseParameterOverrideRule() || parseAssertionItemRule() ||
+        parseModuleCommonLeafRule() ||
         parsePackageOrGenerateDeclarationRule() ||
         parseGenerateConstructRule()) {
       return true;
     }
     if (parseGateInstantiationRule() || parseUdpInstantiationRule() ||
-        parseStructuralInstantiationRule() ||
-        parseUserDataDeclarationRule())
+        parseStructuralInstantiationRule() || parseUserDataDeclarationRule()) {
       return true;
-    if (parseClockingDeclarationRule()) return true;
+    }
+    if (parseClockingDeclarationRule()) {
+      return true;
+    }
     return parseProceduralConstructRule(true);
   }
 
   auto parseParameterOverrideRule() -> bool {
-    if (!at(TK::DefParamKeyword)) return false;
+    if (!at(TK::DefParamKeyword)) {
+      return false;
+    }
     const bool conditional_members = hasConditionalListMember(pos_);
     bool conditional = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
@@ -2674,22 +2904,21 @@ class SVParser {
         break;
       }
       if (tokens_[i].kind == TK::Semicolon ||
-          tokens_[i].kind == TK::EndOfFile)
+          tokens_[i].kind == TK::EndOfFile) {
         break;
+      }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
-    const bool valid = conditional_members
-                           ? parseConditionalAnnexCommaListRule(
-                                 "list_of_defparam_assignments",
-                                 "defparam_assignment")
-                       : conditional
-                           ? consumeAnnexRule("list_of_defparam_assignments",
-                                              line_, TK::Semicolon)
-                           : parseConstantParameterAssignmentListRule(
-                                 "hierarchical_parameter_identifier");
-    if (!valid ||
-        !at(TK::Semicolon)) {
+    const bool valid =
+        conditional_members
+            ? parseConditionalAnnexCommaListRule("list_of_defparam_assignments",
+                                                 "defparam_assignment")
+        : conditional ? consumeAnnexRule("list_of_defparam_assignments", line_,
+                                         TK::Semicolon)
+                      : parseConstantParameterAssignmentListRule(
+                            "hierarchical_parameter_identifier");
+    if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A parameter override");
       recoverMalformedItem(saved);
       return true;
@@ -2705,31 +2934,35 @@ class SVParser {
       std::string_view identifier) -> bool {
     parseGrammarChildDirectiveLines();
     if (!consumeAnnexRule(identifier, line_, TK::Comma,
-                          [&] { return at(TK::Equals); }))
+                          [&] { return at(TK::Equals); })) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::Equals)) return false;
+    if (!at(TK::Equals)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    return consumeAnnexRule("constant_mintypmax_expression", line_,
-                            TK::Comma,
+    return consumeAnnexRule("constant_mintypmax_expression", line_, TK::Comma,
                             [&] { return at(TK::Semicolon); });
   }
 
   [[nodiscard]] auto parseConstantParameterAssignmentListRule(
       std::string_view identifier, bool pulse_control = false) -> bool {
-    do {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       parseGrammarChildDirectiveLines();
       const bool pulse = pulse_control && at(TK::Identifier) &&
                          peek().rawText().starts_with("PATHPULSE$");
-      const bool valid = pulse
-                             ? consumeAnnexRule("pulse_control_specparam",
-                                                line_, TK::Comma)
-                             : parseConstantParameterAssignmentRule(
-                                   identifier);
-      if (!valid) return false;
+      const bool valid =
+          pulse ? consumeAnnexRule("pulse_control_specparam", line_, TK::Comma)
+                : parseConstantParameterAssignmentRule(identifier);
+      if (!valid) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -2748,32 +2981,41 @@ class SVParser {
       const auto& token = tokens_[i];
       if (isConditionalStartDirective(token)) {
         if (conditionals != 0 || i == start ||
-            tokens_[i - 1].kind != TK::Comma || !depth.topLevel())
+            tokens_[i - 1].kind != TK::Comma || !depth.topLevel()) {
           return false;
+        }
         ++conditionals;
         found = true;
         branch_last.reset();
         continue;
       }
       if (isConditionalAlternativeDirective(token) && conditionals > 0) {
-        if (branch_last != TK::Comma) return false;
+        if (branch_last != TK::Comma) {
+          return false;
+        }
         branch_last.reset();
         continue;
       }
       if (isConditionalEndDirective(token)) {
-        if (conditionals == 0 || branch_last != TK::Comma)
+        if (conditionals == 0 || branch_last != TK::Comma) {
           return false;
+        }
         --conditionals;
         branch_last = TK::Comma;
         continue;
       }
       if (token.kind == terminator && depth.topLevel()) {
-        if (conditionals > 0) return false;
+        if (conditionals > 0) {
+          return false;
+        }
         break;
       }
-      if (token.kind == TK::EndOfFile) break;
-      if (conditionals > 0 && depth.topLevel())
+      if (token.kind == TK::EndOfFile) {
+        break;
+      }
+      if (conditionals > 0 && depth.topLevel()) {
         branch_last = token.kind;
+      }
       advanceListDepth(depth, token.kind);
     }
     return found && conditionals == 0;
@@ -2787,30 +3029,35 @@ class SVParser {
       const auto& token = tokens_[i];
       if ((isConditionalStartDirective(token) && !conditional_members) ||
           token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive && !isCompilerDirective(token)))
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         return true;
+      }
       if ((token.kind == terminator && depth.topLevel()) ||
-          token.kind == TK::EndOfFile)
+          token.kind == TK::EndOfFile) {
         break;
+      }
       advanceListDepth(depth, token.kind);
     }
     return false;
   }
 
-  [[nodiscard]] auto hasAnnexHeaderInterruption(
-      size_t start, bool conditional_ports) const -> bool {
+  [[nodiscard]] auto hasAnnexHeaderInterruption(size_t start,
+                                                bool conditional_ports) const
+      -> bool {
     ListDepth depth;
     for (size_t i = start; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
       if ((isConditionalStartDirective(token) &&
-           !(conditional_ports && depth.parens == 1 &&
-             depth.brackets == 0 && depth.braces == 0)) ||
+           !(conditional_ports && depth.parens == 1 && depth.brackets == 0 &&
+             depth.braces == 0)) ||
           token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive && !isCompilerDirective(token)))
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         return true;
+      }
       if ((token.kind == TK::Semicolon && depth.topLevel()) ||
-          token.kind == TK::EndOfFile)
+          token.kind == TK::EndOfFile) {
         break;
+      }
       advanceListDepth(depth, token.kind);
     }
     return false;
@@ -2819,16 +3066,16 @@ class SVParser {
   // Keep the list production live when a branch supplies comma-separated
   // children. Ordinary members still enter their own Annex A child rule;
   // parseAnnexConditional advances the same list state through each branch.
-  auto parseConditionalAnnexCommaListRule(std::string_view list,
-                                          std::string_view child,
-                                          TK terminator = TK::Semicolon)
-      -> bool {
+  auto parseConditionalAnnexCommaListRule(
+      std::string_view list,  // NOLINT(bugprone-easily-swappable-parameters)
+      std::string_view child, TK terminator = TK::Semicolon) -> bool {
     beginGrammar({list});
     bool valid = true;
-    while (!at(TK::EndOfFile) &&
-           !(stop_at_conditional_boundary_ &&
-             isConditionalBoundaryDirective(peek()))) {
-      if (grammar_scopes_.back().complete() && at(terminator)) break;
+    while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
+                                   isConditionalBoundaryDirective(peek()))) {
+      if (grammar_scopes_.back().complete() && at(terminator)) {
+        break;
+      }
       if (isConditionalStartDirective(peek())) {
         bool ended = true;
         valid = parseAnnexConditional(TK::EndOfFile, ended, indent_level_);
@@ -2837,14 +3084,17 @@ class SVParser {
         parseDirectiveLine();
       } else if (at(TK::Comma)) {
         valid = grammar_scopes_.back().accepts(TK::Comma);
-        if (valid) consumeInto(line_);
+        if (valid) {
+          consumeInto(line_);
+        }
       } else {
         valid = grammar_scopes_.back().accepts(peek().kind) &&
                 consumeAnnexRule(child, line_, TK::Comma);
       }
       if (!valid || grammar_scopes_.back().failed ||
-          grammar_scopes_.back().interrupted)
+          grammar_scopes_.back().interrupted) {
         break;
+      }
     }
     const AnnexState result = endGrammar(false);
     return valid && !result.failed && !result.interrupted &&
@@ -2854,8 +3104,8 @@ class SVParser {
   // specparam_declaration ::= specparam [packed_dimension]
   //                             list_of_specparam_assignments ';'.
   auto parseSpecparamAssignmentListRule() -> bool {
-    return parseConstantParameterAssignmentListRule(
-        "specparam_identifier", true);
+    return parseConstantParameterAssignmentListRule("specparam_identifier",
+                                                    true);
   }
 
   auto parseSpecparamDeclarationRule() -> void {
@@ -2868,8 +3118,9 @@ class SVParser {
         break;
       }
       if (tokens_[i].kind == TK::Semicolon ||
-          tokens_[i].kind == TK::EndOfFile)
+          tokens_[i].kind == TK::EndOfFile) {
         break;
+      }
     }
     consumeInto(line_);
     const auto skip_directives = [&] {
@@ -2879,23 +3130,20 @@ class SVParser {
       }
     };
     skip_directives();
-    if (at(TK::OpenBracket) &&
-        !consumeAnnexRule("packed_dimension", line_)) {
+    if (at(TK::OpenBracket) && !consumeAnnexRule("packed_dimension", line_)) {
       recordGrammarFallback("invalid Annex A specparam dimension");
       recoverMalformedItem(saved);
       return;
     }
     skip_directives();
-    const bool valid = conditional_members
-                           ? parseConditionalAnnexCommaListRule(
-                                 "list_of_specparam_assignments",
-                                 "specparam_assignment")
-                       : conditional
-                           ? consumeAnnexRule("list_of_specparam_assignments",
-                                              line_, TK::Semicolon)
-                           : parseSpecparamAssignmentListRule();
-    if (!valid ||
-        !at(TK::Semicolon)) {
+    const bool valid =
+        conditional_members
+            ? parseConditionalAnnexCommaListRule(
+                  "list_of_specparam_assignments", "specparam_assignment")
+        : conditional ? consumeAnnexRule("list_of_specparam_assignments", line_,
+                                         TK::Semicolon)
+                      : parseSpecparamAssignmentListRule();
+    if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A specparam assignment list");
       recoverMalformedItem(saved);
       return;
@@ -2906,25 +3154,30 @@ class SVParser {
 
   // specify_{input,output}_terminal_descriptor ::= identifier
   // [ '[' constant_range_expression ']' ].
-  [[nodiscard]] auto parseSpecifyTerminalDescriptorRule(bool output)
-      -> bool {
+  [[nodiscard]] auto parseSpecifyTerminalDescriptorRule(bool output) -> bool {
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule(output ? "output_identifier"
-                                 : "input_identifier", line_))
+    if (!consumeAnnexRule(output ? "output_identifier" : "input_identifier",
+                          line_)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
     if (at(TK::OpenBracket) &&
         !consumeAnnexDelimited(TK::OpenBracket, TK::CloseBracket,
-                               "constant_range_expression", line_))
+                               "constant_range_expression", line_)) {
       return false;
+    }
     return true;
   }
 
   auto parseSpecifyOutputListRule() -> bool {
-    do {
-      if (!parseSpecifyTerminalDescriptorRule(true)) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseSpecifyTerminalDescriptorRule(true)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -2932,47 +3185,66 @@ class SVParser {
 
   // A.7.2: the path operator selects the parallel or full production. Parse
   // its terminal descriptors as children while emitting the same flat line.
-  [[nodiscard]] auto parseSpecifyPathDescriptionRule(bool allow_edge)
-      -> bool {
-    if (!at(TK::OpenParenthesis)) return false;
+  [[nodiscard]] auto parseSpecifyPathDescriptionRule(bool allow_edge) -> bool {
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    const bool edge = allow_edge &&
-                      annexCanStart("edge_identifier", peek().kind);
-    if (edge && !consumeAnnexRule("edge_identifier", line_)) return false;
+    const bool edge =
+        allow_edge && annexCanStart("edge_identifier", peek().kind);
+    if (edge && !consumeAnnexRule("edge_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!parseSpecifyTerminalDescriptorRule(false)) return false;
+    if (!parseSpecifyTerminalDescriptorRule(false)) {
+      return false;
+    }
     size_t inputs = 1;
     parseGrammarChildDirectiveLines();
     while (at(TK::Comma)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!parseSpecifyTerminalDescriptorRule(false)) return false;
+      if (!parseSpecifyTerminalDescriptorRule(false)) {
+        return false;
+      }
       ++inputs;
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::Plus) || at(TK::Minus)) {
-      if (!consumeAnnexRule("polarity_operator", line_)) return false;
+      if (!consumeAnnexRule("polarity_operator", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     const bool parallel = at(TK::EqualsArrow);
-    if (!parallel && !at(TK::StarArrow)) return false;
-    if (parallel && inputs != 1) return false;
+    if (!parallel && !at(TK::StarArrow)) {
+      return false;
+    }
+    if (parallel && inputs != 1) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     const bool data_source = at(TK::OpenParenthesis);
     if (data_source) {
-      if (!allow_edge) return false;
+      if (!allow_edge) {
+        return false;
+      }
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
     }
-    if (!parseSpecifyTerminalDescriptorRule(true)) return false;
+    if (!parseSpecifyTerminalDescriptorRule(true)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     if (!parallel) {
       while (at(TK::Comma)) {
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
-        if (!parseSpecifyTerminalDescriptorRule(true)) return false;
+        if (!parseSpecifyTerminalDescriptorRule(true)) {
+          return false;
+        }
         parseGrammarChildDirectiveLines();
       }
     }
@@ -2983,21 +3255,31 @@ class SVParser {
       if (combined_polarity) {
         consumeInto(line_);
       } else if (at(TK::Plus) || at(TK::Minus)) {
-        if (!consumeAnnexRule("polarity_operator", line_)) return false;
+        if (!consumeAnnexRule("polarity_operator", line_)) {
+          return false;
+        }
         parseGrammarChildDirectiveLines();
       }
       if (!combined_polarity) {
-        if (!at(TK::Colon)) return false;
+        if (!at(TK::Colon)) {
+          return false;
+        }
         consumeInto(line_);
       }
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("data_source_expression", line_,
-                            TK::CloseParenthesis)) return false;
-      if (!at(TK::CloseParenthesis)) return false;
+                            TK::CloseParenthesis)) {
+        return false;
+      }
+      if (!at(TK::CloseParenthesis)) {
+        return false;
+      }
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
     }
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -3007,24 +3289,28 @@ class SVParser {
   // child keeps the input/output terminal ambiguity local.
   [[nodiscard]] auto parseTimingCheckEventRule(bool controlled) -> bool {
     parseGrammarChildDirectiveLines();
-    const bool has_control = at(TK::PosEdgeKeyword) ||
-                             at(TK::NegEdgeKeyword) || at(TK::EdgeKeyword);
-    if (controlled && !has_control) return false;
-    if (has_control &&
-        !consumeAnnexRule("timing_check_event_control", line_))
+    const bool has_control =
+        at(TK::PosEdgeKeyword) || at(TK::NegEdgeKeyword) || at(TK::EdgeKeyword);
+    if (controlled && !has_control) {
       return false;
+    }
+    if (has_control && !consumeAnnexRule("timing_check_event_control", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("specify_terminal_descriptor", line_, TK::Comma,
-                          [&] { return at(TK::TripleAnd) ||
-                                       at(TK::CloseParenthesis); }))
+    if (!consumeAnnexRule("specify_terminal_descriptor", line_, TK::Comma, [&] {
+          return at(TK::TripleAnd) || at(TK::CloseParenthesis);
+        })) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
     if (at(TK::TripleAnd)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("timing_check_condition", line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+                            [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     return true;
   }
@@ -3033,7 +3319,9 @@ class SVParser {
   // argument slots below follow that production; each nonempty slot invokes
   // its A.7.5.2 child while tokens are emitted.
   [[nodiscard]] auto parseSpecifyTimingCheckRule() -> bool {
-    if (!at(TK::SystemIdentifier)) return false;
+    if (!at(TK::SystemIdentifier)) {
+      return false;
+    }
     const std::string_view name = peek().rawText();
     std::vector<std::string_view> required;
     std::vector<std::string_view> optional;
@@ -3047,21 +3335,20 @@ class SVParser {
     } else if (name == "$nochange") {
       required = {"reference_event", "data_event", "start_edge_offset",
                   "end_edge_offset"};
-    } else if (name == "$hold" || name == "$recovery" ||
-               name == "$removal" || name == "$skew" ||
-               name == "$timeskew" || name == "$fullskew" ||
+    } else if (name == "$hold" || name == "$recovery" || name == "$removal" ||
+               name == "$skew" || name == "$timeskew" || name == "$fullskew" ||
                name == "$setuphold" || name == "$recrem") {
       required = {"reference_event", "data_event", "timing_check_limit"};
-      if (name == "$fullskew" || name == "$setuphold" ||
-          name == "$recrem")
-        required.push_back("timing_check_limit");
+      if (name == "$fullskew" || name == "$setuphold" || name == "$recrem") {
+        required.emplace_back("timing_check_limit");
+      }
     } else {
       return false;
     }
-    optional.push_back("notifier");
+    optional.emplace_back("notifier");
     if (name == "$timeskew" || name == "$fullskew") {
-      optional.push_back("event_based_flag");
-      optional.push_back("remain_active_flag");
+      optional.emplace_back("event_based_flag");
+      optional.emplace_back("remain_active_flag");
     } else if (name == "$setuphold" || name == "$recrem") {
       optional.insert(optional.end(),
                       {"timestamp_condition", "timecheck_condition",
@@ -3069,41 +3356,52 @@ class SVParser {
     }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     for (size_t i = 0; i < required.size(); ++i) {
       parseGrammarChildDirectiveLines();
       if (i > 0) {
-        if (!at(TK::Comma)) return false;
+        if (!at(TK::Comma)) {
+          return false;
+        }
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
       }
-      const std::string_view child = required[i];
-      const bool event = child == "data_event" ||
-                         child == "reference_event" ||
+      const std::string_view child = required.at(i);
+      const bool event = child == "data_event" || child == "reference_event" ||
                          child == "controlled_reference_event";
-      if (!(event
-                ? parseTimingCheckEventRule(
-                      child == "controlled_reference_event")
-                : consumeAnnexRule(child, line_, TK::Comma,
-                                   [&] { return at(TK::CloseParenthesis); })))
+      if (!(event ? parseTimingCheckEventRule(child ==
+                                              "controlled_reference_event")
+                  : consumeAnnexRule(child, line_, TK::Comma, [&] {
+                      return at(TK::CloseParenthesis);
+                    }))) {
         return false;
+      }
     }
     for (const auto child : optional) {
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!at(TK::Comma) && !at(TK::CloseParenthesis) &&
           !consumeAnnexRule(child, line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+                            [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    if (!at(TK::Semicolon)) return false;
+    if (!at(TK::Semicolon)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -3113,15 +3411,20 @@ class SVParser {
   [[nodiscard]] auto parseSpecifyPathDelayRule() -> bool {
     parseGrammarChildDirectiveLines();
     const bool parenthesized = at(TK::OpenParenthesis);
-    if (parenthesized) consumeInto(line_);
+    if (parenthesized) {
+      consumeInto(line_);
+    }
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("list_of_path_delay_expressions", line_,
-                          parenthesized ? TK::CloseParenthesis
-                                        : TK::Semicolon))
+    if (!consumeAnnexRule(
+            "list_of_path_delay_expressions", line_,
+            parenthesized ? TK::CloseParenthesis : TK::Semicolon)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
     if (parenthesized) {
-      if (!at(TK::CloseParenthesis)) return false;
+      if (!at(TK::CloseParenthesis)) {
+        return false;
+      }
       consumeInto(line_);
     }
     return true;
@@ -3132,10 +3435,10 @@ class SVParser {
       parseSpecparamDeclarationRule();
       return true;
     }
-    const bool pulse = at(TK::PulseStyleOnEventKeyword) ||
-                       at(TK::PulseStyleOnDetectKeyword);
-    const bool cancel = at(TK::ShowCancelledKeyword) ||
-                        at(TK::NoShowCancelledKeyword);
+    const bool pulse =
+        at(TK::PulseStyleOnEventKeyword) || at(TK::PulseStyleOnDetectKeyword);
+    const bool cancel =
+        at(TK::ShowCancelledKeyword) || at(TK::NoShowCancelledKeyword);
     if (pulse || cancel) {
       const LeafCheckpoint saved = leafCheckpoint();
       const bool conditional_members = hasConditionalListMember(pos_);
@@ -3143,13 +3446,11 @@ class SVParser {
           hasAnnexListInterruption(pos_, conditional_members);
       consumeInto(line_);
       if (!(interrupted
-                ? consumeAnnexRule("list_of_path_outputs", line_,
-                                   TK::Semicolon)
-                : conditional_members
-                    ? parseConditionalAnnexCommaListRule(
-                          "list_of_path_outputs",
-                          "specify_output_terminal_descriptor")
-                : parseSpecifyOutputListRule()) ||
+                ? consumeAnnexRule("list_of_path_outputs", line_, TK::Semicolon)
+            : conditional_members ? parseConditionalAnnexCommaListRule(
+                                        "list_of_path_outputs",
+                                        "specify_output_terminal_descriptor")
+                                  : parseSpecifyOutputListRule()) ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A specify output list");
         recoverMalformedLeaf(saved);
@@ -3159,10 +3460,12 @@ class SVParser {
       addLine();
       return true;
     }
-    const bool path = at(TK::OpenParenthesis) || at(TK::IfKeyword) ||
-                      at(TK::IfNoneKeyword);
+    const bool path =
+        at(TK::OpenParenthesis) || at(TK::IfKeyword) || at(TK::IfNoneKeyword);
     const bool timing = at(TK::SystemIdentifier);
-    if (!path && !timing) return false;
+    if (!path && !timing) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = false;
     if (path) {
@@ -3170,11 +3473,12 @@ class SVParser {
       const bool interrupted = hasAnnexListInterruption(pos_, false);
       if (at(TK::IfKeyword)) {
         consumeInto(line_);
-        valid = consumeAnnexDelimited(TK::OpenParenthesis,
-                                      TK::CloseParenthesis,
+        valid = consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                                       "module_path_expression", line_);
       } else {
-        if (ifnone) consumeInto(line_);
+        if (ifnone) {
+          consumeInto(line_);
+        }
         valid = true;
       }
       if (valid) {
@@ -3182,12 +3486,12 @@ class SVParser {
           std::vector<std::string_view> descriptions{
               "parallel_path_description", "full_path_description"};
           if (!ifnone) {
-            descriptions.push_back(
+            descriptions.emplace_back(
                 "parallel_edge_sensitive_path_description");
-            descriptions.push_back("full_edge_sensitive_path_description");
+            descriptions.emplace_back("full_edge_sensitive_path_description");
           }
-          const AnnexState description = parseAnnexItem(
-              std::move(descriptions), false, true);
+          const AnnexState description =
+              parseAnnexItem(descriptions, false, true);
           valid = !description.failed && !description.interrupted &&
                   description.complete();
         } else {
@@ -3200,8 +3504,11 @@ class SVParser {
       } else {
         valid = false;
       }
-      if (valid && at(TK::Semicolon)) consumeInto(line_);
-      else valid = false;
+      if (valid && at(TK::Semicolon)) {
+        consumeInto(line_);
+      } else {
+        valid = false;
+      }
     } else {
       valid = hasAnnexListInterruption(pos_, false)
                   ? consumeAnnexRule("system_timing_check", line_)
@@ -3218,8 +3525,9 @@ class SVParser {
   }
 
   auto parseTimeunitsRule() -> bool {
-    if (!at(TK::TimeUnitKeyword) && !at(TK::TimePrecisionKeyword))
+    if (!at(TK::TimeUnitKeyword) && !at(TK::TimePrecisionKeyword)) {
       return false;
+    }
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       if (tokens_[i].kind == TK::Semicolon ||
           tokens_[i].kind == TK::EndOfFile) {
@@ -3240,22 +3548,30 @@ class SVParser {
       }
     };
     const auto parse_clause = [&](TK keyword, bool& slash) -> bool {
-      if (!at(keyword)) return false;
+      if (!at(keyword)) {
+        return false;
+      }
       consumeInto(line_);
       skip_directives();
       // slang has already combined Annex A time_literal into TimeLiteral.
-      if (!at(TK::TimeLiteral)) return false;
+      if (!at(TK::TimeLiteral)) {
+        return false;
+      }
       consumeInto(line_);
       skip_directives();
       if (keyword == TK::TimeUnitKeyword && at(TK::Slash)) {
         slash = true;
         consumeInto(line_);
         skip_directives();
-        if (!at(TK::TimeLiteral)) return false;
+        if (!at(TK::TimeLiteral)) {
+          return false;
+        }
         consumeInto(line_);
         skip_directives();
       }
-      if (!at(TK::Semicolon)) return false;
+      if (!at(TK::Semicolon)) {
+        return false;
+      }
       consumeInto(line_);
       addLine();
       return true;
@@ -3264,9 +3580,8 @@ class SVParser {
     bool valid = parse_clause(first, first_slash);
     if (valid) {
       skip_directives();
-      const TK second = first == TK::TimeUnitKeyword
-                            ? TK::TimePrecisionKeyword
-                            : TK::TimeUnitKeyword;
+      const TK second = first == TK::TimeUnitKeyword ? TK::TimePrecisionKeyword
+                                                     : TK::TimeUnitKeyword;
       if (!first_slash && at(second)) {
         bool second_slash = false;
         valid = parse_clause(second, second_slash) && !second_slash;
@@ -3280,7 +3595,9 @@ class SVParser {
   }
 
   auto parseTypeDeclarationRule() -> bool {
-    if (!at(TK::TypedefKeyword)) return false;
+    if (!at(TK::TypedefKeyword)) {
+      return false;
+    }
     if (hasAnnexListInterruption(pos_, false)) {
       static_cast<void>(parseAnnexItem({"type_declaration"}, true));
       return true;
@@ -3293,23 +3610,30 @@ class SVParser {
       }
     };
     if (at(TK::Identifier, type_start)) {
-      const auto after_selects =
-          afterBalancedDimensions(type_start + 1);
+      const auto after_selects = afterBalancedDimensions(type_start + 1);
       if (after_selects && at(TK::Dot, *after_selects)) {
         const LeafCheckpoint saved = leafCheckpoint();
         consumeInto(line_);  // typedef
         skip_directives();
         bool valid = consumeAnnexRule("interface_port_identifier", line_);
         parseGrammarChildDirectiveLines();
-        if (valid && at(TK::OpenBracket))
+        if (valid && at(TK::OpenBracket)) {
           valid = consumeAnnexRule("constant_bit_select", line_, TK::Dot);
+        }
         parseGrammarChildDirectiveLines();
-        if (valid && at(TK::Dot)) consumeInto(line_);
-        else valid = false;
+        if (valid && at(TK::Dot)) {
+          consumeInto(line_);
+        } else {
+          valid = false;
+        }
         parseGrammarChildDirectiveLines();
-        if (valid) valid = consumeAnnexRule("type_identifier", line_);
+        if (valid) {
+          valid = consumeAnnexRule("type_identifier", line_);
+        }
         parseGrammarChildDirectiveLines();
-        if (valid) valid = consumeAnnexRule("type_identifier", line_);
+        if (valid) {
+          valid = consumeAnnexRule("type_identifier", line_);
+        }
         parseGrammarChildDirectiveLines();
         if (!valid || !at(TK::Semicolon)) {
           recordGrammarFallback("invalid Annex A interface typedef");
@@ -3322,16 +3646,15 @@ class SVParser {
       }
     }
     size_t identifier_offset = type_start;
-    const size_t class_offset =
-        afterOrdinaryDirectives(type_start + 1);
+    const size_t class_offset = afterOrdinaryDirectives(type_start + 1);
     const bool interface_class = at(TK::InterfaceKeyword, type_start) &&
                                  at(TK::ClassKeyword, class_offset);
     const bool forward =
         annexCanStart("forward_type", peek(type_start).kind) &&
         (!at(TK::InterfaceKeyword, type_start) || interface_class);
-    if (forward)
-      identifier_offset = interface_class ? class_offset + 1
-                                          : type_start + 1;
+    if (forward) {
+      identifier_offset = interface_class ? class_offset + 1 : type_start + 1;
+    }
     const size_t name_offset = afterOrdinaryDirectives(identifier_offset);
     if (at(TK::Identifier, name_offset) &&
         at(TK::Semicolon, afterOrdinaryDirectives(name_offset + 1))) {
@@ -3340,7 +3663,9 @@ class SVParser {
       skip_directives();
       bool valid = !forward || consumeAnnexRule("forward_type", line_);
       skip_directives();
-      if (valid) valid = consumeAnnexRule("type_identifier", line_);
+      if (valid) {
+        valid = consumeAnnexRule("type_identifier", line_);
+      }
       parseGrammarChildDirectiveLines();
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A forward type declaration");
@@ -3356,10 +3681,12 @@ class SVParser {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // typedef
       skip_directives();
-      bool valid = consumeAnnexRule(
-          "data_type_or_incomplete_class_scoped_type", line_);
+      bool valid =
+          consumeAnnexRule("data_type_or_incomplete_class_scoped_type", line_);
       parseGrammarChildDirectiveLines();
-      if (valid) valid = consumeAnnexRule("type_identifier", line_);
+      if (valid) {
+        valid = consumeAnnexRule("type_identifier", line_);
+      }
       parseGrammarChildDirectiveLines();
       while (valid && at(TK::OpenBracket)) {
         valid = consumeAnnexRule("variable_dimension", line_);
@@ -3379,7 +3706,9 @@ class SVParser {
   }
 
   auto parseNettypeDeclarationRule() -> bool {
-    if (!at(TK::NetTypeKeyword)) return false;
+    if (!at(TK::NetTypeKeyword)) {
+      return false;
+    }
     if (hasAnnexListInterruption(pos_, false)) {
       static_cast<void>(parseAnnexItem({"nettype_declaration"}, true));
       return true;
@@ -3400,9 +3729,12 @@ class SVParser {
         continue;
       }
       if (tokens_[i].kind == TK::Semicolon ||
-          tokens_[i].kind == TK::EndOfFile)
+          tokens_[i].kind == TK::EndOfFile) {
         break;
-      if (tokens_[i].kind == TK::WithKeyword) has_resolver = true;
+      }
+      if (tokens_[i].kind == TK::WithKeyword) {
+        has_resolver = true;
+      }
     }
     // An unqualified identifier can begin either Annex A alternative. The
     // resolver suffix or parameterized type selects the data_type alternative;
@@ -3411,8 +3743,7 @@ class SVParser {
     const bool explicit_type =
         annexCanStart("data_type", peek(type_start).kind) &&
         (has_resolver ||
-         (at(TK::Identifier, type_start) &&
-          at(TK::Hash, type_start + 1)) ||
+         (at(TK::Identifier, type_start) && at(TK::Hash, type_start + 1)) ||
          (!at(TK::Identifier, type_start) &&
           !at(TK::UnitSystemName, type_start)));
     if (explicit_type) {
@@ -3421,7 +3752,9 @@ class SVParser {
       skip_directives();
       bool valid = consumeAnnexRule("data_type", line_);
       parseGrammarChildDirectiveLines();
-      if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
+      if (valid) {
+        valid = consumeAnnexRule("nettype_identifier", line_);
+      }
       if (!valid) {
         recordGrammarFallback("invalid Annex A nettype declaration");
         recoverMalformedItem(saved);
@@ -3439,15 +3772,20 @@ class SVParser {
             // class_scope can also accept the resolver as another class name.
             // The final identifier before ';' belongs to tf_identifier.
             if (grammar.complete() && at(TK::Identifier) &&
-                at(TK::Semicolon, 1))
+                at(TK::Semicolon, 1)) {
               break;
+            }
             if (isCompilerDirective(peek())) {
               addLine();
               parseDirectiveLine();
               continue;
             }
-            if (grammar.complete() && !grammar.accepts(peek().kind)) break;
-            if (!grammar.accepts(peek().kind)) break;
+            if (grammar.complete() && !grammar.accepts(peek().kind)) {
+              break;
+            }
+            if (!grammar.accepts(peek().kind)) {
+              break;
+            }
             consumeInto(line_);
           }
           const AnnexState scope = endGrammar(false);
@@ -3496,20 +3834,29 @@ class SVParser {
             continue;
           }
           const auto& scope = grammar_scopes_.back();
-          if (scope.complete() && at(TK::Identifier) &&
-              at(TK::Identifier, 1) && at(TK::Semicolon, 2))
+          if (scope.complete() && at(TK::Identifier) && at(TK::Identifier, 1) &&
+              at(TK::Semicolon, 2)) {
             break;
-          if (scope.complete() && !scope.accepts(peek().kind)) break;
-          if (!scope.accepts(peek().kind)) break;
+          }
+          if (scope.complete() && !scope.accepts(peek().kind)) {
+            break;
+          }
+          if (!scope.accepts(peek().kind)) {
+            break;
+          }
           consumeInto(line_);
         }
         const AnnexState scope = endGrammar(false);
         valid = !scope.failed && !scope.interrupted && scope.complete();
       }
       parseGrammarChildDirectiveLines();
-      if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
+      if (valid) {
+        valid = consumeAnnexRule("nettype_identifier", line_);
+      }
       parseGrammarChildDirectiveLines();
-      if (valid) valid = consumeAnnexRule("nettype_identifier", line_);
+      if (valid) {
+        valid = consumeAnnexRule("nettype_identifier", line_);
+      }
       parseGrammarChildDirectiveLines();
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A nettype alias");
@@ -3528,34 +3875,43 @@ class SVParser {
   //                      [ '=' constant_param_expression ].
   [[nodiscard]] auto parseParameterAssignmentRule(bool type) -> bool {
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule(type ? "type_identifier"
-                               : "parameter_identifier", line_))
+    if (!consumeAnnexRule(type ? "type_identifier" : "parameter_identifier",
+                          line_)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
     if (!type) {
       while (at(TK::OpenBracket)) {
-        if (!consumeAnnexRule("variable_dimension", line_)) return false;
+        if (!consumeAnnexRule("variable_dimension", line_)) {
+          return false;
+        }
         parseGrammarChildDirectiveLines();
       }
     }
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexRule(
-              type ? "data_type_or_incomplete_class_scoped_type"
-                   : "constant_param_expression", line_, TK::Comma,
-              [&] { return at(TK::Semicolon) ||
-                           at(TK::CloseParenthesis); }))
+      if (!consumeAnnexRule(type ? "data_type_or_incomplete_class_scoped_type"
+                                 : "constant_param_expression",
+                            line_, TK::Comma, [&] {
+                              return at(TK::Semicolon) ||
+                                     at(TK::CloseParenthesis);
+                            })) {
         return false;
+      }
     }
     return true;
   }
 
   [[nodiscard]] auto parseParameterAssignmentListRule(bool type) -> bool {
-    do {
-      if (!parseParameterAssignmentRule(type)) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseParameterAssignmentRule(type)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -3570,26 +3926,32 @@ class SVParser {
   // their children; a local Annex A candidate resolves qualified class_new.
   [[nodiscard]] auto parseVariableAssignmentRule() -> bool {
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("variable_identifier", line_)) return false;
+    if (!consumeAnnexRule("variable_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    const bool first_unsized =
-        at(TK::OpenBracket) && at(TK::CloseBracket, 1);
+    const bool first_unsized = at(TK::OpenBracket) && at(TK::CloseBracket, 1);
     if (first_unsized) {
-      if (!consumeAnnexRule("unsized_dimension", line_)) return false;
+      if (!consumeAnnexRule("unsized_dimension", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     bool has_dimensions = first_unsized;
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+      if (!consumeAnnexRule("variable_dimension", line_)) {
+        return false;
+      }
       has_dimensions = true;
       parseGrammarChildDirectiveLines();
     }
-    if (!at(TK::Equals)) return true;
+    if (!at(TK::Equals)) {
+      return true;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     const bool dynamic_new =
-        first_unsized && at(TK::NewKeyword) &&
-        at(TK::OpenBracket, 1);
+        first_unsized && at(TK::NewKeyword) && at(TK::OpenBracket, 1);
     bool qualified_new = false;
     if (!has_dimensions && at(TK::Identifier) &&
         (at(TK::DoubleColon, 1) || at(TK::Hash, 1))) {
@@ -3597,12 +3959,13 @@ class SVParser {
       bool saw_new = false;
       for (size_t offset = 0; pos_ + offset < tokens_.size(); ++offset) {
         if (isCompilerDirective(peek(offset)) ||
-            !candidate.accepts(peek(offset).kind)) break;
+            !candidate.accepts(peek(offset).kind)) {
+          break;
+        }
         saw_new |= at(TK::NewKeyword, offset);
         candidate.advance(peek(offset));
         if (saw_new && candidate.complete() &&
-            (at(TK::Comma, offset + 1) ||
-             at(TK::Semicolon, offset + 1))) {
+            (at(TK::Comma, offset + 1) || at(TK::Semicolon, offset + 1))) {
           qualified_new = true;
           break;
         }
@@ -3618,48 +3981,60 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseVariableAssignmentItemsRule() -> bool {
-    do {
-      if (!parseVariableAssignmentRule()) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseVariableAssignmentRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
   }
 
   auto parseVariableAssignmentListRule(bool conditional_members) -> bool {
-    return conditional_members
-               ? parseConditionalAnnexCommaListRule(
-                     "list_of_variable_decl_assignments",
-                     "variable_decl_assignment")
-               : parseVariableAssignmentItemsRule();
+    return conditional_members ? parseConditionalAnnexCommaListRule(
+                                     "list_of_variable_decl_assignments",
+                                     "variable_decl_assignment")
+                               : parseVariableAssignmentItemsRule();
   }
 
   // net_decl_assignment ::= net_identifier { unpacked_dimension }
   // [ '=' expression ].
   [[nodiscard]] auto parseNetAssignmentRule() -> bool {
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("net_identifier", line_)) return false;
+    if (!consumeAnnexRule("net_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule("unpacked_dimension", line_)) return false;
+      if (!consumeAnnexRule("unpacked_dimension", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("expression", line_, TK::Comma,
-                            [&] { return at(TK::Semicolon); }))
+                            [&] { return at(TK::Semicolon); })) {
         return false;
+      }
     }
     return true;
   }
 
   [[nodiscard]] auto parseNetAssignmentItemsRule() -> bool {
-    do {
-      if (!parseNetAssignmentRule()) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseNetAssignmentRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -3673,8 +4048,9 @@ class SVParser {
   }
 
   auto parseParameterDeclarationRule() -> bool {
-    if (!at(TK::ParameterKeyword) && !at(TK::LocalParamKeyword))
+    if (!at(TK::ParameterKeyword) && !at(TK::LocalParamKeyword)) {
       return false;
+    }
     const size_t type_start = afterOrdinaryDirectives(1);
     const auto skip_directives = [&] {
       while (afterOrdinaryDirectives(0) > 0) {
@@ -3705,14 +4081,13 @@ class SVParser {
       skip_directives();
       const bool forward = annexCanStart("forward_type", peek().kind) &&
                            (!at(TK::InterfaceKeyword) ||
-                            at(TK::ClassKeyword,
-                               afterOrdinaryDirectives(1)));
+                            at(TK::ClassKeyword, afterOrdinaryDirectives(1)));
       bool valid = !forward || consumeAnnexRule("forward_type", line_);
       skip_directives();
       if (!valid ||
           !(conditional_members
-                ? parseConditionalAnnexCommaListRule(
-                      "list_of_type_assignments", "type_assignment")
+                ? parseConditionalAnnexCommaListRule("list_of_type_assignments",
+                                                     "type_assignment")
                 : parseTypeAssignmentListRule()) ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A type parameter declaration");
@@ -3736,8 +4111,7 @@ class SVParser {
     const size_t boundary = afterOrdinaryDirectives(*after_identifier);
     const bool explicit_type =
         (at(TK::Identifier, type_start) &&
-         (at(TK::Identifier, boundary) ||
-          at(TK::DoubleColon, boundary) ||
+         (at(TK::Identifier, boundary) || at(TK::DoubleColon, boundary) ||
           at(TK::Hash, boundary))) ||
         (annexCanStart("data_type", peek(type_start).kind) &&
          !at(TK::Identifier, type_start) &&
@@ -3749,8 +4123,7 @@ class SVParser {
                                at(TK::OpenBracket, type_start);
     const bool bare_assignment =
         at(TK::Identifier, type_start) &&
-        (at(TK::Equals, boundary) ||
-         at(TK::Comma, boundary) ||
+        (at(TK::Equals, boundary) || at(TK::Comma, boundary) ||
          at(TK::Semicolon, boundary));
     if (!explicit_type && !implicit_type && !bare_assignment) {
       parseAnnexSemicolonItem(declaration);
@@ -3764,13 +4137,13 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // parameter / localparam
     skip_directives();
-    const std::string_view type_rule =
-        explicit_type ? "data_type_or_implicit"
-                      : implicit_type ? "implicit_data_type" : "";
+    const std::string_view type_rule = explicit_type   ? "data_type_or_implicit"
+                                       : implicit_type ? "implicit_data_type"
+                                                       : "";
     if ((!type_rule.empty() && !consumeAnnexRule(type_rule, line_)) ||
         !(conditional_members
-              ? parseConditionalAnnexCommaListRule(
-                    "list_of_param_assignments", "param_assignment")
+              ? parseConditionalAnnexCommaListRule("list_of_param_assignments",
+                                                   "param_assignment")
               : parseParameterAssignmentListRule(false)) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A parameter declaration");
@@ -3786,28 +4159,31 @@ class SVParser {
   // variable_decl_assignment. Instance-shaped pairs are handled earlier by
   // the instantiation production in contexts where it is permitted.
   auto parseUserDataDeclarationRule() -> bool {
-    if (!at(TK::Identifier) && !at(TK::UnitSystemName)) return false;
+    if (!at(TK::Identifier) && !at(TK::UnitSystemName)) {
+      return false;
+    }
     size_t type_identifier = 0;
     if (at(TK::UnitSystemName)) {
-      if (!at(TK::DoubleColon, 1) || !at(TK::Identifier, 2))
+      if (!at(TK::DoubleColon, 1) || !at(TK::Identifier, 2)) {
         return false;
+      }
       type_identifier = 2;
     }
     const auto variable = afterUserTypePrefix(type_identifier);
     const size_t variable_offset =
         variable ? afterOrdinaryDirectives(*variable) : 0;
     if (!variable || !at(TK::Identifier, variable_offset) ||
-        at(TK::OpenParenthesis, variable_offset + 1))
+        at(TK::OpenParenthesis, variable_offset + 1)) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     const bool conditional_members = hasConditionalListMember(pos_);
     const bool interrupted =
         hasAnnexListInterruption(pos_, conditional_members);
     if (!consumeAnnexRule("data_type_or_implicit", line_) ||
-        !(interrupted
-              ? consumeAnnexRule("list_of_variable_decl_assignments", line_,
-                                 TK::Semicolon)
-              : parseVariableAssignmentListRule(conditional_members)) ||
+        !(interrupted ? consumeAnnexRule("list_of_variable_decl_assignments",
+                                         line_, TK::Semicolon)
+                      : parseVariableAssignmentListRule(conditional_members)) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A user-typed declaration");
       recoverMalformedItem(saved);
@@ -3823,14 +4199,17 @@ class SVParser {
         at(TK::Identifier) ||
         (at(TK::UnitSystemName) &&
          !(at(TK::DoubleColon, 1) && at(TK::Identifier, 2) &&
-           at(TK::Identifier, 3))))
+           at(TK::Identifier, 3)))) {
       return false;
+    }
     if (at(TK::VirtualKeyword) &&
         (at(TK::ClassKeyword, 1) || at(TK::FunctionKeyword, 1) ||
-         at(TK::TaskKeyword, 1)))
+         at(TK::TaskKeyword, 1))) {
       return false;
-    if (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1))
+    }
+    if (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) {
       return false;
+    }
     const bool conditional_members = hasConditionalListMember(pos_);
     if (hasAnnexListInterruption(pos_, conditional_members)) {
       static_cast<void>(parseAnnexItem({"data_declaration"}, true));
@@ -3851,30 +4230,34 @@ class SVParser {
 
   auto parseQualifiedDataDeclarationRule() -> bool {
     if (!at(TK::ConstKeyword) && !at(TK::VarKeyword) &&
-        !at(TK::StaticKeyword) && !at(TK::AutomaticKeyword))
+        !at(TK::StaticKeyword) && !at(TK::AutomaticKeyword)) {
       return false;
+    }
     size_t offset = 0;
-    if (at(TK::ConstKeyword, offset))
+    if (at(TK::ConstKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
-    if (at(TK::VarKeyword, offset))
+    }
+    if (at(TK::VarKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
-    if (at(TK::StaticKeyword, offset) ||
-        at(TK::AutomaticKeyword, offset))
+    }
+    if (at(TK::StaticKeyword, offset) || at(TK::AutomaticKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
+    }
     const TK type_start = peek(offset).kind;
-    const auto after_identifier =
-        type_start == TK::Identifier
-            ? afterBalancedDimensions(offset + 1)
-            : std::optional<size_t>{offset + 1};
-    if (!after_identifier) return false;
+    const auto after_identifier = type_start == TK::Identifier
+                                      ? afterBalancedDimensions(offset + 1)
+                                      : std::optional<size_t>{offset + 1};
+    if (!after_identifier) {
+      return false;
+    }
     const size_t boundary = afterOrdinaryDirectives(*after_identifier);
     const bool implicit_type =
         type_start == TK::Identifier &&
-        (at(TK::Semicolon, boundary) ||
-         at(TK::Equals, boundary) ||
+        (at(TK::Semicolon, boundary) || at(TK::Equals, boundary) ||
          at(TK::Comma, boundary));
-    if (!annexCanStart("data_type_or_implicit", type_start))
+    if (!annexCanStart("data_type_or_implicit", type_start)) {
       return false;
+    }
     const bool conditional_members = hasConditionalListMember(pos_);
     if (hasAnnexListInterruption(pos_, conditional_members)) {
       static_cast<void>(parseAnnexItem({"data_declaration"}, true));
@@ -3900,10 +4283,12 @@ class SVParser {
       valid = consumeAnnexRule("lifetime", line_);
       skip_directives();
     }
-    if (valid && !implicit_type)
+    if (valid && !implicit_type) {
       valid = consumeAnnexRule("data_type_or_implicit", line_);
-    if (valid)
+    }
+    if (valid) {
       valid = parseVariableAssignmentListRule(conditional_members);
+    }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A qualified data declaration");
       recoverMalformedLeaf(saved);
@@ -3926,13 +4311,11 @@ class SVParser {
         const auto& token = tokens_[i];
         if (isConditionalStartDirective(token) ||
             token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
+            (token.kind == TK::Directive && !isCompilerDirective(token))) {
           static_cast<void>(parseAnnexItem({"net_declaration"}, true));
           return true;
         }
-        if (token.kind == TK::Semicolon ||
-            token.kind == TK::EndOfFile) {
+        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
           break;
         }
       }
@@ -3940,8 +4323,9 @@ class SVParser {
       consumeInto(line_);
       skip_directives();
       bool valid = true;
-      if (at(TK::SignedKeyword) || at(TK::UnsignedKeyword))
+      if (at(TK::SignedKeyword) || at(TK::UnsignedKeyword)) {
         valid = consumeAnnexRule("signing", line_);
+      }
       skip_directives();
       while (valid && at(TK::OpenBracket)) {
         valid = consumeAnnexRule("packed_dimension", line_);
@@ -3953,14 +4337,18 @@ class SVParser {
         valid = consumeAnnexRule("delay_value", line_);
         skip_directives();
       }
-      do {
-        if (valid) valid = consumeAnnexRule("net_identifier", line_);
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+        if (valid) {
+          valid = consumeAnnexRule("net_identifier", line_);
+        }
         skip_directives();
         while (valid && at(TK::OpenBracket)) {
           valid = consumeAnnexRule("unpacked_dimension", line_);
           skip_directives();
         }
-        if (!valid || !at(TK::Comma)) break;
+        if (!valid || !at(TK::Comma)) {
+          break;
+        }
         consumeInto(line_);
         skip_directives();
       } while (true);
@@ -3973,21 +4361,20 @@ class SVParser {
       addLine();
       return true;
     }
-    if (!annexCanStart("net_type", peek().kind)) return false;
+    if (!annexCanStart("net_type", peek().kind)) {
+      return false;
+    }
     const bool conditional_members = hasConditionalListMember(pos_);
     bool ambiguous = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if ((isConditionalStartDirective(token) &&
-           !conditional_members) ||
+      if ((isConditionalStartDirective(token) && !conditional_members) ||
           token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         ambiguous = true;
         break;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
       }
     }
@@ -3999,40 +4386,39 @@ class SVParser {
     bool valid = consumeAnnexRule("net_type", line_);
     skip_directives();
     if (valid && at(TK::OpenParenthesis)) {
-      const bool charge = at(TK::SmallKeyword, 1) ||
-                          at(TK::MediumKeyword, 1) ||
+      const bool charge = at(TK::SmallKeyword, 1) || at(TK::MediumKeyword, 1) ||
                           at(TK::LargeKeyword, 1);
-      valid = consumeAnnexRule(charge ? "charge_strength"
-                                     : "drive_strength", line_);
+      valid = consumeAnnexRule(charge ? "charge_strength" : "drive_strength",
+                               line_);
       skip_directives();
     }
-    if (valid && (at(TK::VectoredKeyword) ||
-                  at(TK::ScalaredKeyword))) {
+    if (valid && (at(TK::VectoredKeyword) || at(TK::ScalaredKeyword))) {
       consumeInto(line_);
       skip_directives();
     }
     // A complete user type prefix followed by a second identifier selects
     // the data_type child. Dimensions on the first identifier alone belong
     // to the net_decl_assignment after an implicit type.
-    const auto after_type = at(TK::Identifier)
-                                ? afterUserTypePrefix(0)
-                                : std::nullopt;
+    const auto after_type =
+        at(TK::Identifier) ? afterUserTypePrefix(0) : std::nullopt;
     const bool user_type =
         (after_type &&
          at(TK::Identifier, afterOrdinaryDirectives(*after_type))) ||
         (at(TK::UnitSystemName) && at(TK::DoubleColon, 1));
     if (valid && annexCanStart("data_type_or_implicit", peek().kind) &&
-        (user_type || (!at(TK::Identifier) &&
-                       !at(TK::UnitSystemName))))
+        (user_type || (!at(TK::Identifier) && !at(TK::UnitSystemName)))) {
       valid = consumeAnnexRule(
           "data_type_or_implicit", line_, std::nullopt,
           [&] { return at(TK::Hash) && !at(TK::OpenParenthesis, 1); });
+    }
     skip_directives();
-    if (valid && at(TK::Hash))
+    if (valid && at(TK::Hash)) {
       valid = consumeAnnexRule("delay3", line_);
+    }
     skip_directives();
-    if (valid)
+    if (valid) {
       valid = parseNetAssignmentListRule(conditional_members);
+    }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A net declaration");
       recoverMalformedItem(saved);
@@ -4047,19 +4433,19 @@ class SVParser {
   // exports instead begin with a package identifier or '*'.
   auto parseDpiDeclarationRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
-        !at(TK::StringLiteral, afterOrdinaryDirectives(1)))
+        !at(TK::StringLiteral, afterOrdinaryDirectives(1))) {
       return false;
+    }
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({"dpi_import_export"}, true));
         return true;
       }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
+      }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     const bool import = at(TK::ImportKeyword);
@@ -4076,11 +4462,11 @@ class SVParser {
                  consumeAnnexRule("dpi_spec_string", line_);
     skip_directives();
     const bool pure = at(TK::PureKeyword);
-    if (valid && import &&
-        (at(TK::ContextKeyword) || at(TK::PureKeyword))) {
+    if (valid && import && (at(TK::ContextKeyword) || at(TK::PureKeyword))) {
       valid = consumeAnnexRule(at(TK::ContextKeyword)
                                    ? "dpi_task_import_property"
-                                   : "dpi_function_import_property", line_);
+                                   : "dpi_function_import_property",
+                               line_);
     }
     skip_directives();
     if (valid && at(TK::Identifier) &&
@@ -4089,13 +4475,13 @@ class SVParser {
       // has already combined it into a token, so check that token's lexeme.
       const auto name = peek().rawText();
       const auto letter = [](char ch) {
-        return (ch >= 'a' && ch <= 'z') ||
-               (ch >= 'A' && ch <= 'Z') || ch == '_';
+        return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+               ch == '_';
       };
       valid = !name.empty() && letter(name.front());
-      for (size_t i = 1; valid && i < name.size(); ++i)
-        valid = letter(name[i]) ||
-                (name[i] >= '0' && name[i] <= '9');
+      for (size_t i = 1; valid && i < name.size(); ++i) {
+        valid = letter(name.at(i)) || (name.at(i) >= '0' && name.at(i) <= '9');
+      }
       if (valid) {
         consumeInto(line_);
         skip_directives();
@@ -4104,14 +4490,14 @@ class SVParser {
       }
     }
     if (valid && import) {
-      if (at(TK::FunctionKeyword))
-        valid = consumeAnnexRule("dpi_function_proto", line_,
-                                 TK::Semicolon);
-      else if (at(TK::TaskKeyword))
-        valid = !pure && consumeAnnexRule("dpi_task_proto", line_,
-                                          TK::Semicolon);
-      else
+      if (at(TK::FunctionKeyword)) {
+        valid = consumeAnnexRule("dpi_function_proto", line_, TK::Semicolon);
+      } else if (at(TK::TaskKeyword)) {
+        valid =
+            !pure && consumeAnnexRule("dpi_task_proto", line_, TK::Semicolon);
+      } else {
         valid = false;
+      }
     } else if (valid) {
       if (at(TK::FunctionKeyword)) {
         consumeInto(line_);
@@ -4137,19 +4523,21 @@ class SVParser {
   // Keep a declaration with a comma-separated child list active through
   // conditional branches, including its own trailing semicolon.
   auto parseConditionalAnnexDeclarationListRule(
-      std::string_view declaration,
-      const std::function<bool()>& parse_child) -> bool {
+      std::string_view declaration, const std::function<bool()>& parse_child)
+      -> bool {
     beginGrammar({declaration});
     bool valid = grammarAllows(peek().kind);
-    if (valid) consumeInto(line_);
+    if (valid) {
+      consumeInto(line_);
+    }
     bool ended = false;
     while (valid && !at(TK::EndOfFile) &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
-        valid = parseAnnexConditional(TK::EndOfFile, header_ended,
-                                      indent_level_);
+        valid =
+            parseAnnexConditional(TK::EndOfFile, header_ended, indent_level_);
       } else if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -4162,13 +4550,15 @@ class SVParser {
         break;
       } else if (at(TK::Comma)) {
         valid = grammarAllows(TK::Comma);
-        if (valid) consumeInto(line_);
+        if (valid) {
+          consumeInto(line_);
+        }
       } else {
         valid = grammarAllows(peek().kind) && parse_child();
       }
-      if (grammar_scopes_.back().failed ||
-          grammar_scopes_.back().interrupted)
+      if (grammar_scopes_.back().failed || grammar_scopes_.back().interrupted) {
         valid = false;
+      }
     }
     const AnnexState result = endGrammar(false);
     return valid && ended && !result.failed && !result.interrupted &&
@@ -4179,9 +4569,13 @@ class SVParser {
   //                         package_identifier '::' '*'.
   [[nodiscard]] auto parsePackageImportItemRule() -> bool {
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("package_identifier", line_)) return false;
+    if (!consumeAnnexRule("package_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::DoubleColon)) return false;
+    if (!at(TK::DoubleColon)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     if (at(TK::Star)) {
@@ -4190,40 +4584,49 @@ class SVParser {
     }
     // Annex A's identifier is a lexical nonterminal; slang has already
     // produced its complete Identifier token.
-    if (!at(TK::Identifier)) return false;
+    if (!at(TK::Identifier)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
 
   [[nodiscard]] auto parseHeaderPackageImportRule() -> bool {
-    if (!at(TK::ImportKeyword)) return false;
+    if (!at(TK::ImportKeyword)) {
+      return false;
+    }
     consumeInto(line_);
-    do {
-      if (!parsePackageImportItemRule()) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parsePackageImportItemRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
-    if (!at(TK::Semicolon)) return false;
+    if (!at(TK::Semicolon)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
 
   auto parsePackageImportExportRule() -> bool {
     if ((!at(TK::ImportKeyword) && !at(TK::ExportKeyword)) ||
-        at(TK::StringLiteral, afterOrdinaryDirectives(1)))
+        at(TK::StringLiteral, afterOrdinaryDirectives(1))) {
       return false;
+    }
     const bool import = at(TK::ImportKeyword);
-    const auto rule = import ? "package_import_declaration"
-                             : "package_export_declaration";
+    const auto rule =
+        import ? "package_import_declaration" : "package_export_declaration";
     const bool conditional_members = hasConditionalListMember(pos_);
     if (conditional_members &&
         !hasAnnexListInterruption(pos_, conditional_members)) {
       const LeafCheckpoint saved = leafCheckpoint();
       if (!parseConditionalAnnexDeclarationListRule(
-              rule, [&] {
-                return parsePackageImportItemRule();
-              })) {
+              rule, [&] { return parsePackageImportItemRule(); })) {
         recordGrammarFallback("invalid Annex A conditional package items");
         recoverMalformedLeaf(saved);
       } else {
@@ -4237,8 +4640,9 @@ class SVParser {
         static_cast<void>(parseAnnexItem({rule}, true));
         return true;
       }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
+      }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
@@ -4253,14 +4657,22 @@ class SVParser {
     if (!import && at(TK::Star)) {
       consumeInto(line_);
       skip_directives();
-      if (at(TK::DoubleColon)) consumeInto(line_);
-      else valid = false;
+      if (at(TK::DoubleColon)) {
+        consumeInto(line_);
+      } else {
+        valid = false;
+      }
       skip_directives();
-      if (valid && at(TK::Star)) consumeInto(line_);
-      else valid = false;
+      if (valid && at(TK::Star)) {
+        consumeInto(line_);
+      } else {
+        valid = false;
+      }
     } else {
-      do {
-        if (at(TK::Comma)) consumeInto(line_);
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+        if (at(TK::Comma)) {
+          consumeInto(line_);
+        }
         valid = parsePackageImportItemRule();
         skip_directives();
       } while (valid && at(TK::Comma));
@@ -4284,9 +4696,15 @@ class SVParser {
       addLine();
       return true;
     }
-    if (parseClassConstructorRule()) return true;
-    if (parseQualifiedDataDeclarationRule()) return true;
-    if (parseDpiDeclarationRule()) return true;
+    if (parseClassConstructorRule()) {
+      return true;
+    }
+    if (parseQualifiedDataDeclarationRule()) {
+      return true;
+    }
+    if (parseDpiDeclarationRule()) {
+      return true;
+    }
     if (at(TK::ImportKeyword) || at(TK::ExportKeyword)) {
       return parsePackageImportExportRule();
     }
@@ -4314,7 +4732,9 @@ class SVParser {
         parseNamedBlock(TK::EndClassKeyword);
         return true;
       case TK::InterfaceKeyword:
-        if (!at(TK::ClassKeyword, 1)) return false;
+        if (!at(TK::ClassKeyword, 1)) {
+          return false;
+        }
         parseNamedBlock(TK::EndClassKeyword);
         return true;
       case TK::CoverGroupKeyword:
@@ -4337,22 +4757,20 @@ class SVParser {
   // a declaration has clocking_event, while the selection ends at ';'.
   auto parseDefaultClockingOrDisableRule(bool checker) -> bool {
     if (!at(TK::DefaultKeyword) ||
-        (!at(TK::ClockingKeyword, 1) && !at(TK::DisableKeyword, 1)))
+        (!at(TK::ClockingKeyword, 1) && !at(TK::DisableKeyword, 1))) {
       return false;
+    }
     const std::string_view declaration =
         checker ? "checker_or_generate_item_declaration"
                 : "module_or_generate_item_declaration";
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({declaration}, true));
         return true;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
       }
     }
@@ -4394,45 +4812,45 @@ class SVParser {
       skip_directives();
     }
     const bool declaration_header = at(TK::At);
-    if (declaration_header &&
-        !consumeAnnexRule("clocking_event", line_)) {
+    if (declaration_header && !consumeAnnexRule("clocking_event", line_)) {
       recordGrammarFallback("invalid Annex A default clocking event");
       recoverMalformedItem(saved);
       return true;
     }
-    if (!at(TK::Semicolon) ||
-        (!declaration_header && !has_identifier)) {
+    if (!at(TK::Semicolon) || (!declaration_header && !has_identifier)) {
       recordGrammarFallback("invalid Annex A default clocking header");
       recoverMalformedItem(saved);
       return true;
     }
     consumeInto(line_);
     addLine();
-    if (declaration_header)
+    if (declaration_header) {
       parseDelimitedBody(TK::EndClockingKeyword, "clocking_item");
+    }
     return true;
   }
 
   auto parseClockingDeclarationRule() -> bool {
     if (!at(TK::ClockingKeyword) &&
-        !(at(TK::GlobalKeyword) && at(TK::ClockingKeyword, 1)))
+        !(at(TK::GlobalKeyword) && at(TK::ClockingKeyword, 1))) {
       return false;
+    }
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage) {
-        parseAnnexDelimitedBlock(TK::EndClockingKeyword,
-                                 "clocking_declaration", "clocking_item");
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage) {
+        parseAnnexDelimitedBlock(TK::EndClockingKeyword, "clocking_declaration",
+                                 "clocking_item");
         return true;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
       }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     const bool global = at(TK::GlobalKeyword);
-    if (global) consumeInto(line_);
+    if (global) {
+      consumeInto(line_);
+    }
     consumeInto(line_);  // clocking
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek())) {
@@ -4449,8 +4867,7 @@ class SVParser {
       }
       skip_directives();
     }
-    if (!consumeAnnexRule("clocking_event", line_) ||
-        !at(TK::Semicolon)) {
+    if (!consumeAnnexRule("clocking_event", line_) || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A clocking header");
       recoverMalformedItem(saved);
       return true;
@@ -4460,12 +4877,16 @@ class SVParser {
     if (global) {
       pushOpenFrame(TK::EndClockingKeyword);
       ++indent_level_;
-      while (isCompilerDirective(peek())) parseDirectiveLine();
+      while (isCompilerDirective(peek())) {
+        parseDirectiveLine();
+      }
       if (!at(TK::EndClockingKeyword)) {
         recordGrammarFallback("global clocking has no clocking_item body");
         emitOpaque(pos_, findOuterBoundary(pos_));
       }
-      if (at(TK::EndClockingKeyword)) parseOpenFrameClose();
+      if (at(TK::EndClockingKeyword)) {
+        parseOpenFrameClose();
+      }
     } else {
       parseDelimitedBody(TK::EndClockingKeyword, "clocking_item");
     }
@@ -4478,40 +4899,53 @@ class SVParser {
   [[nodiscard]] auto parseCheckerPortItemRule() -> bool {
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::InputKeyword) || at(TK::OutputKeyword)) {
-      if (!consumeAnnexRule("checker_port_direction", line_)) return false;
+      if (!consumeAnnexRule("checker_port_direction", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
-    const bool implicit_type = implicitIdentifierBefore(
-        {TK::Comma, TK::CloseParenthesis, TK::Equals});
-    if (!implicit_type &&
-        !consumeAnnexRule("property_formal_type", line_))
+    const bool implicit_type =
+        implicitIdentifierBefore({TK::Comma, TK::CloseParenthesis, TK::Equals});
+    if (!implicit_type && !consumeAnnexRule("property_formal_type", line_)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("formal_port_identifier", line_)) return false;
+    if (!consumeAnnexRule("formal_port_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+      if (!consumeAnnexRule("variable_dimension", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("property_actual_arg", line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+                            [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     return true;
   }
 
   [[nodiscard]] auto parseCheckerPortListRule() -> bool {
-    do {
-      if (!parseCheckerPortItemRule()) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseCheckerPortItemRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -4523,7 +4957,9 @@ class SVParser {
   [[nodiscard]] auto parseAssertionPortItemRule(bool property) -> bool {
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::LocalKeyword)) {
@@ -4533,40 +4969,51 @@ class SVParser {
           (!property && (at(TK::InOutKeyword) || at(TK::OutputKeyword)))) {
         if (!consumeAnnexRule(property ? "property_lvar_port_direction"
                                        : "sequence_lvar_port_direction",
-                              line_))
+                              line_)) {
           return false;
+        }
         parseGrammarChildDirectiveLines();
       }
     }
-    const bool implicit_type = implicitIdentifierBefore(
-        {TK::Comma, TK::CloseParenthesis, TK::Equals});
-    if (!implicit_type &&
-        !consumeAnnexRule(property ? "property_formal_type"
-                                   : "sequence_formal_type", line_))
+    const bool implicit_type =
+        implicitIdentifierBefore({TK::Comma, TK::CloseParenthesis, TK::Equals});
+    if (!implicit_type && !consumeAnnexRule(property ? "property_formal_type"
+                                                     : "sequence_formal_type",
+                                            line_)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("formal_port_identifier", line_)) return false;
+    if (!consumeAnnexRule("formal_port_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+      if (!consumeAnnexRule("variable_dimension", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexRule(property ? "property_actual_arg"
-                                     : "sequence_actual_arg", line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+      if (!consumeAnnexRule(
+              property ? "property_actual_arg" : "sequence_actual_arg", line_,
+              TK::Comma, [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     return true;
   }
 
   [[nodiscard]] auto parseAssertionPortListRule(bool property) -> bool {
-    do {
-      if (!parseAssertionPortItemRule(property)) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseAssertionPortItemRule(property)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -4580,10 +5027,14 @@ class SVParser {
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
       }
-      if (!at(TK::RefKeyword)) return false;
+      if (!at(TK::RefKeyword)) {
+        return false;
+      }
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (at(TK::StaticKeyword)) consumeInto(line_);
+      if (at(TK::StaticKeyword)) {
+        consumeInto(line_);
+      }
       return true;
     }
     return consumeAnnexRule("port_direction", line_);
@@ -4595,47 +5046,60 @@ class SVParser {
   [[nodiscard]] auto parseTfPortItemRule() -> bool {
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
-    if (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
-        at(TK::InOutKeyword) || at(TK::RefKeyword) ||
-        at(TK::ConstKeyword)) {
-      if (!parseTfPortDirectionRule()) return false;
+    if (at(TK::InputKeyword) || at(TK::OutputKeyword) || at(TK::InOutKeyword) ||
+        at(TK::RefKeyword) || at(TK::ConstKeyword)) {
+      if (!parseTfPortDirectionRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::VarKeyword)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
     }
-    const bool implicit_type = implicitIdentifierBefore(
-        {TK::Comma, TK::CloseParenthesis, TK::Equals});
-    if (!implicit_type &&
-        !consumeAnnexRule("data_type_or_implicit", line_)) return false;
+    const bool implicit_type =
+        implicitIdentifierBefore({TK::Comma, TK::CloseParenthesis, TK::Equals});
+    if (!implicit_type && !consumeAnnexRule("data_type_or_implicit", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     if (at(TK::Identifier)) {
-      if (!consumeAnnexRule("port_identifier", line_)) return false;
+      if (!consumeAnnexRule("port_identifier", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
       while (at(TK::OpenBracket)) {
-        if (!consumeAnnexRule("variable_dimension", line_)) return false;
+        if (!consumeAnnexRule("variable_dimension", line_)) {
+          return false;
+        }
         parseGrammarChildDirectiveLines();
       }
       if (at(TK::Equals)) {
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
         if (!consumeAnnexRule("expression", line_, TK::Comma,
-                              [&] { return at(TK::CloseParenthesis); }))
+                              [&] { return at(TK::CloseParenthesis); })) {
           return false;
+        }
       }
     }
     return true;
   }
 
   [[nodiscard]] auto parseTfPortListRule() -> bool {
-    do {
-      if (!parseTfPortItemRule()) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseTfPortItemRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -4643,12 +5107,17 @@ class SVParser {
 
   // class_constructor_arg ::= tf_port_item | default.
   [[nodiscard]] auto parseClassConstructorArgListRule() -> bool {
-    do {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       parseGrammarChildDirectiveLines();
-      if (at(TK::DefaultKeyword)) consumeInto(line_);
-      else if (!parseTfPortItemRule()) return false;
+      if (at(TK::DefaultKeyword)) {
+        consumeInto(line_);
+      } else if (!parseTfPortItemRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -4661,12 +5130,10 @@ class SVParser {
     const size_t identifier = afterOrdinaryDirectives(1);
     const size_t ports = afterOrdinaryDirectives(identifier + 1);
     const bool conditional_ports =
-        at(TK::Identifier, identifier) &&
-        at(TK::OpenParenthesis, ports) &&
+        at(TK::Identifier, identifier) && at(TK::OpenParenthesis, ports) &&
         hasConditionalListMember(pos_ + ports + 1, TK::CloseParenthesis);
     if (hasAnnexHeaderInterruption(pos_, conditional_ports)) {
-      parseAnnexDelimitedBlock(TK::EndCheckerKeyword,
-                               "checker_declaration",
+      parseAnnexDelimitedBlock(TK::EndCheckerKeyword, "checker_declaration",
                                "checker_or_generate_item");
       return;
     }
@@ -4688,12 +5155,13 @@ class SVParser {
     if (at(TK::OpenParenthesis)) {
       consumeInto(line_);
       bool valid = true;
-      if (!at(TK::CloseParenthesis))
+      if (!at(TK::CloseParenthesis)) {
         valid = conditional_ports
-                    ? parseConditionalAnnexCommaListRule(
-                          "checker_port_list", "checker_port_item",
-                          TK::CloseParenthesis)
+                    ? parseConditionalAnnexCommaListRule("checker_port_list",
+                                                         "checker_port_item",
+                                                         TK::CloseParenthesis)
                     : parseCheckerPortListRule();
+      }
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A checker port list");
         recoverMalformedItem(saved);
@@ -4712,33 +5180,47 @@ class SVParser {
     parseDelimitedBody(TK::EndCheckerKeyword, "checker_or_generate_item");
   }
 
-  // coverage_event ::= clocking_event | with function sample '(' [ tf_port_list ]
+  // coverage_event ::= clocking_event | with function sample '(' [ tf_port_list
+  // ]
   // ')' | '@@' '(' block_event_expression ')'.
   [[nodiscard]] auto parseCoverageEventRule() -> bool {
     parseGrammarChildDirectiveLines();
-    if (at(TK::At)) return consumeAnnexRule("clocking_event", line_);
+    if (at(TK::At)) {
+      return consumeAnnexRule("clocking_event", line_);
+    }
     if (at(TK::DoubleAt)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      return consumeAnnexDelimited(TK::OpenParenthesis,
-                                   TK::CloseParenthesis,
+      return consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                                    "block_event_expression", line_);
     }
-    if (!at(TK::WithKeyword)) return false;
+    if (!at(TK::WithKeyword)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    if (!at(TK::FunctionKeyword)) return false;
+    if (!at(TK::FunctionKeyword)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    if (peek().rawText() != "sample") return false;
+    if (peek().rawText() != "sample") {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    if (!at(TK::CloseParenthesis) && !parseTfPortListRule()) return false;
+    if (!at(TK::CloseParenthesis) && !parseTfPortListRule()) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -4746,16 +5228,15 @@ class SVParser {
   auto parseCovergroupBlockRule() -> void {
     const size_t header_start = afterOrdinaryDirectives(1);
     const bool extends = at(TK::ExtendsKeyword, header_start);
-    const size_t identifier = afterOrdinaryDirectives(
-        header_start + (extends ? 1 : 0));
+    const size_t identifier =
+        afterOrdinaryDirectives(header_start + (extends ? 1 : 0));
     const size_t ports = afterOrdinaryDirectives(identifier + 1);
     const bool conditional_ports =
         !extends && at(TK::Identifier, identifier) &&
         at(TK::OpenParenthesis, ports) &&
         hasConditionalListMember(pos_ + ports + 1, TK::CloseParenthesis);
     if (hasAnnexHeaderInterruption(pos_, conditional_ports)) {
-      parseAnnexDelimitedBlock(TK::EndGroupKeyword,
-                               "covergroup_declaration",
+      parseAnnexDelimitedBlock(TK::EndGroupKeyword, "covergroup_declaration",
                                "coverage_spec_or_option");
       return;
     }
@@ -4781,12 +5262,12 @@ class SVParser {
     if (!extends && at(TK::OpenParenthesis)) {
       consumeInto(line_);
       bool valid = true;
-      if (!at(TK::CloseParenthesis))
+      if (!at(TK::CloseParenthesis)) {
         valid = conditional_ports
                     ? parseConditionalAnnexCommaListRule(
-                          "tf_port_list", "tf_port_item",
-                          TK::CloseParenthesis)
+                          "tf_port_list", "tf_port_item", TK::CloseParenthesis)
                     : parseTfPortListRule();
+      }
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A covergroup port list");
         recoverMalformedItem(saved);
@@ -4795,8 +5276,7 @@ class SVParser {
       consumeInto(line_);
       skip_directives();
     }
-    if (!extends && (at(TK::At) || at(TK::DoubleAt) ||
-                     at(TK::WithKeyword))) {
+    if (!extends && (at(TK::At) || at(TK::DoubleAt) || at(TK::WithKeyword))) {
       if (!parseCoverageEventRule()) {
         recordGrammarFallback("invalid Annex A coverage event");
         recoverMalformedItem(saved);
@@ -4818,35 +5298,40 @@ class SVParser {
   // A local Annex A prefix distinguishes 'function new' and
   // 'function class_scope new' from function_declaration.
   auto parseClassConstructorRule() -> bool {
-    if (!at(TK::FunctionKeyword)) return false;
+    if (!at(TK::FunctionKeyword)) {
+      return false;
+    }
     bool constructor_name = at(TK::NewKeyword, afterOrdinaryDirectives(1));
     if (!constructor_name) {
-      const auto scope_end =
-          afterUserTypePrefix(afterOrdinaryDirectives(1));
+      const auto scope_end = afterUserTypePrefix(afterOrdinaryDirectives(1));
       if (scope_end) {
         const size_t separator = afterOrdinaryDirectives(*scope_end);
         constructor_name =
             at(TK::DoubleColon, separator) &&
-            at(TK::NewKeyword,
-               afterOrdinaryDirectives(separator + 1));
+            at(TK::NewKeyword, afterOrdinaryDirectives(separator + 1));
       }
     }
     if (!constructor_name) {
       AnnexState candidate({"class_constructor_declaration"});
       for (size_t offset = 0; pos_ + offset < tokens_.size(); ++offset) {
         const TK kind = peek(offset).kind;
-        if (isCompilerDirective(peek(offset)) ||
-            !candidate.accepts(kind)) break;
+        if (isCompilerDirective(peek(offset)) || !candidate.accepts(kind)) {
+          break;
+        }
         candidate.advance(peek(offset));
         if (kind == TK::NewKeyword &&
             candidate.hasViableRule("class_constructor_declaration")) {
           constructor_name = true;
           break;
         }
-        if (kind == TK::Semicolon) break;
+        if (kind == TK::Semicolon) {
+          break;
+        }
       }
     }
-    if (!constructor_name) return false;
+    if (!constructor_name) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // function
     const auto skip_directives = [&] {
@@ -4861,28 +5346,34 @@ class SVParser {
       valid = consumeAnnexRule("class_scope", line_, TK::NewKeyword);
       skip_directives();
     }
-    if (valid && at(TK::NewKeyword)) consumeInto(line_);
-    else valid = false;
+    if (valid && at(TK::NewKeyword)) {
+      consumeInto(line_);
+    } else {
+      valid = false;
+    }
     skip_directives();
     if (valid && at(TK::OpenParenthesis)) {
       consumeInto(line_);
       skip_directives();
       if (!at(TK::CloseParenthesis)) {
-        const bool conditional_members = hasConditionalListMember(
-            pos_, TK::CloseParenthesis);
+        const bool conditional_members =
+            hasConditionalListMember(pos_, TK::CloseParenthesis);
         valid = hasAnnexListInterruption(pos_, conditional_members,
                                          TK::CloseParenthesis)
                     ? consumeAnnexRule("class_constructor_arg_list", line_,
                                        TK::CloseParenthesis)
-                    : conditional_members
-                        ? parseConditionalAnnexCommaListRule(
-                              "class_constructor_arg_list",
-                              "class_constructor_arg", TK::CloseParenthesis)
-                        : parseClassConstructorArgListRule();
+                : conditional_members
+                    ? parseConditionalAnnexCommaListRule(
+                          "class_constructor_arg_list", "class_constructor_arg",
+                          TK::CloseParenthesis)
+                    : parseClassConstructorArgListRule();
       }
       skip_directives();
-      if (valid && at(TK::CloseParenthesis)) consumeInto(line_);
-      else valid = false;
+      if (valid && at(TK::CloseParenthesis)) {
+        consumeInto(line_);
+      } else {
+        valid = false;
+      }
     }
     skip_directives();
     if (valid && at(TK::Semicolon)) {
@@ -4914,15 +5405,17 @@ class SVParser {
     if (hasAnnexHeaderInterruption(pos_, false)) {
       const std::string_view rule = annexConstructorSuperRule();
       if (rule.empty()) {
-        recordGrammarFallback("constructor super production absent from Annex A");
+        recordGrammarFallback(
+            "constructor super production absent from Annex A");
         recoverMalformedItem(saved);
         return;
       }
       beginGrammar({rule});
       parseGrammarLeaf(true, saved, true);
       const AnnexState call = endGrammar();
-      if (!call.failed && !call.interrupted && call.complete())
+      if (!call.failed && !call.interrupted && call.complete()) {
         block_stack_.back().statement_phase = true;
+      }
       return;
     }
     const auto skip_directives = [&] {
@@ -4934,10 +5427,14 @@ class SVParser {
     consumeInto(line_);  // super
     skip_directives();
     bool valid = at(TK::Dot);
-    if (valid) consumeInto(line_);
+    if (valid) {
+      consumeInto(line_);
+    }
     skip_directives();
     valid = valid && at(TK::NewKeyword);
-    if (valid) consumeInto(line_);
+    if (valid) {
+      consumeInto(line_);
+    }
     skip_directives();
     if (valid && at(TK::OpenParenthesis)) {
       consumeInto(line_);
@@ -4945,12 +5442,14 @@ class SVParser {
       if (at(TK::DefaultKeyword)) {
         consumeInto(line_);
       } else if (!at(TK::CloseParenthesis)) {
-        valid = consumeAnnexRule("list_of_arguments", line_,
-                                 TK::CloseParenthesis);
+        valid =
+            consumeAnnexRule("list_of_arguments", line_, TK::CloseParenthesis);
       }
       skip_directives();
       valid = valid && at(TK::CloseParenthesis);
-      if (valid) consumeInto(line_);
+      if (valid) {
+        consumeInto(line_);
+      }
     }
     skip_directives();
     if (!valid || !at(TK::Semicolon)) {
@@ -4969,23 +5468,21 @@ class SVParser {
   // also begins data_declaration and stays with that alternative's parser.
   auto parseQualifiedConstClassPropertyRule() -> bool {
     const size_t qualifier_start = afterOrdinaryDirectives(1);
-    if (!at(TK::ConstKeyword) ||
-        (!at(TK::StaticKeyword, qualifier_start) &&
-         !at(TK::ProtectedKeyword, qualifier_start) &&
-         !at(TK::LocalKeyword, qualifier_start)))
+    if (!at(TK::ConstKeyword) || (!at(TK::StaticKeyword, qualifier_start) &&
+                                  !at(TK::ProtectedKeyword, qualifier_start) &&
+                                  !at(TK::LocalKeyword, qualifier_start))) {
       return false;
+    }
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({"class_property"}, true));
         return true;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile)
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
+      }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     const auto skip_directives = [&] {
@@ -4997,19 +5494,21 @@ class SVParser {
     consumeInto(line_);  // const
     skip_directives();
     bool valid = true;
-    while (valid && (at(TK::StaticKeyword) ||
-                     at(TK::ProtectedKeyword) ||
+    while (valid && (at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
                      at(TK::LocalKeyword))) {
       valid = consumeAnnexRule("class_item_qualifier", line_);
       skip_directives();
     }
-    if (valid) valid = consumeAnnexRule("data_type", line_);
-    if (valid) valid = consumeAnnexRule("const_identifier", line_);
+    if (valid) {
+      valid = consumeAnnexRule("data_type", line_);
+    }
+    if (valid) {
+      valid = consumeAnnexRule("const_identifier", line_);
+    }
     skip_directives();
     if (valid && at(TK::Equals)) {
       consumeInto(line_);
-      valid = consumeAnnexRule("constant_expression", line_,
-                               TK::Semicolon);
+      valid = consumeAnnexRule("constant_expression", line_, TK::Semicolon);
     }
     skip_directives();
     if (!valid || !at(TK::Semicolon)) {
@@ -5025,38 +5524,43 @@ class SVParser {
   auto parseExplicitClassPropertyRule() -> bool {
     size_t offset = 0;
     while (at(TK::RandKeyword, offset) || at(TK::RandCKeyword, offset) ||
-           at(TK::StaticKeyword, offset) ||
-           at(TK::ProtectedKeyword, offset) ||
-           at(TK::LocalKeyword, offset))
+           at(TK::StaticKeyword, offset) || at(TK::ProtectedKeyword, offset) ||
+           at(TK::LocalKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
-    if (at(TK::ConstKeyword, offset))
+    }
+    if (at(TK::ConstKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
-    if (at(TK::VarKeyword, offset))
+    }
+    if (at(TK::VarKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
-    if (at(TK::StaticKeyword, offset) ||
-        at(TK::AutomaticKeyword, offset))
+    }
+    if (at(TK::StaticKeyword, offset) || at(TK::AutomaticKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
+    }
     const TK type_start = peek(offset).kind;
     if (type_start == TK::VirtualKeyword &&
         (at(TK::FunctionKeyword, offset + 1) ||
-         at(TK::TaskKeyword, offset + 1)))
+         at(TK::TaskKeyword, offset + 1))) {
       return false;
-    const auto after_identifier =
-        type_start == TK::Identifier
-            ? afterBalancedDimensions(offset + 1)
-            : std::optional<size_t>{offset + 1};
-    if (!after_identifier) return false;
+    }
+    const auto after_identifier = type_start == TK::Identifier
+                                      ? afterBalancedDimensions(offset + 1)
+                                      : std::optional<size_t>{offset + 1};
+    if (!after_identifier) {
+      return false;
+    }
     const size_t boundary = afterOrdinaryDirectives(*after_identifier);
     const bool implicit_type =
         type_start == TK::Identifier &&
-        (at(TK::Semicolon, boundary) ||
-         at(TK::Equals, boundary) ||
+        (at(TK::Semicolon, boundary) || at(TK::Equals, boundary) ||
          at(TK::Comma, boundary));
     if (offset == 0 && type_start != TK::Identifier &&
-        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
+        type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword) {
       return false;
-    if (!annexCanStart("data_type_or_implicit", type_start))
+    }
+    if (!annexCanStart("data_type_or_implicit", type_start)) {
       return false;
+    }
     const bool conditional_members = hasConditionalListMember(pos_);
     if (hasAnnexListInterruption(pos_, conditional_members)) {
       static_cast<void>(parseAnnexItem({"class_property"}, true));
@@ -5094,8 +5598,7 @@ class SVParser {
       return true;
     }
     skip_directives();
-    if ((!implicit_type &&
-         !consumeAnnexRule("data_type_or_implicit", line_)) ||
+    if ((!implicit_type && !consumeAnnexRule("data_type_or_implicit", line_)) ||
         !parseVariableAssignmentListRule(conditional_members) ||
         !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A class property declaration");
@@ -5108,21 +5611,23 @@ class SVParser {
   }
 
   auto parseClassMethodPrototypeRule() -> bool {
-    if (!at(TK::PureKeyword) && !at(TK::ExternKeyword)) return false;
-    if (at(TK::ConstraintKeyword, afterOrdinaryDirectives(1)))
+    if (!at(TK::PureKeyword) && !at(TK::ExternKeyword)) {
       return false;
+    }
+    if (at(TK::ConstraintKeyword, afterOrdinaryDirectives(1))) {
+      return false;
+    }
     const bool pure = at(TK::PureKeyword);
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({"class_method"}, true));
         return true;
       }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
+      }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // pure / extern
@@ -5135,20 +5640,20 @@ class SVParser {
     skip_directives();
     bool valid = true;
     if (pure) {
-      if (!at(TK::VirtualKeyword)) valid = false;
-      else consumeInto(line_);
+      if (!at(TK::VirtualKeyword)) {
+        valid = false;
+      } else {
+        consumeInto(line_);
+      }
       skip_directives();
-      while (valid && (at(TK::StaticKeyword) ||
-                       at(TK::ProtectedKeyword) ||
+      while (valid && (at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
                        at(TK::LocalKeyword))) {
         valid = consumeAnnexRule("class_item_qualifier", line_);
         skip_directives();
       }
     } else {
-      while (valid && (at(TK::VirtualKeyword) ||
-                       at(TK::StaticKeyword) ||
-                       at(TK::ProtectedKeyword) ||
-                       at(TK::LocalKeyword) ||
+      while (valid && (at(TK::VirtualKeyword) || at(TK::StaticKeyword) ||
+                       at(TK::ProtectedKeyword) || at(TK::LocalKeyword) ||
                        at(TK::PureKeyword))) {
         valid = consumeAnnexRule("method_qualifier", line_);
         skip_directives();
@@ -5183,25 +5688,21 @@ class SVParser {
   auto parseQualifiedClassMethodRule() -> bool {
     size_t offset = 0;
     while (true) {
-      if (at(TK::StaticKeyword, offset) ||
-          at(TK::ProtectedKeyword, offset) ||
-          at(TK::LocalKeyword, offset) ||
-          at(TK::VirtualKeyword, offset)) {
+      if (at(TK::StaticKeyword, offset) || at(TK::ProtectedKeyword, offset) ||
+          at(TK::LocalKeyword, offset) || at(TK::VirtualKeyword, offset)) {
         offset = afterOrdinaryDirectives(offset + 1);
       } else if (at(TK::PureKeyword, offset) &&
-                 at(TK::VirtualKeyword,
-                    afterOrdinaryDirectives(offset + 1))) {
-        const size_t virtual_offset =
-            afterOrdinaryDirectives(offset + 1);
+                 at(TK::VirtualKeyword, afterOrdinaryDirectives(offset + 1))) {
+        const size_t virtual_offset = afterOrdinaryDirectives(offset + 1);
         offset = afterOrdinaryDirectives(virtual_offset + 1);
       } else {
         break;
       }
     }
     if (offset == 0 ||
-        (!at(TK::FunctionKeyword, offset) &&
-         !at(TK::TaskKeyword, offset)))
+        (!at(TK::FunctionKeyword, offset) && !at(TK::TaskKeyword, offset))) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     while (at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
            at(TK::LocalKeyword) || at(TK::VirtualKeyword) ||
@@ -5216,11 +5717,11 @@ class SVParser {
         parseDirectiveLine();
       }
     }
-    const TK close = at(TK::FunctionKeyword)
-                         ? TK::EndFunctionKeyword : TK::EndTaskKeyword;
-    if (close != TK::EndFunctionKeyword ||
-        !parseClassConstructorRule())
+    const TK close =
+        at(TK::FunctionKeyword) ? TK::EndFunctionKeyword : TK::EndTaskKeyword;
+    if (close != TK::EndFunctionKeyword || !parseClassConstructorRule()) {
       parseNamedBlock(close);
+    }
     return true;
   }
 
@@ -5228,13 +5729,19 @@ class SVParser {
   // type_declaration | package_import_declaration | nettype_declaration.
   // These children emit their own completed line after class qualifiers.
   auto parseClassPropertyDataChildRule() -> bool {
-    if (at(TK::TypedefKeyword)) return parseTypeDeclarationRule();
-    if (at(TK::NetTypeKeyword)) return parseNettypeDeclarationRule();
-    if (at(TK::ImportKeyword)) return parsePackageImportExportRule();
+    if (at(TK::TypedefKeyword)) {
+      return parseTypeDeclarationRule();
+    }
+    if (at(TK::NetTypeKeyword)) {
+      return parseNettypeDeclarationRule();
+    }
+    if (at(TK::ImportKeyword)) {
+      return parsePackageImportExportRule();
+    }
     if (parseQualifiedDataDeclarationRule() ||
-        parseExplicitDataDeclarationRule() ||
-        parseUserDataDeclarationRule())
+        parseExplicitDataDeclarationRule() || parseUserDataDeclarationRule()) {
       return true;
+    }
     return false;
   }
 
@@ -5243,17 +5750,16 @@ class SVParser {
   // rule directly instead of recognizing the entire class_property as a leaf.
   auto parseQualifiedClassDataDeclarationRule() -> bool {
     size_t offset = 0;
-    while (at(TK::RandKeyword, offset) ||
-           at(TK::RandCKeyword, offset) ||
-           at(TK::StaticKeyword, offset) ||
-           at(TK::ProtectedKeyword, offset) ||
-           at(TK::LocalKeyword, offset))
+    while (at(TK::RandKeyword, offset) || at(TK::RandCKeyword, offset) ||
+           at(TK::StaticKeyword, offset) || at(TK::ProtectedKeyword, offset) ||
+           at(TK::LocalKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
+    }
     if (offset == 0 ||
-        (!at(TK::TypedefKeyword, offset) &&
-         !at(TK::NetTypeKeyword, offset) &&
-         !at(TK::ImportKeyword, offset)))
+        (!at(TK::TypedefKeyword, offset) && !at(TK::NetTypeKeyword, offset) &&
+         !at(TK::ImportKeyword, offset))) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     while (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
            at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
@@ -5265,8 +5771,9 @@ class SVParser {
       }
       parseGrammarChildDirectiveLines();
     }
-    if (parseClassPropertyDataChildRule())
+    if (parseClassPropertyDataChildRule()) {
       return true;
+    }
     recordGrammarFallback("invalid Annex A qualified class declaration");
     recoverMalformedItem(saved);
     return true;
@@ -5278,8 +5785,9 @@ class SVParser {
   auto parseQualifiedClassPropertyRule() -> bool {
     if (!at(TK::RandKeyword) && !at(TK::RandCKeyword) &&
         !at(TK::StaticKeyword) && !at(TK::ProtectedKeyword) &&
-        !at(TK::LocalKeyword))
+        !at(TK::LocalKeyword)) {
       return false;
+    }
     const bool conditional_members = hasConditionalListMember(pos_);
     if (hasAnnexListInterruption(pos_, conditional_members)) {
       static_cast<void>(parseAnnexItem({"class_property"}, true));
@@ -5287,13 +5795,15 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
-    do {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       valid = consumeAnnexRule("property_qualifier", line_);
       parseGrammarChildDirectiveLines();
     } while (valid && (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
-                       at(TK::StaticKeyword) ||
-                       at(TK::ProtectedKeyword) || at(TK::LocalKeyword)));
-    if (valid && parseClassPropertyDataChildRule()) return true;
+                       at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
+                       at(TK::LocalKeyword)));
+    if (valid && parseClassPropertyDataChildRule()) {
+      return true;
+    }
     recordGrammarFallback(valid ? "unmatched Annex A class data declaration"
                                 : "invalid Annex A class property qualifier");
     recoverMalformedLeaf(saved);
@@ -5306,20 +5816,23 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
       // class_item places attributes on exactly these six alternatives.
       if (valid &&
-          annexCanStartAny({"class_property", "class_method",
-                            "class_constraint", "class_declaration",
-                            "interface_class_declaration",
-                            "covergroup_declaration"},
-                           peek().kind) &&
-          parseClassItemRule())
+          annexCanStartAny(
+              {"class_property", "class_method", "class_constraint",
+               "class_declaration", "interface_class_declaration",
+               "covergroup_declaration"},
+              peek().kind) &&
+          parseClassItemRule()) {
         return true;
+      }
       recordGrammarFallback("invalid Annex A attributed class item");
       recoverMalformedItem(saved);
       return true;
@@ -5329,16 +5842,28 @@ class SVParser {
       addLine();
       return true;
     }
-    if (parseParameterDeclarationRule()) return true;
-    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseExplicitDataDeclarationRule() ||
-        parseUserDataDeclarationRule())
+    if (parseParameterDeclarationRule()) {
       return true;
-    if (parseQualifiedConstClassPropertyRule()) return true;
-    if (parseExplicitClassPropertyRule()) return true;
-    if (parseClassMethodPrototypeRule()) return true;
-    if (parseQualifiedClassMethodRule()) return true;
-    if (parseQualifiedClassDataDeclarationRule()) return true;
+    }
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parseExplicitDataDeclarationRule() || parseUserDataDeclarationRule()) {
+      return true;
+    }
+    if (parseQualifiedConstClassPropertyRule()) {
+      return true;
+    }
+    if (parseExplicitClassPropertyRule()) {
+      return true;
+    }
+    if (parseClassMethodPrototypeRule()) {
+      return true;
+    }
+    if (parseQualifiedClassMethodRule()) {
+      return true;
+    }
+    if (parseQualifiedClassDataDeclarationRule()) {
+      return true;
+    }
     if (at(TK::ConstraintKeyword) ||
         (at(TK::StaticKeyword) &&
          at(TK::ConstraintKeyword, afterOrdinaryDirectives(1)))) {
@@ -5348,9 +5873,10 @@ class SVParser {
     if (at(TK::VirtualKeyword) && at(TK::ClassKeyword, 1)) {
       return parsePackageOrGenerateDeclarationRule();
     }
-    if (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
-        at(TK::ConstKeyword)) {
-      if (parseQualifiedClassPropertyRule()) return true;
+    if (at(TK::RandKeyword) || at(TK::RandCKeyword) || at(TK::ConstKeyword)) {
+      if (parseQualifiedClassPropertyRule()) {
+        return true;
+      }
       static_cast<void>(parseAnnexItem({"class_property"}, true));
       return true;
     }
@@ -5375,7 +5901,9 @@ class SVParser {
   // checker_or_generate_item_declaration excludes task and class
   // declarations, unlike package_or_generate_item_declaration.
   auto parseCheckerDeclarationRule() -> bool {
-    if (parseQualifiedDataDeclarationRule()) return true;
+    if (parseQualifiedDataDeclarationRule()) {
+      return true;
+    }
     switch (peek().kind) {
       case TK::FunctionKeyword:
         // checker_or_generate_item_declaration contains function_declaration,
@@ -5401,19 +5929,30 @@ class SVParser {
   [[nodiscard]] auto parseModportSimplePortRule() -> bool {
     parseGrammarChildDirectiveLines();
     const bool named = at(TK::Dot);
-    if (named) consumeInto(line_);
+    if (named) {
+      consumeInto(line_);
+    }
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("port_identifier", line_)) return false;
-    if (!named) return true;
+    if (!consumeAnnexRule("port_identifier", line_)) {
+      return false;
+    }
+    if (!named) {
+      return true;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     if (!at(TK::CloseParenthesis) &&
-        !consumeAnnexRule("expression", line_, TK::CloseParenthesis))
+        !consumeAnnexRule("expression", line_, TK::CloseParenthesis)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -5421,9 +5960,10 @@ class SVParser {
   // modport_tf_port ::= method_prototype | tf_identifier.
   [[nodiscard]] auto parseModportTfPortRule() -> bool {
     parseGrammarChildDirectiveLines();
-    return consumeAnnexRule(
-        at(TK::FunctionKeyword) || at(TK::TaskKeyword)
-            ? "method_prototype" : "tf_identifier", line_, TK::Comma);
+    return consumeAnnexRule(at(TK::FunctionKeyword) || at(TK::TaskKeyword)
+                                ? "method_prototype"
+                                : "tf_identifier",
+                            line_, TK::Comma);
   }
 
   auto parseModportPortsDeclarationRule() -> bool {
@@ -5435,7 +5975,9 @@ class SVParser {
     };
     skip_directives();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       skip_directives();
     }
     const bool simple = at(TK::InputKeyword) || at(TK::OutputKeyword) ||
@@ -5443,12 +5985,14 @@ class SVParser {
     const bool tf = at(TK::ImportKeyword) || at(TK::ExportKeyword);
     if (simple) {
       if (!consumeAnnexRule("port_direction", line_) ||
-          !parseModportSimplePortRule())
+          !parseModportSimplePortRule()) {
         return false;
+      }
     } else if (tf) {
       if (!consumeAnnexRule("import_export", line_) ||
-          !parseModportTfPortRule())
+          !parseModportTfPortRule()) {
         return false;
+      }
     } else if (at(TK::ClockingKeyword)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
@@ -5460,15 +6004,14 @@ class SVParser {
     const auto next_port_after_comma = [&] {
       const TK kind = peek(afterOrdinaryDirectives(1)).kind;
       return kind == TK::Identifier || kind == TK::Dot ||
-             (tf && (kind == TK::FunctionKeyword ||
-                     kind == TK::TaskKeyword));
+             (tf && (kind == TK::FunctionKeyword || kind == TK::TaskKeyword));
     };
     while (at(TK::Comma) && next_port_after_comma()) {
       consumeInto(line_);
       skip_directives();
-      if (!(simple ? parseModportSimplePortRule()
-                  : parseModportTfPortRule()))
+      if (!(simple ? parseModportSimplePortRule() : parseModportTfPortRule())) {
         return false;
+      }
       skip_directives();
     }
     return true;
@@ -5482,46 +6025,53 @@ class SVParser {
       }
     };
     skip_directives();
-    if (!consumeAnnexRule("modport_identifier", line_)) return false;
+    if (!consumeAnnexRule("modport_identifier", line_)) {
+      return false;
+    }
     skip_directives();
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
-    if (!parseModportPortsDeclarationRule()) return false;
+    if (!parseModportPortsDeclarationRule()) {
+      return false;
+    }
     skip_directives();
     while (at(TK::Comma)) {
       consumeInto(line_);
-      if (!parseModportPortsDeclarationRule()) return false;
+      if (!parseModportPortsDeclarationRule()) {
+        return false;
+      }
       skip_directives();
     }
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
 
   auto parseModportDeclarationRule() -> bool {
-    if (!at(TK::ModPortKeyword)) return false;
+    if (!at(TK::ModPortKeyword)) {
+      return false;
+    }
     const bool conditional_members = hasConditionalListMember(pos_);
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if ((isConditionalStartDirective(token) &&
-           !conditional_members) ||
+      if ((isConditionalStartDirective(token) && !conditional_members) ||
           token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({"modport_declaration"}, true));
         return true;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
       }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     if (conditional_members) {
       if (!parseConditionalAnnexDeclarationListRule(
-              "modport_declaration", [&] {
-                return parseModportItemRule();
-              })) {
+              "modport_declaration", [&] { return parseModportItemRule(); })) {
         recordGrammarFallback("invalid Annex A conditional modport items");
         recoverMalformedItem(saved);
       } else {
@@ -5557,21 +6107,20 @@ class SVParser {
   auto parseExternTfDeclarationRule() -> bool {
     const size_t next = afterOrdinaryDirectives(1);
     if (!at(TK::ExternKeyword) ||
-        (!at(TK::FunctionKeyword, next) &&
-         !at(TK::TaskKeyword, next) &&
-         !at(TK::ForkJoinKeyword, next)))
+        (!at(TK::FunctionKeyword, next) && !at(TK::TaskKeyword, next) &&
+         !at(TK::ForkJoinKeyword, next))) {
       return false;
+    }
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         static_cast<void>(parseAnnexItem({"extern_tf_declaration"}, true));
         return true;
       }
-      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
+      }
     }
     const LeafCheckpoint saved = leafCheckpoint();
     const auto skip_directives = [&] {
@@ -5583,11 +6132,12 @@ class SVParser {
     consumeInto(line_);  // extern
     skip_directives();
     const bool forkjoin = at(TK::ForkJoinKeyword);
-    if (forkjoin) consumeInto(line_);
+    if (forkjoin) {
+      consumeInto(line_);
+    }
     skip_directives();
     const bool valid = consumeAnnexRule(
-        forkjoin ? "task_prototype" : "method_prototype", line_,
-        TK::Semicolon);
+        forkjoin ? "task_prototype" : "method_prototype", line_, TK::Semicolon);
     skip_directives();
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A extern task or function");
@@ -5603,43 +6153,58 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
       // interface_or_generate_item attaches attributes to these children.
       if (valid &&
           annexCanStartAny({"module_common_item", "extern_tf_declaration"},
                            peek().kind) &&
-          parseInterfaceItemRule(false))
+          parseInterfaceItemRule(false)) {
         return true;
+      }
       recordGrammarFallback("invalid Annex A attributed interface item");
       recoverMalformedItem(saved);
       return true;
     }
-    if (parseTimeunitsRule()) return true;
-    if (parseDefaultClockingOrDisableRule(false)) return true;
+    if (parseTimeunitsRule()) {
+      return true;
+    }
+    if (parseDefaultClockingOrDisableRule(false)) {
+      return true;
+    }
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
       parsePortDeclarationRule();
       return true;
     }
-    if (allow_port_declaration && parseQualifiedInterfacePortDeclarationRule())
+    if (allow_port_declaration &&
+        parseQualifiedInterfacePortDeclarationRule()) {
       return true;
+    }
     if (at(TK::UnitSystemName) &&
         annexCanStart("checker_instantiation", peek().kind) &&
-        parseStructuralInstantiationRule())
+        parseStructuralInstantiationRule()) {
       return true;
-    if (parseParameterDeclarationRule()) return true;
+    }
+    if (parseParameterDeclarationRule()) {
+      return true;
+    }
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseExplicitDataDeclarationRule() || parseNetDeclarationRule())
+        parseExplicitDataDeclarationRule() || parseNetDeclarationRule()) {
       return true;
+    }
     if (at(TK::ModPortKeyword)) {
       return parseModportDeclarationRule();
     }
-    if (parseExternTfDeclarationRule()) return true;
+    if (parseExternTfDeclarationRule()) {
+      return true;
+    }
     if (at(TK::InterfaceKeyword) && !at(TK::ClassKeyword, 1)) {
       parseStructuralBlock(TK::EndInterfaceKeyword);
       return true;
@@ -5652,12 +6217,16 @@ class SVParser {
       parseSimpleBlock(TK::EndGenerateKeyword);
       return true;
     }
-    if (parseProceduralConstructRule(true)) return true;
-    if (parseClockingDeclarationRule()) return true;
-    if (parseStructuralInstantiationRule() || parseUserDataDeclarationRule())
+    if (parseProceduralConstructRule(true)) {
       return true;
-    return parseAssertionItemRule() ||
-           parseModuleCommonLeafRule() ||
+    }
+    if (parseClockingDeclarationRule()) {
+      return true;
+    }
+    if (parseStructuralInstantiationRule() || parseUserDataDeclarationRule()) {
+      return true;
+    }
+    return parseAssertionItemRule() || parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
            parseGenerateConstructRule();
   }
@@ -5666,47 +6235,62 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
       // non_port_program_item places attributes on these five alternatives.
       if (valid &&
-          annexCanStartAny({"continuous_assign",
-                            "module_or_generate_item_declaration",
-                            "initial_construct", "final_construct",
-                            "concurrent_assertion_item"},
-                           peek().kind) &&
-          parseProgramItemRule(false))
+          annexCanStartAny(
+              {"continuous_assign", "module_or_generate_item_declaration",
+               "initial_construct", "final_construct",
+               "concurrent_assertion_item"},
+              peek().kind) &&
+          parseProgramItemRule(false)) {
         return true;
+      }
       recordGrammarFallback("invalid Annex A attributed program item");
       recoverMalformedItem(saved);
       return true;
     }
-    if (parseTimeunitsRule()) return true;
-    if (parseDefaultClockingOrDisableRule(false)) return true;
+    if (parseTimeunitsRule()) {
+      return true;
+    }
+    if (parseDefaultClockingOrDisableRule(false)) {
+      return true;
+    }
     if (allow_port_declaration &&
         (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
          at(TK::InOutKeyword) || at(TK::RefKeyword))) {
       parsePortDeclarationRule();
       return true;
     }
-    if (allow_port_declaration && parseQualifiedInterfacePortDeclarationRule())
+    if (allow_port_declaration &&
+        parseQualifiedInterfacePortDeclarationRule()) {
       return true;
-    if (parseParameterDeclarationRule()) return true;
+    }
+    if (parseParameterDeclarationRule()) {
+      return true;
+    }
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseExplicitDataDeclarationRule() || parseNetDeclarationRule() ||
-        parseUserDataDeclarationRule())
+        parseUserDataDeclarationRule()) {
       return true;
+    }
     if (at(TK::GenerateKeyword)) {
       parseSimpleBlock(TK::EndGenerateKeyword);
       return true;
     }
-    if (parseProceduralConstructRule(false)) return true;
-    if (parseClockingDeclarationRule()) return true;
-    return parseConcurrentAssertionRule() ||
-           parseModuleCommonLeafRule(true) ||
+    if (parseProceduralConstructRule(false)) {
+      return true;
+    }
+    if (parseClockingDeclarationRule()) {
+      return true;
+    }
+    return parseConcurrentAssertionRule() || parseModuleCommonLeafRule(true) ||
            parsePackageOrGenerateDeclarationRule() ||
            parseGenerateConstructRule();
   }
@@ -5714,15 +6298,15 @@ class SVParser {
   // generate_item ::= module_or_generate_item |
   // interface_or_generate_item | checker_or_generate_item.
   auto parseRandCheckerDataDeclarationRule() -> bool {
-    if (!at(TK::RandKeyword)) return false;
-    const auto after_implicit = at(TK::Identifier, 1)
-                                    ? afterBalancedDimensions(2)
-                                    : std::nullopt;
+    if (!at(TK::RandKeyword)) {
+      return false;
+    }
+    const auto after_implicit =
+        at(TK::Identifier, 1) ? afterBalancedDimensions(2) : std::nullopt;
     const bool implicit_identifier =
         after_implicit &&
         (at(TK::Semicolon, *after_implicit) ||
-         at(TK::Equals, *after_implicit) ||
-         at(TK::Comma, *after_implicit));
+         at(TK::Equals, *after_implicit) || at(TK::Comma, *after_implicit));
     const size_t type_offset =
         at(TK::UnitSystemName, 1) && at(TK::DoubleColon, 2) ? 3 : 1;
     const auto after_type = afterUserTypePrefix(type_offset);
@@ -5735,11 +6319,12 @@ class SVParser {
       consumeInto(line_);  // rand
       bool valid = implicit_identifier ||
                    consumeAnnexRule("data_type_or_implicit", line_);
-      if (valid)
+      if (valid) {
         valid = interrupted
                     ? consumeAnnexRule("list_of_variable_decl_assignments",
                                        line_, TK::Semicolon)
                     : parseVariableAssignmentListRule(conditional_members);
+      }
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A rand data declaration");
         recoverMalformedLeaf(saved);
@@ -5755,12 +6340,12 @@ class SVParser {
         parseQualifiedDataDeclarationRule() ||
         parseExplicitDataDeclarationRule() ||
         (at(TK::ImportKeyword) && parsePackageImportExportRule()) ||
-        parseUserDataDeclarationRule())
+        parseUserDataDeclarationRule()) {
       return true;
+    }
     // The only checker declaration with a leading rand is [rand]
     // data_declaration. Keep the ambiguous data child local to that rule.
-    if (!consumeAnnexRule("data_declaration", line_) ||
-        line_.tokens.empty() ||
+    if (!consumeAnnexRule("data_declaration", line_) || line_.tokens.empty() ||
         line_.tokens.back().kind != TK::Semicolon) {
       recordGrammarFallback("invalid Annex A rand data declaration");
       recoverMalformedItem(saved);
@@ -5774,45 +6359,59 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
       // generate_item reaches attributes through these two productions.
       if (valid &&
-          annexCanStartAny({"module_or_generate_item",
-                            "interface_or_generate_item"},
-                           peek().kind) &&
-          parseGenerateItemRule())
+          annexCanStartAny(
+              {"module_or_generate_item", "interface_or_generate_item"},
+              peek().kind) &&
+          parseGenerateItemRule()) {
         return true;
+      }
       recordGrammarFallback("invalid Annex A attributed generate item");
       recoverMalformedItem(saved);
       return true;
     }
-    if (parseDefaultClockingOrDisableRule(false)) return true;
+    if (parseDefaultClockingOrDisableRule(false)) {
+      return true;
+    }
     if (at(TK::UnitSystemName) &&
         annexCanStart("checker_instantiation", peek().kind) &&
-        parseStructuralInstantiationRule())
+        parseStructuralInstantiationRule()) {
       return true;
-    if (parseRandCheckerDataDeclarationRule()) return true;
-    if (parseParameterDeclarationRule()) return true;
+    }
+    if (parseRandCheckerDataDeclarationRule()) {
+      return true;
+    }
+    if (parseParameterDeclarationRule()) {
+      return true;
+    }
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseExplicitDataDeclarationRule() || parseNetDeclarationRule() ||
-        parseParameterOverrideRule())
+        parseParameterOverrideRule()) {
       return true;
+    }
     if (at(TK::GenerateKeyword)) {
       parseSimpleBlock(TK::EndGenerateKeyword);
       return true;
     }
-    if (parseProceduralConstructRule(true)) return true;
-    if (parseClockingDeclarationRule()) return true;
-    if (parseGateInstantiationRule() || parseUdpInstantiationRule() ||
-        parseStructuralInstantiationRule() ||
-        parseUserDataDeclarationRule())
+    if (parseProceduralConstructRule(true)) {
       return true;
-    return parseAssertionItemRule() ||
-           parseModuleCommonLeafRule() ||
+    }
+    if (parseClockingDeclarationRule()) {
+      return true;
+    }
+    if (parseGateInstantiationRule() || parseUdpInstantiationRule() ||
+        parseStructuralInstantiationRule() || parseUserDataDeclarationRule()) {
+      return true;
+    }
+    return parseAssertionItemRule() || parseModuleCommonLeafRule() ||
            parsePackageOrGenerateDeclarationRule() ||
            parseGenerateConstructRule();
   }
@@ -5823,12 +6422,16 @@ class SVParser {
       // checker_or_generate_item, although the child has no attributes.
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid && parseCheckerItemRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
+      if (valid && parseCheckerItemRule()) {
+        return true;
+      }
       recordGrammarFallback("invalid Annex A attributed checker item");
       recoverMalformedItem(saved);
       return true;
@@ -5838,13 +6441,17 @@ class SVParser {
       addLine();
       return true;
     }
-    if (parseDefaultClockingOrDisableRule(true)) return true;
-    if (parseRandCheckerDataDeclarationRule()) return true;
-    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-        parseExplicitDataDeclarationRule() || parseUserDataDeclarationRule())
+    if (parseDefaultClockingOrDisableRule(true)) {
       return true;
-    return parseAssertionItemRule() ||
-           parseModuleCommonLeafRule(true) ||
+    }
+    if (parseRandCheckerDataDeclarationRule()) {
+      return true;
+    }
+    if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+        parseExplicitDataDeclarationRule() || parseUserDataDeclarationRule()) {
+      return true;
+    }
+    return parseAssertionItemRule() || parseModuleCommonLeafRule(true) ||
            parseCheckerDeclarationRule() || parseGenerateConstructRule() ||
            parseProceduralConstructRule(true);
   }
@@ -5854,27 +6461,35 @@ class SVParser {
       // package_declaration repeats { attribute_instance } package_item.
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid && parsePackageItemRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
+      if (valid && parsePackageItemRule()) {
+        return true;
+      }
       recordGrammarFallback("invalid Annex A attributed package item");
       recoverMalformedItem(saved);
       return true;
     }
-    if (parseTimeunitsRule()) return true;
-    if (parseAnonymousProgramRule()) return true;
+    if (parseTimeunitsRule()) {
+      return true;
+    }
+    if (parseAnonymousProgramRule()) {
+      return true;
+    }
     if (at(TK::ExportKeyword)) {
-      if (parseDpiDeclarationRule()) return true;
+      if (parseDpiDeclarationRule()) {
+        return true;
+      }
       return parsePackageImportExportRule();
     }
-    return parseParameterDeclarationRule() ||
-           parseTypeDeclarationRule() ||
+    return parseParameterDeclarationRule() || parseTypeDeclarationRule() ||
            parseNettypeDeclarationRule() ||
-           parseExplicitDataDeclarationRule() ||
-           parseNetDeclarationRule() ||
+           parseExplicitDataDeclarationRule() || parseNetDeclarationRule() ||
            parseUserDataDeclarationRule() ||
            parsePackageOrGenerateDeclarationRule();
   }
@@ -5886,16 +6501,19 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid &&
-          annexCanStart("interface_class_method", peek().kind) &&
-          parseInterfaceClassItemRule())
+      if (valid && parseAttributeMacroInterruptionRule()) {
         return true;
-      recordGrammarFallback("invalid Annex A attributed interface class method");
+      }
+      if (valid && annexCanStart("interface_class_method", peek().kind) &&
+          parseInterfaceClassItemRule()) {
+        return true;
+      }
+      recordGrammarFallback(
+          "invalid Annex A attributed interface class method");
       recoverMalformedItem(saved);
       return true;
     }
@@ -5904,20 +6522,21 @@ class SVParser {
       addLine();
       return true;
     }
-    if (parseParameterDeclarationRule() || parseTypeDeclarationRule())
+    if (parseParameterDeclarationRule() || parseTypeDeclarationRule()) {
       return true;
+    }
     if (at(TK::PureKeyword) && at(TK::VirtualKeyword, 1)) {
       for (size_t i = pos_; i < tokens_.size(); ++i) {
         const auto& token = tokens_[i];
         if (isConditionalStartDirective(token) ||
             token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
+            (token.kind == TK::Directive && !isCompilerDirective(token))) {
           static_cast<void>(parseAnnexItem({"interface_class_method"}, true));
           return true;
         }
-        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
           break;
+        }
       }
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);  // pure
@@ -5939,7 +6558,9 @@ class SVParser {
   // 'endprogram'. Its header terminals are consumed here; body items call
   // their productions through parseDelimitedBody().
   auto parseAnonymousProgramRule() -> bool {
-    if (!at(TK::ProgramKeyword) || !at(TK::Semicolon, 1)) return false;
+    if (!at(TK::ProgramKeyword) || !at(TK::Semicolon, 1)) {
+      return false;
+    }
     consumeInto(line_);
     consumeInto(line_);
     addLine();
@@ -5975,66 +6596,78 @@ class SVParser {
   // These Annex A lists repeat an unnamed identifier and dimension
   // sequence. Keep the parent live across complete conditional members,
   // while ordinary members enter their Annex A child rules directly.
-  auto parsePortIdentifierWithDimensionsRule(std::string_view identifier,
-                                             std::string_view dimension,
-                                             std::string_view initializer)
-      -> bool {
-    if (!consumeAnnexRule(identifier, line_)) return false;
+  auto parsePortIdentifierWithDimensionsRule(
+      std::string_view  // NOLINT(bugprone-easily-swappable-parameters)
+          identifier,
+      std::string_view dimension, std::string_view initializer) -> bool {
+    if (!consumeAnnexRule(identifier, line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule(dimension, line_)) return false;
+      if (!consumeAnnexRule(dimension, line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (!initializer.empty() && at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexRule(initializer, line_, TK::Comma))
+      if (!consumeAnnexRule(initializer, line_, TK::Comma)) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     return true;
   }
 
   auto parsePortIdentifierDimensionListRule(
-      std::string_view list, std::string_view identifier,
-      std::string_view dimension, std::string_view initializer,
-      bool conditional_members) -> bool {
+      std::string_view list,  // NOLINT(bugprone-easily-swappable-parameters)
+      std::string_view identifier, std::string_view dimension,
+      std::string_view initializer, bool conditional_members) -> bool {
     if (!conditional_members) {
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         parseGrammarChildDirectiveLines();
         if (!parsePortIdentifierWithDimensionsRule(identifier, dimension,
-                                                   initializer))
+                                                   initializer)) {
           return false;
+        }
         parseGrammarChildDirectiveLines();
-        if (!at(TK::Comma)) break;
+        if (!at(TK::Comma)) {
+          break;
+        }
         consumeInto(line_);
       } while (!at(TK::EndOfFile));
       return true;
     }
     beginGrammar({list});
     bool valid = true;
-    while (!at(TK::EndOfFile) &&
-           !(stop_at_conditional_boundary_ &&
-             isConditionalBoundaryDirective(peek()))) {
-      if (grammar_scopes_.back().complete() && at(TK::Semicolon)) break;
+    while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
+                                   isConditionalBoundaryDirective(peek()))) {
+      if (grammar_scopes_.back().complete() && at(TK::Semicolon)) {
+        break;
+      }
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
-        valid = parseAnnexConditional(TK::EndOfFile, header_ended,
-                                      indent_level_);
+        valid =
+            parseAnnexConditional(TK::EndOfFile, header_ended, indent_level_);
       } else if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
       } else if (at(TK::Comma)) {
         valid = grammarAllows(TK::Comma);
-        if (valid) consumeInto(line_);
+        if (valid) {
+          consumeInto(line_);
+        }
       } else {
         valid = grammarAllows(peek().kind) &&
                 parsePortIdentifierWithDimensionsRule(identifier, dimension,
                                                       initializer);
       }
       if (!valid || grammar_scopes_.back().failed ||
-          grammar_scopes_.back().interrupted)
+          grammar_scopes_.back().interrupted) {
         break;
+      }
     }
     const AnnexState result = endGrammar(false);
     return valid && !result.failed && !result.interrupted &&
@@ -6046,29 +6679,33 @@ class SVParser {
     while (at(TK::OpenParenthesis, attributes) &&
            at(TK::Star, attributes + 1)) {
       const auto after = afterBalancedParentheses(attributes);
-      if (!after || !at(TK::Star, *after - 2)) return false;
+      if (!after || !at(TK::Star, *after - 2)) {
+        return false;
+      }
       attributes = *after;
     }
     const bool direction =
         annexCanStart("tf_port_direction", peek(attributes).kind) &&
         (!at(TK::ConstKeyword, attributes) ||
-         at(TK::RefKeyword,
-            afterOrdinaryDirectives(attributes + 1)));
-    if (!direction) return false;
-    const bool ref_direction = at(TK::RefKeyword, attributes) ||
-                               at(TK::ConstKeyword, attributes);
+         at(TK::RefKeyword, afterOrdinaryDirectives(attributes + 1)));
+    if (!direction) {
+      return false;
+    }
+    const bool ref_direction =
+        at(TK::RefKeyword, attributes) || at(TK::ConstKeyword, attributes);
     size_t offset = afterOrdinaryDirectives(attributes + 1);
-    if (at(TK::ConstKeyword, attributes))
+    if (at(TK::ConstKeyword, attributes)) {
       offset = afterOrdinaryDirectives(offset + 1);
-    if (at(TK::StaticKeyword, offset) &&
-        ref_direction)
+    }
+    if (at(TK::StaticKeyword, offset) && ref_direction) {
       offset = afterOrdinaryDirectives(offset + 1);
-    if (at(TK::VarKeyword, offset))
+    }
+    if (at(TK::VarKeyword, offset)) {
       offset = afterOrdinaryDirectives(offset + 1);
+    }
     const TK type_start = peek(offset).kind;
     bool dimensioned_implicit = false;
-    if (type_start == TK::Identifier &&
-        at(TK::OpenBracket, offset + 1)) {
+    if (type_start == TK::Identifier && at(TK::OpenBracket, offset + 1)) {
       const auto next = afterBalancedDimensions(offset + 1);
       if (!next) {
         static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
@@ -6088,8 +6725,7 @@ class SVParser {
         dimensioned_implicit ||
         (type_start == TK::Identifier &&
          (at(TK::Semicolon, after_type_start) ||
-          at(TK::Equals, after_type_start) ||
-          at(TK::Comma, after_type_start)));
+          at(TK::Equals, after_type_start) || at(TK::Comma, after_type_start)));
     if (!annexCanStart("data_type_or_implicit", type_start)) {
       static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
       return true;
@@ -6105,15 +6741,21 @@ class SVParser {
       valid = consumeAnnexRule("attribute_instance", line_);
       parseGrammarChildDirectiveLines();
     }
-    if (valid) valid = parseTfPortDirectionRule();
+    if (valid) {
+      valid = parseTfPortDirectionRule();
+    }
     parseGrammarChildDirectiveLines();
-    if (valid && at(TK::VarKeyword)) consumeInto(line_);
+    if (valid && at(TK::VarKeyword)) {
+      consumeInto(line_);
+    }
     parseGrammarChildDirectiveLines();
-    if (valid && !implicit_type)
+    if (valid && !implicit_type) {
       valid = consumeAnnexRule("data_type_or_implicit", line_);
+    }
     parseGrammarChildDirectiveLines();
-    if (valid)
+    if (valid) {
       valid = parseTfVariableIdentifierListRule(conditional_members);
+    }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A task or function port");
       recoverMalformedLeaf(saved);
@@ -6131,40 +6773,49 @@ class SVParser {
       // line, then enter the selected declaration child directly.
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid && parseBlockOrTfItemDeclarationRule(allow_tf_port))
+      if (valid && parseAttributeMacroInterruptionRule()) {
         return true;
+      }
+      if (valid && parseBlockOrTfItemDeclarationRule(allow_tf_port)) {
+        return true;
+      }
       recordGrammarFallback("invalid Annex A attributed block item");
       recoverMalformedItem(saved);
       return true;
     }
-    if (parseParameterDeclarationRule()) return true;
-    if (parseQualifiedDataDeclarationRule()) return true;
+    if (parseParameterDeclarationRule()) {
+      return true;
+    }
+    if (parseQualifiedDataDeclarationRule()) {
+      return true;
+    }
     if (at(TK::ImportKeyword)) {
-      if (parsePackageImportExportRule()) return true;
+      if (parsePackageImportExportRule()) {
+        return true;
+      }
       static_cast<void>(parseAnnexItem({"data_declaration"}, true));
       return true;
     }
     if (at(TK::LetKeyword)) {
       return parseLetDeclarationRule();
     }
-    if (allow_tf_port && parseTfPortDeclarationRule()) return true;
+    if (allow_tf_port && parseTfPortDeclarationRule()) {
+      return true;
+    }
     return parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
-           parseExplicitDataDeclarationRule() ||
-           parseUserDataDeclarationRule();
+           parseExplicitDataDeclarationRule() || parseUserDataDeclarationRule();
   }
 
   auto parseProceduralConstructRule(bool allow_always) -> bool {
     const TK kind = peek().kind;
     if (kind != TK::InitialKeyword && kind != TK::FinalKeyword &&
-        !(allow_always && (kind == TK::AlwaysKeyword ||
-                           kind == TK::AlwaysCombKeyword ||
-                           kind == TK::AlwaysFFKeyword ||
-                           kind == TK::AlwaysLatchKeyword))) {
+        !(allow_always &&
+          (kind == TK::AlwaysKeyword || kind == TK::AlwaysCombKeyword ||
+           kind == TK::AlwaysFFKeyword || kind == TK::AlwaysLatchKeyword))) {
       return false;
     }
     parseProceduralBlock();
@@ -6179,8 +6830,7 @@ class SVParser {
       bool conditional_members = false) -> bool {
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek()) &&
-             (!conditional_members ||
-              !isConditionalStartDirective(peek()))) {
+             (!conditional_members || !isConditionalStartDirective(peek()))) {
         addLine();
         parseDirectiveLine();
       }
@@ -6190,27 +6840,35 @@ class SVParser {
       if (conditional_members && isConditionalStartDirective(peek())) {
         bool header_ended = true;
         if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_))
+                                   indent_level_)) {
           return false;
+        }
         continue;
       }
-      if (!net_possible && !variable_possible) return false;
+      if (!net_possible && !variable_possible) {
+        return false;
+      }
       if (net_possible && variable_possible) {
         const AnnexState assignment = parseAnnexItem(
             {"net_assignment", "variable_assignment"}, false, true);
         if (assignment.failed || assignment.interrupted ||
-            !assignment.complete())
+            !assignment.complete()) {
           return false;
+        }
         net_possible = assignment.completed("net_assignment");
         variable_possible = assignment.completed("variable_assignment");
-      } else if (!consumeAnnexRule(net_possible ? "net_assignment"
-                                               : "variable_assignment",
-                                   line_, TK::Comma)) {
+      } else if (!consumeAnnexRule(
+                     net_possible ? "net_assignment" : "variable_assignment",
+                     line_, TK::Comma)) {
         return false;
       }
-      if (!net_possible && !variable_possible) return false;
+      if (!net_possible && !variable_possible) {
+        return false;
+      }
       skip_directives();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     }
     return net_possible || variable_possible;
@@ -6220,7 +6878,9 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"continuous_assign"});
     bool valid = grammarAllows(TK::AssignKeyword);
-    if (valid) consumeInto(line_);
+    if (valid) {
+      consumeInto(line_);
+    }
     const auto skip_directives = [&] {
       while (afterOrdinaryDirectives(0) > 0) {
         addLine();
@@ -6233,8 +6893,9 @@ class SVParser {
     if (valid && at(TK::OpenParenthesis)) {
       valid = consumeAnnexRule("drive_strength", line_);
       skip_directives();
-      if (valid && at(TK::Hash))
+      if (valid && at(TK::Hash)) {
         valid = consumeAnnexRule("delay3", line_);
+      }
       variable_possible = false;
     } else if (valid && at(TK::Hash)) {
       const AnnexState delay =
@@ -6243,13 +6904,15 @@ class SVParser {
       net_possible = delay.completed("delay3");
       variable_possible = delay.completed("delay_control");
     }
-    if (valid)
-      valid = parseContinuousAssignmentListRule(net_possible,
-                                                 variable_possible, true);
-    if (valid && at(TK::Semicolon) && grammarAllows(TK::Semicolon))
+    if (valid) {
+      valid = parseContinuousAssignmentListRule(net_possible, variable_possible,
+                                                true);
+    }
+    if (valid && at(TK::Semicolon) && grammarAllows(TK::Semicolon)) {
       consumeInto(line_);
-    else
+    } else {
       valid = false;
+    }
     const AnnexState result = endGrammar(false);
     if (!valid || result.failed || result.interrupted || !result.complete()) {
       recordGrammarFallback("invalid Annex A conditional assignment list");
@@ -6262,11 +6925,15 @@ class SVParser {
   // list_of_genvar_identifiers ::= genvar_identifier
   // { ',' genvar_identifier }.
   [[nodiscard]] auto parseGenvarIdentifierListRule() -> bool {
-    do {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexRule("genvar_identifier", line_)) return false;
+      if (!consumeAnnexRule("genvar_identifier", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -6278,12 +6945,11 @@ class SVParser {
   auto parseModuleCommonLeafRule(bool continuous_only = false) -> bool {
     if (at(TK::SystemIdentifier)) {
       const std::string_view name = peek().rawText();
-      if (name == "$fatal" || name == "$error" ||
-          name == "$warning" || name == "$info") {
+      if (name == "$fatal" || name == "$error" || name == "$warning" ||
+          name == "$info") {
         const LeafCheckpoint saved = leafCheckpoint();
         if (!consumeAnnexRule("severity_system_task", line_) ||
-            line_.tokens.empty() ||
-            line_.tokens.back().kind != TK::Semicolon) {
+            line_.tokens.empty() || line_.tokens.back().kind != TK::Semicolon) {
           recordGrammarFallback("invalid Annex A elaboration severity task");
           recoverMalformedLeaf(saved);
         } else {
@@ -6298,13 +6964,12 @@ class SVParser {
       const bool interrupted =
           hasAnnexListInterruption(pos_, conditional_members);
       consumeInto(line_);
-      if (!(interrupted
-                ? consumeAnnexRule("list_of_genvar_identifiers", line_,
-                                   TK::Semicolon)
-                : conditional_members
-                    ? parseConditionalAnnexCommaListRule(
-                          "list_of_genvar_identifiers", "genvar_identifier")
-                    : parseGenvarIdentifierListRule()) ||
+      if (!(interrupted ? consumeAnnexRule("list_of_genvar_identifiers", line_,
+                                           TK::Semicolon)
+            : conditional_members
+                ? parseConditionalAnnexCommaListRule(
+                      "list_of_genvar_identifiers", "genvar_identifier")
+                : parseGenvarIdentifierListRule()) ||
           !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A genvar declaration");
         recoverMalformedItem(saved);
@@ -6366,9 +7031,12 @@ class SVParser {
         skip_directives();
         bool valid = consumeAnnexRule("drive_strength", line_);
         skip_directives();
-        if (valid && at(TK::Hash))
+        if (valid && at(TK::Hash)) {
           valid = consumeAnnexRule("delay3", line_);
-        if (valid) valid = parseContinuousAssignmentListRule(true, false);
+        }
+        if (valid) {
+          valid = parseContinuousAssignmentListRule(true, false);
+        }
         if (!valid || !at(TK::Semicolon)) {
           recordGrammarFallback("invalid Annex A driven assignment");
           recoverMalformedLeaf(saved);
@@ -6399,7 +7067,7 @@ class SVParser {
         recoverMalformedItem(saved);
         return true;
       }
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         consumeInto(line_);
         if (!consumeAnnexRule("net_lvalue", line_, TK::Equals)) {
           recordGrammarFallback("invalid Annex A net alias destination");
@@ -6422,26 +7090,30 @@ class SVParser {
         const auto& token = tokens_[i];
         if (isConditionalStartDirective(token) ||
             token.kind == TK::MacroUsage ||
-            (token.kind == TK::Directive &&
-             !isCompilerDirective(token))) {
+            (token.kind == TK::Directive && !isCompilerDirective(token))) {
           const AnnexState item = parseAnnexItem({"bind_directive"}, true);
-          if (item.failed || item.interrupted || !item.complete())
+          if (item.failed || item.interrupted || !item.complete()) {
             recoverMalformedItem(saved);
+          }
           return true;
         }
-        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile)
+        if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
           break;
+        }
       }
       consumeInto(line_);  // bind
       const AnnexState target = parseAnnexItem(
           {"bind_target_scope", "bind_target_instance"}, false, true);
-      if (target.interrupted) return true;
+      if (target.interrupted) {
+        return true;
+      }
       const bool scope_target = target.completed("bind_target_scope");
       bool valid = !target.failed && target.complete() &&
                    (scope_target || target.completed("bind_target_instance"));
       if (valid && at(TK::Colon)) {
-        if (!scope_target) valid = false;
-        else {
+        if (!scope_target) {
+          valid = false;
+        } else {
           consumeInto(line_);
           parseGrammarChildDirectiveLines();
           valid = consumeAnnexRule("bind_target_instance_list", line_);
@@ -6449,9 +7121,11 @@ class SVParser {
       }
       if (valid) {
         bool instantiation_valid = false;
-        const bool recognized = parseStructuralInstantiationRule(
-            false, &instantiation_valid);
-        if (recognized && !instantiation_valid) return true;
+        const bool recognized =
+            parseStructuralInstantiationRule(false, &instantiation_valid);
+        if (recognized && !instantiation_valid) {
+          return true;
+        }
         valid = recognized && instantiation_valid;
       }
       // Annex A appends a semicolon to bind_instantiation, whose own
@@ -6475,26 +7149,28 @@ class SVParser {
   auto parseProceduralContinuousAssignmentRule() -> bool {
     const TK keyword = peek().kind;
     if (keyword != TK::AssignKeyword && keyword != TK::DeassignKeyword &&
-        keyword != TK::ForceKeyword && keyword != TK::ReleaseKeyword)
+        keyword != TK::ForceKeyword && keyword != TK::ReleaseKeyword) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     bool valid = false;
     if (keyword == TK::AssignKeyword || keyword == TK::DeassignKeyword) {
-      valid = consumeAnnexRule(keyword == TK::AssignKeyword
-                                   ? "variable_assignment"
-                                   : "variable_lvalue",
-                               line_, TK::Semicolon);
+      valid =
+          consumeAnnexRule(keyword == TK::AssignKeyword ? "variable_assignment"
+                                                        : "variable_lvalue",
+                           line_, TK::Semicolon);
     } else {
       const AnnexState child = parseAnnexItem(
           keyword == TK::ForceKeyword
               ? std::vector<std::string_view>{"variable_assignment",
                                               "net_assignment"}
-              : std::vector<std::string_view>{"variable_lvalue",
-                                              "net_lvalue"},
+              : std::vector<std::string_view>{"variable_lvalue", "net_lvalue"},
           false, true);
-      if (child.interrupted) return true;
+      if (child.interrupted) {
+        return true;
+      }
       valid = !child.failed && child.complete();
     }
     parseGrammarChildDirectiveLines();
@@ -6585,38 +7261,37 @@ class SVParser {
         !at(TK::RootSystemName) && !at(TK::ThisKeyword) &&
         !at(TK::SuperKeyword) && !at(TK::OpenBrace) &&
         !at(TK::ApostropheOpenBrace) && !at(TK::DoublePlus) &&
-        !at(TK::DoubleMinus))
+        !at(TK::DoubleMinus)) {
       return false;
+    }
     bool interrupted = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         interrupted = true;
         break;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile)
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
+      }
     }
     const auto blocking_operator = [](TK kind) {
       return annexCanStart("assignment_operator", kind) ||
              annexCanStart("inc_or_dec_operator", kind);
     };
-    bool blocking = !interrupted &&
-                    (annexCanStart("inc_or_dec_operator", peek().kind) ||
-                     blocking_operator(peek(1).kind));
+    bool blocking =
+        !interrupted && (annexCanStart("inc_or_dec_operator", peek().kind) ||
+                         blocking_operator(peek(1).kind));
     bool nonblocking = !interrupted && at(TK::LessThanEquals, 1);
     size_t assignment_offset = nonblocking ? 1 : 0;
     if (!interrupted && !blocking && !nonblocking &&
-        (at(TK::OpenBracket, 1) || at(TK::Dot, 1) ||
-         at(TK::DoubleColon, 1) || at(TK::OpenBrace) ||
-         at(TK::ApostropheOpenBrace))) {
+        (at(TK::OpenBracket, 1) || at(TK::Dot, 1) || at(TK::DoubleColon, 1) ||
+         at(TK::OpenBrace) || at(TK::ApostropheOpenBrace))) {
       ListDepth depth;
-      if (at(TK::OpenBrace) || at(TK::ApostropheOpenBrace))
+      if (at(TK::OpenBrace) || at(TK::ApostropheOpenBrace)) {
         advanceListDepth(depth, peek().kind);
+      }
       for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
         const TK kind = tokens_[i].kind;
         if (depth.topLevel() && kind == TK::LessThanEquals) {
@@ -6629,24 +7304,24 @@ class SVParser {
           break;
         }
         if (depth.topLevel() &&
-            (kind == TK::Semicolon || kind == TK::EndOfFile))
+            (kind == TK::Semicolon || kind == TK::EndOfFile)) {
           break;
+        }
         if (depth.topLevel() &&
             std::ranges::any_of(block_stack_, [kind](const BlockFrame& frame) {
               return matchesBlockClose(frame.close_kind, kind);
-            }))
+            })) {
           break;
+        }
         advanceListDepth(depth, kind);
       }
     }
     if (nonblocking) {
       const LeafCheckpoint saved = leafCheckpoint();
-      const std::string_view rule =
-          at(TK::DoubleHash, assignment_offset + 1)
-              ? "clocking_drive"
-              : "nonblocking_assignment";
-      if (!consumeAnnexRule(rule, line_, TK::Semicolon) ||
-          !at(TK::Semicolon)) {
+      const std::string_view rule = at(TK::DoubleHash, assignment_offset + 1)
+                                        ? "clocking_drive"
+                                        : "nonblocking_assignment";
+      if (!consumeAnnexRule(rule, line_, TK::Semicolon) || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A nonblocking statement");
         recoverMalformedItem(saved);
         return true;
@@ -6679,19 +7354,22 @@ class SVParser {
       addLine();
       return true;
     }
-    const AnnexState item = parseAnnexItem(
-        {"blocking_assignment", "nonblocking_assignment",
-         "subroutine_call_statement", "clocking_drive"},
-        false, true);
-    if (item.interrupted) return true;
+    const AnnexState item =
+        parseAnnexItem({"blocking_assignment", "nonblocking_assignment",
+                        "subroutine_call_statement", "clocking_drive"},
+                       false, true);
+    if (item.interrupted) {
+      return true;
+    }
     if (item.failed || !item.complete()) {
       recordGrammarFallback("invalid Annex A identifier statement");
       recoverMalformedItem(saved);
       return true;
     }
-    if (at(TK::Semicolon)) consumeInto(line_);
-    if (line_.tokens.empty() ||
-        line_.tokens.back().kind != TK::Semicolon) {
+    if (at(TK::Semicolon)) {
+      consumeInto(line_);
+    }
+    if (line_.tokens.empty() || line_.tokens.back().kind != TK::Semicolon) {
       recordGrammarFallback("missing Annex A statement semicolon");
       recoverMalformedItem(saved);
       return true;
@@ -6727,7 +7405,9 @@ class SVParser {
   }
 
   auto parseDisableStatementRule() -> bool {
-    if (!at(TK::DisableKeyword)) return false;
+    if (!at(TK::DisableKeyword)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
@@ -6750,14 +7430,14 @@ class SVParser {
   }
 
   auto parseEventTriggerRule() -> bool {
-    if (!at(TK::MinusArrow) && !at(TK::MinusDoubleArrow))
+    if (!at(TK::MinusArrow) && !at(TK::MinusDoubleArrow)) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     const bool delayed = at(TK::MinusDoubleArrow);
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    if (delayed && (at(TK::Hash) || at(TK::At) ||
-                    at(TK::RepeatKeyword)) &&
+    if (delayed && (at(TK::Hash) || at(TK::At) || at(TK::RepeatKeyword)) &&
         !consumeAnnexRule("delay_or_event_control", line_)) {
       recordGrammarFallback("invalid Annex A delayed event trigger");
       recoverMalformedItem(saved);
@@ -6790,8 +7470,8 @@ class SVParser {
   // procedural_timing_control_statement ::= procedural_timing_control
   // statement_or_null. The control is one Annex A child; the body calls the
   // statement production while output lines are emitted from this pass.
-  auto parseProceduralTimingControlStatementRule(
-      bool join_loop_begin = false) -> void {
+  auto parseProceduralTimingControlStatementRule(bool join_loop_begin = false)
+      -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool control = consumeAnnexRule("procedural_timing_control", line_);
     if (!control) {
@@ -6822,9 +7502,8 @@ class SVParser {
     parseGrammarChildDirectiveLines();
     const bool compound =
         at(TK::BeginKeyword) || at(TK::ForkKeyword) || at(TK::IfKeyword) ||
-        at(TK::CaseKeyword) || at(TK::CaseXKeyword) ||
-        at(TK::CaseZKeyword) || at(TK::ForKeyword) ||
-        at(TK::ForeachKeyword) || at(TK::WhileKeyword) ||
+        at(TK::CaseKeyword) || at(TK::CaseXKeyword) || at(TK::CaseZKeyword) ||
+        at(TK::ForKeyword) || at(TK::ForeachKeyword) || at(TK::WhileKeyword) ||
         at(TK::RepeatKeyword) || at(TK::ForeverKeyword) || at(TK::DoKeyword);
     if (compound) {
       addLine();
@@ -6847,8 +7526,9 @@ class SVParser {
         if (isConditionalStartDirective(peek())) {
           bool header_ended = true;
           if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                     indent_level_))
+                                     indent_level_)) {
             break;
+          }
           continue;
         }
         if (isCompilerDirective(peek())) {
@@ -6856,7 +7536,9 @@ class SVParser {
           parseDirectiveLine();
           continue;
         }
-        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        if (!grammar_scopes_.back().accepts(peek().kind)) {
+          break;
+        }
         consumeInto(line_);
       }
       const AnnexState prefix = endGrammar(false);
@@ -6869,7 +7551,9 @@ class SVParser {
       parseActionBlockRule();
       return true;
     }
-    if (!at(TK::WaitKeyword)) return false;
+    if (!at(TK::WaitKeyword)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"wait_statement"});
     consumeInto(line_);  // wait
@@ -6891,7 +7575,9 @@ class SVParser {
       if (at(TK::ForkKeyword) && grammarAllows(TK::ForkKeyword)) {
         consumeInto(line_);
         const bool valid = at(TK::Semicolon) && grammarAllows(TK::Semicolon);
-        if (valid) consumeInto(line_);
+        if (valid) {
+          consumeInto(line_);
+        }
         const AnnexState wait = endGrammar(false);
         if (!valid || wait.failed || wait.interrupted || !wait.complete()) {
           recordGrammarFallback("invalid Annex A conditional wait fork");
@@ -6909,8 +7595,7 @@ class SVParser {
         TK::OpenParenthesis, TK::CloseParenthesis, "expression", line_);
     const AnnexState prefix = endGrammar(false);
     if (!condition || prefix.failed || prefix.interrupted ||
-        !prefix.hasActiveRule("statement_or_null") ||
-        line_.tokens.empty() ||
+        !prefix.hasActiveRule("statement_or_null") || line_.tokens.empty() ||
         line_.tokens.back().kind != TK::CloseParenthesis) {
       recordGrammarFallback("invalid Annex A wait condition");
       recoverMalformedItem(saved);
@@ -6922,11 +7607,14 @@ class SVParser {
   }
 
   auto parseWaitStatementRule() -> bool {
-    if (!at(TK::WaitKeyword) && !at(TK::WaitOrderKeyword)) return false;
+    if (!at(TK::WaitKeyword) && !at(TK::WaitOrderKeyword)) {
+      return false;
+    }
     // A conditional directive can select a different production in the
     // header. Keep the interrupted grammar scope for that case.
-    if (isConditionalStartDirective(peek(1)))
+    if (isConditionalStartDirective(peek(1))) {
       return parseConditionalWaitStatementRule();
+    }
 
     const LeafCheckpoint saved = leafCheckpoint();
     const bool ordered = at(TK::WaitOrderKeyword);
@@ -6957,7 +7645,8 @@ class SVParser {
     if (ordered) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      bool valid = consumeAnnexRule("hierarchical_identifier", line_, TK::Comma);
+      bool valid =
+          consumeAnnexRule("hierarchical_identifier", line_, TK::Comma);
       parseGrammarChildDirectiveLines();
       while (valid && at(TK::Comma)) {
         consumeInto(line_);
@@ -7030,13 +7719,17 @@ class SVParser {
   // statement ::= [ block_identifier ':' ] { attribute_instance }
   // statement_item. Use the local grammar state for the label's shared
   // identifier prefix; the selected body rule is parsed by its own function.
-  auto parseStatementLabelRule(
-      const std::vector<std::string_view>& roots) -> bool {
-    if (!at(TK::Identifier) || !at(TK::Colon, 1)) return false;
+  auto parseStatementLabelRule(const std::vector<std::string_view>& roots)
+      -> bool {
+    if (!at(TK::Identifier) || !at(TK::Colon, 1)) {
+      return false;
+    }
     AnnexState label(roots);
     label.advance(peek());
     label.advance(peek(1));
-    if (label.failed) return false;
+    if (label.failed) {
+      return false;
+    }
     for (const std::string_view body_rule :
          {"statement_item", "concurrent_assertion_statement",
           "deferred_immediate_assertion_statement"}) {
@@ -7052,17 +7745,20 @@ class SVParser {
   // statement_or_null and function_statement_or_null additionally permit
   // { attribute_instance } ';'. Enter the item child after its prefix.
   auto parseAttributedStatementRule(std::string_view root) -> bool {
-    if (!at(TK::OpenParenthesis) || !at(TK::Star, 1)) return false;
+    if (!at(TK::OpenParenthesis) || !at(TK::Star, 1)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
-    do {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       valid = consumeAnnexRule("attribute_instance", line_);
       parseGrammarChildDirectiveLines();
     } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-    if (valid && parseAttributeMacroInterruptionRule()) return true;
+    if (valid && parseAttributeMacroInterruptionRule()) {
+      return true;
+    }
     if (valid && at(TK::Semicolon) &&
-        (root == "statement_or_null" ||
-         root == "function_statement_or_null")) {
+        (root == "statement_or_null" || root == "function_statement_or_null")) {
       consumeInto(line_);
       addLine();
       return true;
@@ -7075,7 +7771,9 @@ class SVParser {
       grammar_contexts_.push_back({block_stack_.size(), {"statement_item"}});
       parseStatement();
       grammar_contexts_.pop_back();
-      if (pos_ > before) return true;
+      if (pos_ > before) {
+        return true;
+      }
     }
     recordGrammarFallback("invalid Annex A attributed statement");
     recoverMalformedItem(saved);
@@ -7086,9 +7784,9 @@ class SVParser {
   // empty-statement alternative. A nonnullable statement cannot consume ';'.
   auto parseNullStatementRule(std::string_view root) -> bool {
     if (!at(TK::Semicolon) ||
-        (root != "statement_or_null" &&
-         root != "function_statement_or_null"))
+        (root != "statement_or_null" && root != "function_statement_or_null")) {
       return false;
+    }
     consumeInto(line_);
     addLine();
     return true;
@@ -7144,7 +7842,9 @@ class SVParser {
   }
 
   auto markStatementPhase() -> void {
-    if (block_stack_.empty()) return;
+    if (block_stack_.empty()) {
+      return;
+    }
     switch (block_stack_.back().close_kind) {
       case TK::EndFunctionKeyword:
       case TK::EndTaskKeyword:
@@ -7162,17 +7862,18 @@ class SVParser {
   // production functions still choose the construction to parse.
   auto parseDirectGrammarRule(bool active_continuation = false) -> bool {
     if (!active_continuation && !grammar_scopes_.empty() &&
-        !grammar_paused_.back())
+        !grammar_paused_.back()) {
       return false;
+    }
     const auto roots = grammarRoots();
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      const bool declaration = std::ranges::any_of(
-          roots, [](std::string_view root) {
+      const bool declaration =
+          std::ranges::any_of(roots, [](std::string_view root) {
             return root == "block_item_declaration" ||
                    root == "tf_item_declaration";
           });
-      const auto statement = std::ranges::find_if(
-          roots, [](std::string_view root) {
+      const auto statement =
+          std::ranges::find_if(roots, [](std::string_view root) {
             return root == "statement_or_null" ||
                    root == "function_statement_or_null";
           });
@@ -7185,8 +7886,7 @@ class SVParser {
                                       : std::nullopt;
           const bool identifier_statement =
               after_type && !at(TK::Identifier, *after_type) &&
-              !at(TK::Semicolon, *after_type) &&
-              !at(TK::Comma, *after_type);
+              !at(TK::Semicolon, *after_type) && !at(TK::Comma, *after_type);
           const bool distinct_statement =
               annexCanStart(*statement, first) &&
               !annexCanStart("block_item_declaration", first) &&
@@ -7203,24 +7903,34 @@ class SVParser {
       const bool enclosing_attributes =
           at(TK::OpenParenthesis) && at(TK::Star, 1) &&
           (root == "package_item" || root == "checker_or_generate_item");
-      if (!enclosing_attributes && !annexCanStart(root, peek().kind))
+      if (!enclosing_attributes && !annexCanStart(root, peek().kind)) {
         continue;
-      if (root == "library_description" &&
-          parseLibraryDescriptionRule())
+      }
+      if (root == "library_description" && parseLibraryDescriptionRule()) {
         return true;
-      if (root == "timeunits_declaration" && parseTimeunitsRule())
+      }
+      if (root == "timeunits_declaration" && parseTimeunitsRule()) {
         return true;
+      }
       if (root == "local_parameter_declaration") {
-        if (parseParameterDeclarationRule()) return true;
+        if (parseParameterDeclarationRule()) {
+          return true;
+        }
       }
       if (root == "design_statement") {
-        if (parseDesignStatementRule()) return true;
+        if (parseDesignStatementRule()) {
+          return true;
+        }
       }
       if (root == "config_rule_statement") {
-        if (parseConfigRuleStatementRule()) return true;
+        if (parseConfigRuleStatementRule()) {
+          return true;
+        }
       }
       if (root == "description" && block_stack_.empty()) {
-        if (parseDescriptionRule()) return true;
+        if (parseDescriptionRule()) {
+          return true;
+        }
       }
       if (root == "generate_block") {
         parseGenerateBlockRule();
@@ -7231,18 +7941,21 @@ class SVParser {
           root == "function_statement") {
         if (parseNullStatementRule(root) ||
             parseAttributedStatementRule(root) ||
-            parseStatementLabelRule(roots) ||
-            parseQualifiedStatementRule() || parseStatementItemRule() ||
-            parseAssignmentOrCallStatementRule()) {
+            parseStatementLabelRule(roots) || parseQualifiedStatementRule() ||
+            parseStatementItemRule() || parseAssignmentOrCallStatementRule()) {
           markStatementPhase();
           return true;
         }
       }
       if (root == "concurrent_assertion_statement") {
-        if (parseConcurrentAssertionRule()) return true;
+        if (parseConcurrentAssertionRule()) {
+          return true;
+        }
       }
       if (root == "deferred_immediate_assertion_statement") {
-        if (parseImmediateAssertionRule()) return true;
+        if (parseImmediateAssertionRule()) {
+          return true;
+        }
       }
       if (root == "statement_item") {
         if (parseQualifiedStatementRule() || parseStatementItemRule() ||
@@ -7252,62 +7965,91 @@ class SVParser {
         }
       }
       if (root == "module_item" || root == "non_port_module_item") {
-        if (parseModuleItemRule(root == "module_item")) return true;
+        if (parseModuleItemRule(root == "module_item")) {
+          return true;
+        }
       }
       if (root == "interface_item" || root == "non_port_interface_item") {
-        if (parseInterfaceItemRule(root == "interface_item")) return true;
+        if (parseInterfaceItemRule(root == "interface_item")) {
+          return true;
+        }
       }
       if (root == "program_item" || root == "non_port_program_item") {
-        if (parseProgramItemRule(root == "program_item")) return true;
+        if (parseProgramItemRule(root == "program_item")) {
+          return true;
+        }
       }
       if (root == "generate_item") {
-        if (parseGenerateItemRule()) return true;
+        if (parseGenerateItemRule()) {
+          return true;
+        }
       }
       if (root == "checker_or_generate_item") {
-        if (parseCheckerItemRule()) return true;
+        if (parseCheckerItemRule()) {
+          return true;
+        }
       }
       if (root == "package_item") {
-        if (parsePackageItemRule()) return true;
+        if (parsePackageItemRule()) {
+          return true;
+        }
       }
       if (root == "anonymous_program_item") {
-        if (parseAnonymousProgramItemRule()) return true;
+        if (parseAnonymousProgramItemRule()) {
+          return true;
+        }
       }
       if (root == "class_item") {
-        if (parseClassItemRule()) return true;
+        if (parseClassItemRule()) {
+          return true;
+        }
       }
       if (root == "interface_class_item") {
-        if (parseInterfaceClassItemRule()) return true;
+        if (parseInterfaceClassItemRule()) {
+          return true;
+        }
       }
-      if (root == "constraint_block_item" &&
-          parseConstraintBlockItemRule())
+      if (root == "constraint_block_item" && parseConstraintBlockItemRule()) {
         return true;
+      }
       if (root == "constraint_expression") {
-        if (parseConstraintExpressionRule()) return true;
+        if (parseConstraintExpressionRule()) {
+          return true;
+        }
       }
       if (root == "rs_production") {
         parseRsProductionRule();
         return true;
       }
       if (root == "clocking_item") {
-        if (parseClockingItemRule()) return true;
+        if (parseClockingItemRule()) {
+          return true;
+        }
       }
       if (root == "specify_item") {
-        if (parseSpecifyItemRule()) return true;
+        if (parseSpecifyItemRule()) {
+          return true;
+        }
       }
       if (root == "coverage_spec_or_option") {
-        if (parseCoverageSpecOrOptionRule()) return true;
+        if (parseCoverageSpecOrOptionRule()) {
+          return true;
+        }
       }
       if (root == "bins_or_options") {
-        if (parseBinsOrOptionsRule()) return true;
+        if (parseBinsOrOptionsRule()) {
+          return true;
+        }
         parseAnnexSemicolonItem("bins_or_options");
         return true;
       }
-      if (root == "cross_body_item" && parseCrossBodyItemRule())
+      if (root == "cross_body_item" && parseCrossBodyItemRule()) {
         return true;
-      if (root == "tf_item_declaration" ||
-          root == "block_item_declaration") {
-        if (parseBlockOrTfItemDeclarationRule(root == "tf_item_declaration"))
+      }
+      if (root == "tf_item_declaration" || root == "block_item_declaration") {
+        if (parseBlockOrTfItemDeclarationRule(root == "tf_item_declaration")) {
           return true;
+        }
       }
     }
     return false;
@@ -7319,22 +8061,25 @@ class SVParser {
   // alternative, the caller retains the parent chart for an ambiguous leaf.
   auto parseDirectChildRule() -> bool {
     if (grammar_scopes_.empty() || grammar_paused_.back() ||
-        grammar_scopes_.back().failed ||
-        grammar_scopes_.back().interrupted) {
+        grammar_scopes_.back().failed || grammar_scopes_.back().interrupted) {
       return false;
     }
     const auto roots = grammarRoots();
     std::vector<uint16_t> candidates;
     const auto& waiting = grammar_scopes_.back().charts.back().waiting;
     for (const auto root : roots) {
-      if (!annexCanStart(root, peek().kind)) continue;
+      if (!annexCanStart(root, peek().kind)) {
+        continue;
+      }
       const int rule = annexRule(root);
       if (rule < 0 || !waiting.contains(static_cast<uint16_t>(rule))) {
         return false;
       }
       candidates.push_back(static_cast<uint16_t>(rule));
     }
-    if (candidates.empty()) return false;
+    if (candidates.empty()) {
+      return false;
+    }
     const AnnexState::Checkpoint checkpoint =
         grammar_scopes_.back().checkpoint();
     const size_t start = pos_;
@@ -7366,16 +8111,18 @@ class SVParser {
   }
 
   auto parseStatement() -> void {
-    const bool top_level = grammar_contexts_.empty() &&
-                           block_stack_.empty() &&
+    const bool top_level = grammar_contexts_.empty() && block_stack_.empty() &&
                            peek().kind != TK::Directive;
     const size_t start = pos_;
     const uint8_t next_modes =
         top_level ? nextSourceModes(peek().kind) : source_modes_;
-    if (top_level && !next_modes)
+    if (top_level && !next_modes) {
       recordGrammarFallback("item outside Annex A source_text or library_text");
+    }
     parseStatementImpl();
-    if (top_level && next_modes && pos_ > start) source_modes_ = next_modes;
+    if (top_level && next_modes && pos_ > start) {
+      source_modes_ = next_modes;
+    }
   }
 
   auto parseStatementImpl() -> void {
@@ -7421,8 +8168,9 @@ class SVParser {
     // children. Keep the shared prefix path for roots whose direct rule does
     // not yet include attributes (and for description/package prefixes).
     if (at(TK::OpenParenthesis) && at(TK::Star, 1) &&
-        parseDirectGrammarRule())
+        parseDirectGrammarRule()) {
       return;
+    }
 
     // package_declaration stores these outside package_item; other remaining
     // contexts validate them through their current root.
@@ -7431,8 +8179,8 @@ class SVParser {
           !block_stack_.empty() &&
           block_stack_.back().grammar_body == "package_item";
       const auto roots = grammarRoots();
-      const bool allowed = package_item || std::ranges::any_of(
-          roots, [](std::string_view root) {
+      const bool allowed =
+          package_item || std::ranges::any_of(roots, [](std::string_view root) {
             return annexCanStart(root, TK::OpenParenthesis);
           });
       if (!allowed || !consumeAnnexRule("attribute_instance", line_)) {
@@ -7450,22 +8198,30 @@ class SVParser {
       return;
     }
 
-    if (!at(TK::BeginKeyword)) pending_if_begin_ = false;
+    if (!at(TK::BeginKeyword)) {
+      pending_if_begin_ = false;
+    }
 
     if (!block_stack_.empty() && block_stack_.back().constructor_body &&
-        at(TK::SuperKeyword) && at(TK::Dot, 1) &&
-        at(TK::NewKeyword, 2)) {
+        at(TK::SuperKeyword) && at(TK::Dot, 1) && at(TK::NewKeyword, 2)) {
       parseConstructorSuperRule();
       return;
     }
 
     if (grammar_scopes_.empty() && block_stack_.empty() &&
-        (source_modes_ & (kSourceBeforeDescription | kSourceAfterTimeunits |
-                          kSourceAfterDescription)) &&
-        parseDescriptionRule())
+        (static_cast<unsigned>(source_modes_) &
+         (static_cast<unsigned>(kSourceBeforeDescription) |
+          static_cast<unsigned>(kSourceAfterTimeunits) |
+          static_cast<unsigned>(kSourceAfterDescription))) &&
+        parseDescriptionRule()) {
       return;
-    if (parseDirectGrammarRule()) return;
-    if (parseDirectChildRule()) return;
+    }
+    if (parseDirectGrammarRule()) {
+      return;
+    }
+    if (parseDirectChildRule()) {
+      return;
+    }
 
     if (!block_stack_.empty() &&
         block_stack_.back().grammar_body == "udp_body") {
@@ -7527,13 +8283,20 @@ class SVParser {
       // A terminal that begins some Annex A production is a malformed item in
       // this context. Its semicolon is a useful recovery point. Tokens that
       // begin no production need the enclosing block's closing boundary.
-      constexpr std::string_view item_rules[] = {
-          "module_item", "interface_item", "program_item", "package_item",
-          "class_item", "statement_or_null", "generate_item",
-          "checker_or_generate_item", "clocking_item", "specify_item",
-          "coverage_spec_or_option", "constraint_expression"};
-      const bool annex_item_start = std::ranges::any_of(
-          item_rules, [first](std::string_view rule) {
+      constexpr std::array item_rules = {"module_item",
+                                         "interface_item",
+                                         "program_item",
+                                         "package_item",
+                                         "class_item",
+                                         "statement_or_null",
+                                         "generate_item",
+                                         "checker_or_generate_item",
+                                         "clocking_item",
+                                         "specify_item",
+                                         "coverage_spec_or_option",
+                                         "constraint_expression"};
+      const bool annex_item_start =
+          std::ranges::any_of(item_rules, [first](std::string_view rule) {
             return annexCanStart(rule, first);
           });
       if (annex_item_start) {
@@ -7567,15 +8330,20 @@ class SVParser {
       recoverMalformedItem(saved);
       return;
     }
-    const auto checkpoint = grammar_scopes_.empty()
-                                ? std::optional<AnnexState::Checkpoint>{}
-                                : std::optional{grammar_scopes_.back().checkpoint()};
+    const auto checkpoint =
+        grammar_scopes_.empty()
+            ? std::optional<AnnexState::Checkpoint>{}
+            : std::optional{grammar_scopes_.back().checkpoint()};
     const bool was_paused = checkpoint && grammar_paused_.back();
-    if (checkpoint) grammar_paused_.back() = true;
+    if (checkpoint) {
+      grammar_paused_.back() = true;
+    }
     grammar_contexts_.push_back({block_stack_.size(), {body_rule}});
     parseStatement();
     grammar_contexts_.pop_back();
-    if (!checkpoint) return;
+    if (!checkpoint) {
+      return;
+    }
     grammar_paused_.back() = was_paused;
     if (!grammar_scopes_.back().skipOpaqueItem(
             *checkpoint, {static_cast<uint16_t>(annexRule(body_rule))})) {
@@ -7602,9 +8370,12 @@ class SVParser {
       grammar_contexts_.pop_back();
     }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::ElseKeyword)) return;
+    if (!at(TK::ElseKeyword)) {
+      return;
+    }
     if (null_before_else) {
-      recordGrammarFallback("Annex A action_block requires a statement before else");
+      recordGrammarFallback(
+          "Annex A action_block requires a statement before else");
     }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
@@ -7630,7 +8401,9 @@ class SVParser {
   // final prefix is distinct from the simple immediate statement, and the
   // assertion production validates the complete header.
   auto parseAssertionItemRule() -> bool {
-    if (parseConcurrentAssertionRule()) return true;
+    if (parseConcurrentAssertionRule()) {
+      return true;
+    }
     if ((at(TK::AssertKeyword) || at(TK::AssumeKeyword) ||
          at(TK::CoverKeyword)) &&
         (at(TK::Hash, 1) || at(TK::FinalKeyword, 1))) {
@@ -7640,8 +8413,9 @@ class SVParser {
   }
 
   auto parseRestrictPropertyStatementRule() -> bool {
-    if (!at(TK::RestrictKeyword) || !at(TK::PropertyKeyword, 1))
+    if (!at(TK::RestrictKeyword) || !at(TK::PropertyKeyword, 1)) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // restrict
     consumeInto(line_);  // property
@@ -7670,8 +8444,9 @@ class SVParser {
 
   auto parseAssertPropertyStatementRule() -> bool {
     if ((!at(TK::AssertKeyword) && !at(TK::AssumeKeyword)) ||
-        !at(TK::PropertyKeyword, 1))
+        !at(TK::PropertyKeyword, 1)) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // assert / assume
     consumeInto(line_);  // property
@@ -7739,8 +8514,9 @@ class SVParser {
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
         if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_))
+                                   indent_level_)) {
           break;
+        }
         continue;
       }
       if (isCompilerDirective(peek())) {
@@ -7748,7 +8524,9 @@ class SVParser {
         parseDirectiveLine();
         continue;
       }
-      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      if (!grammar_scopes_.back().accepts(peek().kind)) {
+        break;
+      }
       consumeInto(line_);
     }
     const AnnexState prefix = endGrammar(false);
@@ -7773,8 +8551,9 @@ class SVParser {
         !at(TK::CoverKeyword)) {
       return false;
     }
-    if (at(TK::PropertyKeyword, 1) || at(TK::SequenceKeyword, 1))
+    if (at(TK::PropertyKeyword, 1) || at(TK::SequenceKeyword, 1)) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"immediate_assertion_statement"});
     while (!at(TK::EndOfFile) &&
@@ -7783,8 +8562,9 @@ class SVParser {
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
         if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_))
+                                   indent_level_)) {
           break;
+        }
         continue;
       }
       if (isCompilerDirective(peek())) {
@@ -7792,7 +8572,9 @@ class SVParser {
         parseDirectiveLine();
         continue;
       }
-      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      if (!grammar_scopes_.back().accepts(peek().kind)) {
+        break;
+      }
       consumeInto(line_);
     }
     const AnnexState prefix = endGrammar(false);
@@ -7818,10 +8600,12 @@ class SVParser {
         !at(TK::CoverKeyword)) {
       return false;
     }
-    if (at(TK::PropertyKeyword, 1) || at(TK::SequenceKeyword, 1))
+    if (at(TK::PropertyKeyword, 1) || at(TK::SequenceKeyword, 1)) {
       return false;
-    if (isConditionalStartDirective(peek(1)))
+    }
+    if (isConditionalStartDirective(peek(1))) {
       return parseConditionalImmediateAssertionRule();
+    }
 
     const LeafCheckpoint saved = leafCheckpoint();
     const bool cover = at(TK::CoverKeyword);
@@ -7866,7 +8650,9 @@ class SVParser {
 
   // expect_property_statement ::= 'expect' '(' property_spec ')' action_block.
   auto parseExpectPropertyStatementRule() -> bool {
-    if (!at(TK::ExpectKeyword)) return false;
+    if (!at(TK::ExpectKeyword)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
     if (!at(TK::OpenParenthesis)) {
@@ -7901,16 +8687,29 @@ class SVParser {
     int brackets = 0;
     for (size_t i = start; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive && !isCompilerDirective(token)))
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         return true;
-      if (token.kind == TK::OpenBracket) ++brackets;
-      if (token.kind == TK::CloseBracket && brackets > 0) --brackets;
-      if (brackets == 0 && token.kind == TK::OpenParenthesis) ++depth;
-      if (brackets == 0 && token.kind == TK::CloseParenthesis &&
-          depth > 0 && --depth == 0) break;
-      if (token.kind == TK::EndOfFile) break;
+      }
+      if (token.kind == TK::OpenBracket) {
+        ++brackets;
+      }
+      if (token.kind == TK::CloseBracket && brackets > 0) {
+        --brackets;
+      }
+      if (brackets == 0 && token.kind == TK::OpenParenthesis) {
+        ++depth;
+      }
+      if (brackets == 0 && token.kind == TK::CloseParenthesis && depth > 0) {
+        --depth;
+        if (depth != 0) {
+          continue;
+        }
+        break;
+      }
+      if (token.kind == TK::EndOfFile) {
+        break;
+      }
     }
     return false;
   }
@@ -7918,19 +8717,27 @@ class SVParser {
   // named_parameter_assignment ::= '.' parameter_identifier '('
   //                                 [ param_expression ] ')'.
   [[nodiscard]] auto parseNamedParameterAssignmentRule() -> bool {
-    if (!at(TK::Dot)) return false;
+    if (!at(TK::Dot)) {
+      return false;
+    }
     consumeInto(line_);
-    if (!consumeAnnexRule("parameter_identifier", line_)) return false;
+    if (!consumeAnnexRule("parameter_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     if (!at(TK::CloseParenthesis) &&
-        !consumeAnnexRule("param_expression", line_,
-                          TK::CloseParenthesis))
+        !consumeAnnexRule("param_expression", line_, TK::CloseParenthesis)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -7941,27 +8748,35 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseParameterValueAssignmentRule() -> bool {
-    if (!at(TK::Hash) || !at(TK::OpenParenthesis, 1)) return false;
+    if (!at(TK::Hash) || !at(TK::OpenParenthesis, 1)) {
+      return false;
+    }
     consumeInto(line_);
     consumeInto(line_);
     addLine();
     parseGrammarChildDirectiveLines();
     if (!at(TK::CloseParenthesis)) {
       const bool named = at(TK::Dot);
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         parseGrammarChildDirectiveLines();
-        if (at(TK::Dot) != named) return false;
+        if (at(TK::Dot) != named) {
+          return false;
+        }
         if (!(named ? parseNamedParameterAssignmentRule()
                     : parseOrderedParameterAssignmentRule())) {
           return false;
         }
         parseGrammarChildDirectiveLines();
-        if (!at(TK::Comma)) break;
+        if (!at(TK::Comma)) {
+          break;
+        }
         consumeInto(line_);
         addLine();
       } while (!at(TK::EndOfFile));
     }
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     addLine();
     consumeInto(line_);
     return true;
@@ -7976,33 +8791,44 @@ class SVParser {
 
   // named_port_connection and named_checker_port_connection share this
   // punctuation after their attribute_instance prefix.
-  [[nodiscard]] auto parseNamedPortConnectionRule(
-      bool& module_possible, bool& checker_possible) -> bool {
-    if (!at(TK::Dot)) return false;
+  [[nodiscard]] auto parseNamedPortConnectionRule(bool& module_possible,
+                                                  bool& checker_possible)
+      -> bool {
+    if (!at(TK::Dot)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     if (at(TK::Star)) {
       consumeInto(line_);
       return true;
     }
-    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    if (!consumeAnnexRule("port_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::OpenParenthesis)) return true;
+    if (!at(TK::OpenParenthesis)) {
+      return true;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     if (!at(TK::CloseParenthesis) &&
-        !parseSharedPortActualRule(module_possible, checker_possible))
+        !parseSharedPortActualRule(module_possible, checker_possible)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
 
   // ordered_port_connection and ordered_checker_port_connection both allow
   // an empty argument after their attribute_instance prefix.
-  [[nodiscard]] auto parseOrderedPortConnectionRule(
-      bool& module_possible, bool& checker_possible) -> bool {
+  [[nodiscard]] auto parseOrderedPortConnectionRule(bool& module_possible,
+                                                    bool& checker_possible)
+      -> bool {
     return at(TK::Comma) || at(TK::CloseParenthesis) ||
            parseSharedPortActualRule(module_possible, checker_possible);
   }
@@ -8011,18 +8837,23 @@ class SVParser {
   // argument differs: expression versus property_actual_arg. Keep a local
   // grammar choice for that child and update the two enclosing alternatives.
   [[nodiscard]] auto parseSharedPortActualRule(bool& module_possible,
-                                               bool& checker_possible)
-      -> bool {
+                                               bool& checker_possible) -> bool {
     std::vector<std::string_view> rules;
-    if (module_possible) rules.push_back("expression");
-    if (checker_possible) rules.push_back("property_actual_arg");
-    if (rules.empty()) return false;
-    beginGrammar(std::move(rules));
+    if (module_possible) {
+      rules.emplace_back("expression");
+    }
+    if (checker_possible) {
+      rules.emplace_back("property_actual_arg");
+    }
+    if (rules.empty()) {
+      return false;
+    }
+    beginGrammar(rules);
     ListDepth depth;
     while (!at(TK::EndOfFile)) {
-      if (depth.topLevel() &&
-          (at(TK::Comma) || at(TK::CloseParenthesis)))
+      if (depth.topLevel() && (at(TK::Comma) || at(TK::CloseParenthesis))) {
         break;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
@@ -8030,34 +8861,52 @@ class SVParser {
       }
       const auto& grammar = grammar_scopes_.back();
       if (grammar.failed || grammar.interrupted ||
-          !grammar.accepts(peek().kind))
+          !grammar.accepts(peek().kind)) {
         break;
+      }
       switch (peek().kind) {
-        case TK::OpenParenthesis: ++depth.parens; break;
-        case TK::CloseParenthesis: --depth.parens; break;
-        case TK::OpenBracket: ++depth.brackets; break;
-        case TK::CloseBracket: --depth.brackets; break;
+        case TK::OpenParenthesis:
+          ++depth.parens;
+          break;
+        case TK::CloseParenthesis:
+          --depth.parens;
+          break;
+        case TK::OpenBracket:
+          ++depth.brackets;
+          break;
+        case TK::CloseBracket:
+          --depth.brackets;
+          break;
         case TK::OpenBrace:
-        case TK::ApostropheOpenBrace: ++depth.braces; break;
-        case TK::CloseBrace: --depth.braces; break;
-        default: break;
+        case TK::ApostropheOpenBrace:
+          ++depth.braces;
+          break;
+        case TK::CloseBrace:
+          --depth.braces;
+          break;
+        default:
+          break;
       }
       consumeInto(line_);
     }
     const AnnexState actual = endGrammar(false);
-    if (actual.failed || actual.interrupted || !actual.complete())
+    if (actual.failed || actual.interrupted || !actual.complete()) {
       return false;
+    }
     module_possible &= actual.completed("expression");
     checker_possible &= actual.completed("property_actual_arg");
     return module_possible || checker_possible;
   }
 
   [[nodiscard]] auto parseSharedPortConnectionRule(
-      bool& named, bool& style_selected,
-      bool& module_possible, bool& checker_possible) -> bool {
+      bool& named,  // NOLINT(bugprone-easily-swappable-parameters)
+      bool& style_selected, bool& module_possible, bool& checker_possible)
+      -> bool {
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     const bool item_named = at(TK::Dot);
@@ -8065,19 +8914,23 @@ class SVParser {
       named = item_named;
       style_selected = true;
     }
-    if (item_named != named) return false;
+    if (item_named != named) {
+      return false;
+    }
     return named
-               ? parseNamedPortConnectionRule(module_possible,
-                                              checker_possible)
+               ? parseNamedPortConnectionRule(module_possible, checker_possible)
                : parseOrderedPortConnectionRule(module_possible,
                                                 checker_possible);
   }
 
-  [[nodiscard]] auto parseHierarchicalInstanceRule(bool allow_checker,
-                                                    bool& checker_only,
-                                                    bool& checker_viable) -> bool {
+  [[nodiscard]] auto parseHierarchicalInstanceRule(
+      bool allow_checker,
+      bool& checker_only,  // NOLINT(bugprone-easily-swappable-parameters)
+      bool& checker_viable) -> bool {
     if (!consumeAnnexRule("name_of_instance", line_) ||
-        !at(TK::OpenParenthesis)) return false;
+        !at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     addLine();
     bool module_possible = true;
@@ -8085,17 +8938,22 @@ class SVParser {
     if (!at(TK::CloseParenthesis)) {
       bool named = false;
       bool style_selected = false;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         if (!parseSharedPortConnectionRule(named, style_selected,
-                                           module_possible, checker_possible))
+                                           module_possible, checker_possible)) {
           return false;
+        }
         parseGrammarChildDirectiveLines();
-        if (!at(TK::Comma)) break;
+        if (!at(TK::Comma)) {
+          break;
+        }
         consumeInto(line_);
         addLine();
       } while (!at(TK::EndOfFile));
     }
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     addLine();
     consumeInto(line_);
     checker_only = checker_possible && !module_possible;
@@ -8104,20 +8962,28 @@ class SVParser {
   }
 
   [[nodiscard]] auto hasInstanceShape(size_t index) const -> bool {
-    if (index < pos_ || index >= tokens_.size()) return false;
+    if (index < pos_ || index >= tokens_.size()) {
+      return false;
+    }
     const size_t offset = index - pos_;
-    if (!at(TK::Identifier, offset)) return false;
+    if (!at(TK::Identifier, offset)) {
+      return false;
+    }
     const auto after_dimensions = afterBalancedDimensions(offset + 1);
     return after_dimensions && at(TK::OpenParenthesis, *after_dimensions);
   }
 
   auto parseScopedCheckerInstantiationRule(bool finish_line = true,
-                                          bool* valid_result = nullptr) -> bool {
-    if (valid_result) *valid_result = false;
+                                           bool* valid_result = nullptr)
+      -> bool {
+    if (valid_result) {
+      *valid_result = false;
+    }
     if ((!at(TK::Identifier) && !at(TK::UnitSystemName)) ||
-        !at(TK::DoubleColon, 1) ||
-        !at(TK::Identifier, 2) || !hasInstanceShape(pos_ + 3))
+        !at(TK::DoubleColon, 1) || !at(TK::Identifier, 2) ||
+        !hasInstanceShape(pos_ + 3)) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     bool checker_only = false;
     bool checker_viable = false;
@@ -8129,8 +8995,12 @@ class SVParser {
       return true;
     }
     consumeInto(line_);
-    if (finish_line) addLine();
-    if (valid_result) *valid_result = true;
+    if (finish_line) {
+      addLine();
+    }
+    if (valid_result) {
+      *valid_result = true;
+    }
     return true;
   }
 
@@ -8138,16 +9008,19 @@ class SVParser {
   // n_output_gate_instance list has a shared comma prefix between its final
   // output and input, so that one keeps its local Annex A child state.
   [[nodiscard]] auto parseGateInstanceRule(std::string_view instance) -> bool {
-    if (instance == "n_output_gate_instance")
+    if (instance == "n_output_gate_instance") {
       return consumeAnnexRule(instance, line_, TK::Comma);
-    if (at(TK::Identifier) &&
-        !consumeAnnexRule("name_of_instance", line_))
+    }
+    if (at(TK::Identifier) && !consumeAnnexRule("name_of_instance", line_)) {
       return false;
+    }
     while (afterOrdinaryDirectives(0) > 0) {
       addLine();
       parseDirectiveLine();
     }
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     const auto terminal = [&](std::string_view rule) -> bool {
       parseGrammarChildDirectiveLines();
@@ -8156,7 +9029,9 @@ class SVParser {
     };
     const auto separator = [&]() -> bool {
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) return false;
+      if (!at(TK::Comma)) {
+        return false;
+      }
       consumeInto(line_);
       return true;
     };
@@ -8174,21 +9049,27 @@ class SVParser {
       while (at(TK::Comma)) {
         consumeInto(line_);
         valid = terminal("input_terminal");
-        if (!valid) break;
+        if (!valid) {
+          break;
+        }
       }
     } else if (valid && instance != "pass_switch_instance" &&
                instance != "pull_gate_instance") {
-      if (!separator()) return false;
-      const std::string_view third =
-          instance == "cmos_switch_instance" ? "ncontrol_terminal"
-                                               : "enable_terminal";
+      if (!separator()) {
+        return false;
+      }
+      const std::string_view third = instance == "cmos_switch_instance"
+                                         ? "ncontrol_terminal"
+                                         : "enable_terminal";
       valid = terminal(third);
       if (valid && instance == "cmos_switch_instance") {
         valid = separator() && terminal("pcontrol_terminal");
       }
     }
     parseGrammarChildDirectiveLines();
-    if (!valid || !at(TK::CloseParenthesis)) return false;
+    if (!valid || !at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -8250,27 +9131,35 @@ class SVParser {
       }
     };
     bool valid = true;
-    if (type == "pulldown" || type == "pullup")
+    if (type == "pulldown" || type == "pullup") {
       consumeInto(line_);
-    else
+    } else {
       valid = consumeAnnexRule(type, line_);
+    }
     skip_directives();
     const bool has_strength =
         valid && !strength.empty() && at(TK::OpenParenthesis) &&
         (annexCanStart("strength0", peek(1).kind) ||
-         annexCanStart("strength1", peek(1).kind) ||
-         at(TK::HighZ0Keyword, 1) || at(TK::HighZ1Keyword, 1));
-    if (has_strength) valid = consumeAnnexRule(strength, line_);
+         annexCanStart("strength1", peek(1).kind) || at(TK::HighZ0Keyword, 1) ||
+         at(TK::HighZ1Keyword, 1));
+    if (has_strength) {
+      valid = consumeAnnexRule(strength, line_);
+    }
     skip_directives();
-    if (valid && !delay.empty() && at(TK::Hash))
+    if (valid && !delay.empty() && at(TK::Hash)) {
       valid = consumeAnnexRule(delay, line_);
+    }
     skip_directives();
-    do {
-      if (!valid) break;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!valid) {
+        break;
+      }
       parseGrammarChildDirectiveLines();
       valid = parseGateInstanceRule(instance);
       parseGrammarChildDirectiveLines();
-      if (!valid || !at(TK::Comma)) break;
+      if (!valid || !at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
       addLine();
     } while (true);
@@ -8292,9 +9181,12 @@ class SVParser {
         !(at(TK::OpenParenthesis, after_identifier) ||
           (at(TK::Hash, after_identifier) &&
            !at(TK::OpenParenthesis,
-               afterOrdinaryDirectives(after_identifier + 1)))))
+               afterOrdinaryDirectives(after_identifier + 1))))) {
       return false;
-    if (hasAnnexListInterruption(pos_, false)) return false;
+    }
+    if (hasAnnexListInterruption(pos_, false)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     const auto skip_directives = [&] {
       while (afterOrdinaryDirectives(0) > 0) {
@@ -8304,21 +9196,27 @@ class SVParser {
     };
     bool valid = consumeAnnexRule("udp_identifier", line_);
     skip_directives();
-    const bool strength = valid && at(TK::OpenParenthesis) &&
-                          (annexCanStart("strength0", peek(1).kind) ||
-                           annexCanStart("strength1", peek(1).kind) ||
-                           at(TK::HighZ0Keyword, 1) ||
-                           at(TK::HighZ1Keyword, 1));
-    if (valid && strength) valid = consumeAnnexRule("drive_strength", line_);
+    const bool strength =
+        valid && at(TK::OpenParenthesis) &&
+        (annexCanStart("strength0", peek(1).kind) ||
+         annexCanStart("strength1", peek(1).kind) || at(TK::HighZ0Keyword, 1) ||
+         at(TK::HighZ1Keyword, 1));
+    if (valid && strength) {
+      valid = consumeAnnexRule("drive_strength", line_);
+    }
     skip_directives();
-    if (valid && at(TK::Hash))
+    if (valid && at(TK::Hash)) {
       valid = consumeAnnexRule("delay2", line_);
+    }
     skip_directives();
-    do {
-      if (!valid) break;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!valid) {
+        break;
+      }
       parseGrammarChildDirectiveLines();
-      if (at(TK::Identifier))
+      if (at(TK::Identifier)) {
         valid = consumeAnnexRule("name_of_instance", line_);
+      }
       skip_directives();
       if (!valid || !at(TK::OpenParenthesis)) {
         valid = false;
@@ -8332,11 +9230,13 @@ class SVParser {
         break;
       }
       consumeInto(line_);
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         parseGrammarChildDirectiveLines();
         valid = consumeAnnexRule("input_terminal", line_, TK::Comma,
                                  [&] { return at(TK::CloseParenthesis); });
-        if (!valid || !at(TK::Comma)) break;
+        if (!valid || !at(TK::Comma)) {
+          break;
+        }
         consumeInto(line_);
       } while (true);
       if (!valid || !at(TK::CloseParenthesis)) {
@@ -8346,7 +9246,9 @@ class SVParser {
       addLine();
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
       addLine();
     } while (true);
@@ -8362,15 +9264,20 @@ class SVParser {
 
   auto parseStructuralInstantiationRule(bool finish_line = true,
                                         bool* valid_result = nullptr) -> bool {
-    if (valid_result) *valid_result = false;
-    if (!at(TK::Identifier) && !at(TK::UnitSystemName)) return false;
-    if (at(TK::DoubleColon, 1))
+    if (valid_result) {
+      *valid_result = false;
+    }
+    if (!at(TK::Identifier) && !at(TK::UnitSystemName)) {
+      return false;
+    }
+    if (at(TK::DoubleColon, 1)) {
       return parseScopedCheckerInstantiationRule(finish_line, valid_result);
+    }
     bool instance_shape = hasInstanceShape(pos_ + 1);
     if (at(TK::Hash, 1) && at(TK::OpenParenthesis, 2)) {
       const auto after_parameters = afterBalancedParentheses(2);
-      instance_shape = after_parameters &&
-                       hasInstanceShape(pos_ + *after_parameters);
+      instance_shape =
+          after_parameters && hasInstanceShape(pos_ + *after_parameters);
     }
     if (!instance_shape) {
       return false;
@@ -8410,15 +9317,16 @@ class SVParser {
       skip_directives();
     }
     size_t instance_count = 0;
-    do {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       bool valid = false;
       bool checker_only = false;
       bool checker_viable = false;
       if (unavailableInFollowingParentheses(pos_)) {
         beginGrammar({"hierarchical_instance"});
         const bool named = consumeAnnexRule("name_of_instance", line_);
-        if (named && at(TK::OpenParenthesis))
+        if (named && at(TK::OpenParenthesis)) {
           static_cast<void>(parseParenthesizedListInto(line_));
+        }
         const AnnexState instance = endGrammar();
         valid = named && !instance.failed && !instance.interrupted &&
                 instance.complete();
@@ -8438,7 +9346,9 @@ class SVParser {
         recoverMalformedItem(saved);
         return true;
       }
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
       addLine();
       skip_directives();
@@ -8449,8 +9359,12 @@ class SVParser {
       return true;
     }
     consumeInto(line_);
-    if (finish_line) addLine();
-    if (valid_result) *valid_result = true;
+    if (finish_line) {
+      addLine();
+    }
+    if (valid_result) {
+      *valid_result = true;
+    }
     return true;
   }
 
@@ -8504,7 +9418,9 @@ class SVParser {
         while (at(TK::Comma) && grammarAllows(TK::Comma)) {
           consumeInto(line_);
           addLine();
-          if (!at(TK::Identifier) || !grammarAllows(TK::Identifier)) break;
+          if (!at(TK::Identifier) || !grammarAllows(TK::Identifier)) {
+            break;
+          }
           consumeInto(line_);
           if (!at(TK::OpenParenthesis) || !grammarAllows(TK::OpenParenthesis)) {
             break;
@@ -8611,7 +9527,9 @@ class SVParser {
       }
       consumeInto(line_);
       first = false;
-      if (kind == TK::Semicolon && depth == 0) break;
+      if (kind == TK::Semicolon && depth == 0) {
+        break;
+      }
     }
     addLine();
     grammar_suspended_ = was_suspended;
@@ -8675,9 +9593,9 @@ class SVParser {
         joined->pos = pos_;
         joined->line = Line{};
         for (size_t i = 0; i < joined->block_stack.size(); ++i) {
-          joined->block_stack[i].conditional_entry_frame =
+          joined->block_stack.at(i).conditional_entry_frame =
               i < branch_entry.block_stack.size()
-                  ? branch_entry.block_stack[i].conditional_entry_frame
+                  ? branch_entry.block_stack.at(i).conditional_entry_frame
                   : false;
         }
         restoreState(*joined);
@@ -8696,28 +9614,34 @@ class SVParser {
         ++depth.parens;
         break;
       case TK::CloseParenthesis:
-        if (depth.parens > 0) --depth.parens;
+        if (depth.parens > 0) {
+          --depth.parens;
+        }
         break;
       case TK::OpenBracket:
         ++depth.brackets;
         break;
       case TK::CloseBracket:
-        if (depth.brackets > 0) --depth.brackets;
+        if (depth.brackets > 0) {
+          --depth.brackets;
+        }
         break;
       case TK::ApostropheOpenBrace:
       case TK::OpenBrace:
         ++depth.braces;
         break;
       case TK::CloseBrace:
-        if (depth.braces > 0) --depth.braces;
+        if (depth.braces > 0) {
+          --depth.braces;
+        }
         break;
       default:
         break;
     }
   }
 
-  auto parseParenthesizedListInto(
-      Line& line, TK recovery_close = TK::EndOfFile) -> bool {
+  auto parseParenthesizedListInto(Line& line, TK recovery_close = TK::EndOfFile)
+      -> bool {
     if (!at(TK::OpenParenthesis)) {
       return false;
     }
@@ -8777,15 +9701,19 @@ class SVParser {
       line.tokens.push_back(consume());
     } else {
       recordGrammarFallback("unterminated Annex A parenthesized list");
-      if (!grammar_scopes_.empty()) grammar_scopes_.back().interrupted = true;
+      if (!grammar_scopes_.empty()) {
+        grammar_scopes_.back().interrupted = true;
+      }
     }
     return had_compiler_directive;
   }
 
   // module foo #(...) (...); ... endmodule
+  // NOLINTBEGIN(bugprone-easily-swappable-parameters)
   auto consumeGrammarHeader(
       TK closeKw, std::initializer_list<std::string_view> boundaryRules,
       std::initializer_list<std::string_view> completedRules = {}) -> void {
+    // NOLINTEND(bugprone-easily-swappable-parameters)
     while (!at(TK::EndOfFile) && !at(closeKw) &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
@@ -8811,7 +9739,9 @@ class SVParser {
                  isConditionalBoundaryDirective(peek()))) {
           consumeInto(line_);
         }
-        if (at(TK::Semicolon)) consumeInto(line_);
+        if (at(TK::Semicolon)) {
+          consumeInto(line_);
+        }
         addLine();
         return;
       }
@@ -8841,8 +9771,11 @@ class SVParser {
     parseDelimitedBody(TK::EndSpecifyKeyword, "specify_item");
   }
 
-  auto parseAnnexDelimitedBlock(TK closeKw, std::string_view declarationRule,
-                                std::string_view bodyRule) -> void {
+  auto parseAnnexDelimitedBlock(
+      TK closeKw,
+      std::string_view  // NOLINT(bugprone-easily-swappable-parameters)
+          declarationRule,
+      std::string_view bodyRule) -> void {
     beginGrammar({declarationRule});
     consumeGrammarHeader(closeKw, {declarationRule});
     const AnnexState header = endGrammar(false);
@@ -8852,12 +9785,16 @@ class SVParser {
     if (global_clocking) {
       pushOpenFrame(closeKw);
       ++indent_level_;
-      while (isCompilerDirective(peek())) parseDirectiveLine();
+      while (isCompilerDirective(peek())) {
+        parseDirectiveLine();
+      }
       if (!at(closeKw)) {
         recordGrammarFallback("global clocking has no clocking_item body");
         emitOpaque(pos_, findOuterBoundary(pos_));
       }
-      if (at(closeKw)) parseOpenFrameClose();
+      if (at(closeKw)) {
+        parseOpenFrameClose();
+      }
       return;
     }
     parseDelimitedBody(closeKw, bodyRule);
@@ -8886,11 +9823,15 @@ class SVParser {
     }
     if (kind == closeKw) {
       addLine();
-      if (indent_level_ > baseIndent) --indent_level_;
+      if (indent_level_ > baseIndent) {
+        --indent_level_;
+      }
     }
     const bool list_separator =
         listDepth && kind == TK::Comma && listDepth->topLevel();
-    if (listDepth) advanceListDepth(*listDepth, kind);
+    if (listDepth) {
+      advanceListDepth(*listDepth, kind);
+    }
     consumeInto(line_);
     if (list_separator) {
       addLine();
@@ -8927,7 +9868,9 @@ class SVParser {
       grammar_scopes_ = entry;
       headerEnded = entry_header_ended;
       indent_level_ = entry_indent;
-      if (listDepth) *listDepth = entry_depth;
+      if (listDepth) {
+        *listDepth = entry_depth;
+      }
       while (!at(TK::EndOfFile) && !isConditionalBoundaryDirective(peek())) {
         if (isConditionalStartDirective(peek())) {
           if (!parseAnnexConditional(closeKw, headerEnded, baseIndent,
@@ -8945,7 +9888,9 @@ class SVParser {
       addLine();
       branches.push_back({grammar_scopes_, headerEnded, indent_level_,
                           listDepth ? *listDepth : ListDepth{}});
-      if (!isConditionalAlternativeDirective(peek())) break;
+      if (!isConditionalAlternativeDirective(peek())) {
+        break;
+      }
       has_else |= peek().rawText() == "`else";
       parseDirectiveLine();
     }
@@ -8958,13 +9903,15 @@ class SVParser {
       branches.push_back(
           {entry, entry_header_ended, entry_indent, entry_depth});
     }
-    if (branches.empty()) return false;
+    if (branches.empty()) {
+      return false;
+    }
     const auto& joined = branches.front();
     for (const auto& branch : branches) {
       bool same_grammar = joined.grammars.size() == branch.grammars.size();
       for (size_t i = 0; same_grammar && i < joined.grammars.size(); ++i) {
-        const auto& left = joined.grammars[i];
-        const auto& right = branch.grammars[i];
+        const auto& left = joined.grammars.at(i);
+        const auto& right = branch.grammars.at(i);
         same_grammar = left.roots == right.roots &&
                        left.failed == right.failed &&
                        left.interrupted == right.interrupted;
@@ -8978,50 +9925,61 @@ class SVParser {
     grammar_scopes_ = joined.grammars;
     for (size_t branch = 1; branch < branches.size(); ++branch) {
       for (size_t i = 0; i < grammar_scopes_.size(); ++i) {
-        grammar_scopes_[i].addContinuation(branches[branch].grammars[i]);
+        grammar_scopes_.at(i).addContinuation(
+            branches.at(branch).grammars.at(i));
       }
     }
     headerEnded = joined.header_ended;
     indent_level_ = joined.indent;
-    if (listDepth) *listDepth = joined.depth;
+    if (listDepth) {
+      *listDepth = joined.depth;
+    }
     return true;
   }
 
-  [[nodiscard]] auto parseAssertionDeclarationHeaderRule(
-      TK closeKw, bool conditional_ports) -> bool {
+  [[nodiscard]] auto parseAssertionDeclarationHeaderRule(TK closeKw,
+                                                         bool conditional_ports)
+      -> bool {
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
       }
     };
-    const std::string_view identifier_rule =
-        closeKw == TK::EndPropertyKeyword ? "property_identifier"
-                                           : "sequence_identifier";
-    const std::string_view port_item =
-        closeKw == TK::EndPropertyKeyword ? "property_port_item"
+    const std::string_view identifier_rule = closeKw == TK::EndPropertyKeyword
+                                                 ? "property_identifier"
+                                                 : "sequence_identifier";
+    const std::string_view port_item = closeKw == TK::EndPropertyKeyword
+                                           ? "property_port_item"
                                            : "sequence_port_item";
-    const std::string_view port_list =
-        closeKw == TK::EndPropertyKeyword ? "property_port_list"
+    const std::string_view port_list = closeKw == TK::EndPropertyKeyword
+                                           ? "property_port_list"
                                            : "sequence_port_list";
     consumeInto(line_);  // property / sequence
     skip_directives();
-    if (!consumeAnnexRule(identifier_rule, line_)) return false;
+    if (!consumeAnnexRule(identifier_rule, line_)) {
+      return false;
+    }
     skip_directives();
     if (at(TK::OpenParenthesis)) {
       consumeInto(line_);
       bool valid = true;
-      if (!at(TK::CloseParenthesis))
-        valid = conditional_ports
-                    ? parseConditionalAnnexCommaListRule(
-                          port_list, port_item, TK::CloseParenthesis)
-                    : parseAssertionPortListRule(
-                          closeKw == TK::EndPropertyKeyword);
-      if (!valid || !at(TK::CloseParenthesis)) return false;
+      if (!at(TK::CloseParenthesis)) {
+        valid =
+            conditional_ports
+                ? parseConditionalAnnexCommaListRule(port_list, port_item,
+                                                     TK::CloseParenthesis)
+                : parseAssertionPortListRule(closeKw == TK::EndPropertyKeyword);
+      }
+      if (!valid || !at(TK::CloseParenthesis)) {
+        return false;
+      }
       consumeInto(line_);
       skip_directives();
     }
-    if (!at(TK::Semicolon)) return false;
+    if (!at(TK::Semicolon)) {
+      return false;
+    }
     consumeInto(line_);
     addLine();
     return true;
@@ -9037,19 +9995,22 @@ class SVParser {
       }
     };
     skip_directives();
-    if (at(TK::At) && !consumeAnnexRule("clocking_event", line_))
+    if (at(TK::At) && !consumeAnnexRule("clocking_event", line_)) {
       return false;
+    }
     skip_directives();
     if (at(TK::DisableKeyword)) {
       consumeInto(line_);
       skip_directives();
-      if (!at(TK::IffKeyword)) return false;
+      if (!at(TK::IffKeyword)) {
+        return false;
+      }
       consumeInto(line_);
       skip_directives();
-      if (!consumeAnnexDelimited(TK::OpenParenthesis,
-                                 TK::CloseParenthesis,
-                                 "expression_or_dist", line_))
+      if (!consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                                 "expression_or_dist", line_)) {
         return false;
+      }
       skip_directives();
     }
     return consumeAnnexRule("property_expr", line_, TK::Semicolon);
@@ -9061,23 +10022,28 @@ class SVParser {
   // list boundary is therefore the first assignment name.
   [[nodiscard]] auto parseAssertionVariableDeclarationRule() -> bool {
     const bool var = at(TK::VarKeyword);
-    if (var) consumeInto(line_);
+    if (var) {
+      consumeInto(line_);
+    }
     parseGrammarChildDirectiveLines();
-    const bool implicit_type = var && implicitIdentifierBefore(
-        {TK::Semicolon, TK::Equals, TK::Comma});
+    const bool implicit_type =
+        var && implicitIdentifierBefore({TK::Semicolon, TK::Equals, TK::Comma});
     if (!implicit_type &&
-        !consumeAnnexRule(var ? "data_type_or_implicit" : "data_type",
-                          line_))
+        !consumeAnnexRule(var ? "data_type_or_implicit" : "data_type", line_)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
     const bool conditional_members = hasConditionalListMember(pos_);
     if (!(hasAnnexListInterruption(pos_, conditional_members)
               ? consumeAnnexRule("list_of_variable_decl_assignments", line_,
                                  TK::Semicolon)
-              : parseVariableAssignmentListRule(conditional_members)))
+              : parseVariableAssignmentListRule(conditional_members))) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::Semicolon)) return false;
+    if (!at(TK::Semicolon)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -9087,18 +10053,18 @@ class SVParser {
   // declaration identifier enters the local declaration rule; the remaining
   // body enters property_spec or sequence_expr. Conditional branches retain
   // both body alternatives until their joined grammar state resolves them.
-  auto parseAnnexWholeBlock(TK closeKw,
-                            std::string_view declarationRule) -> void {
+  auto parseAnnexWholeBlock(TK closeKw, std::string_view declarationRule)
+      -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool conditional_ports =
         at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
         hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
     const bool direct_header =
         !hasAnnexHeaderInterruption(pos_, conditional_ports);
-    bool complete;
+    bool complete = false;
     if (direct_header) {
-      complete = parseAssertionDeclarationHeaderRule(closeKw,
-                                                   conditional_ports);
+      complete =
+          parseAssertionDeclarationHeaderRule(closeKw, conditional_ports);
     } else {
       beginGrammar({declarationRule});
       consumeGrammarHeader(closeKw, {declarationRule});
@@ -9122,10 +10088,11 @@ class SVParser {
             at(TK::UnitSystemName) && at(TK::DoubleColon, 1) ? 2 : 0;
         const auto after_type = afterUserTypePrefix(type_offset);
         if (!(at(TK::VarKeyword) ||
-              (annexCanStart("data_type", peek().kind) &&
-               !at(TK::Identifier) && !at(TK::UnitSystemName)) ||
-              (after_type && at(TK::Identifier, *after_type))))
+              (annexCanStart("data_type", peek().kind) && !at(TK::Identifier) &&
+               !at(TK::UnitSystemName)) ||
+              (after_type && at(TK::Identifier, *after_type)))) {
           break;
+        }
         if (!parseAssertionVariableDeclarationRule()) {
           complete = false;
           break;
@@ -9142,16 +10109,16 @@ class SVParser {
             conditional_body = true;
             break;
           }
-          if (tokens_[i].kind == closeKw ||
-              tokens_[i].kind == TK::EndOfFile)
+          if (tokens_[i].kind == closeKw || tokens_[i].kind == TK::EndOfFile) {
             break;
+          }
         }
       }
-      complete = (closeKw == TK::EndPropertyKeyword && !conditional_body
-                      ? parsePropertySpecRule()
-                      : consumeAnnexRule(expression_rule, line_,
-                                         TK::Semicolon)) &&
-                 (at(TK::Semicolon) || at(closeKw));
+      complete =
+          (closeKw == TK::EndPropertyKeyword && !conditional_body
+               ? parsePropertySpecRule()
+               : consumeAnnexRule(expression_rule, line_, TK::Semicolon)) &&
+          (at(TK::Semicolon) || at(closeKw));
       if (complete) {
         if (at(TK::Semicolon)) {
           consumeInto(line_);
@@ -9200,7 +10167,9 @@ class SVParser {
       }
       const TK kind = peek().kind;
       consumeInto(line_);
-      if (kind == TK::Semicolon) addLine();
+      if (kind == TK::Semicolon) {
+        addLine();
+      }
     }
     if (complete) {
       complete = grammar_scopes_.back().completed(expression_rule) &&
@@ -9228,10 +10197,10 @@ class SVParser {
     parseOpaqueBlock(closeKw);
   }
 
-  auto parseAnnexItem(std::vector<std::string_view> rules,
+  auto parseAnnexItem(const std::vector<std::string_view>& rules,
                       bool stop_at_complete_semicolon = false,
                       bool keep_completed_line_open = false) -> AnnexState {
-    beginGrammar(std::move(rules));
+    beginGrammar(rules);
     parseGrammarLeaf(false, {}, stop_at_complete_semicolon,
                      keep_completed_line_open);
     return endGrammar();
@@ -9244,7 +10213,9 @@ class SVParser {
     beginGrammar({child_rule});
     parseGrammarLeaf(false, {}, false, true);
     const AnnexState child = endGrammar();
-    if (child.failed || child.interrupted || !child.complete()) return;
+    if (child.failed || child.interrupted || !child.complete()) {
+      return;
+    }
     if (!at(TK::Semicolon)) {
       recordGrammarFallback("missing Annex A parent semicolon");
       recoverMalformedItem(saved);
@@ -9258,18 +10229,26 @@ class SVParser {
   // modport_identifier list_of_interface_identifiers. The qualified prefix
   // distinguishes this port declaration from a user-typed data declaration.
   auto parseQualifiedInterfacePortDeclarationRule() -> bool {
-    if (!at(TK::Identifier) || !at(TK::Dot, 1) ||
-        !at(TK::Identifier, 2) || !at(TK::Identifier, 3))
+    if (!at(TK::Identifier) || !at(TK::Dot, 1) || !at(TK::Identifier, 2) ||
+        !at(TK::Identifier, 3)) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = consumeAnnexRule("interface_identifier", line_);
     parseGrammarChildDirectiveLines();
-    if (valid && at(TK::Dot)) consumeInto(line_);
-    else valid = false;
+    if (valid && at(TK::Dot)) {
+      consumeInto(line_);
+    } else {
+      valid = false;
+    }
     parseGrammarChildDirectiveLines();
-    if (valid) valid = consumeAnnexRule("modport_identifier", line_);
-    do {
-      if (!valid) break;
+    if (valid) {
+      valid = consumeAnnexRule("modport_identifier", line_);
+    }
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!valid) {
+        break;
+      }
       parseGrammarChildDirectiveLines();
       valid = consumeAnnexRule("interface_identifier", line_);
       parseGrammarChildDirectiveLines();
@@ -9277,7 +10256,9 @@ class SVParser {
         valid = consumeAnnexRule("unpacked_dimension", line_);
         parseGrammarChildDirectiveLines();
       }
-      if (!valid || !at(TK::Comma)) break;
+      if (!valid || !at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     if (!valid || !at(TK::Semicolon)) {
@@ -9316,9 +10297,8 @@ class SVParser {
     }
     const bool directional = at(TK::InputKeyword) || at(TK::OutputKeyword);
     const bool explicit_net =
-        directional &&
-        (annexCanStart("net_type", peek(1).kind) ||
-         at(TK::InterconnectKeyword, 1));
+        directional && (annexCanStart("net_type", peek(1).kind) ||
+                        at(TK::InterconnectKeyword, 1));
     const bool conditional_members = hasConditionalListMember(pos_);
     if (!hasAnnexListInterruption(pos_, conditional_members)) {
       const bool inout = at(TK::InOutKeyword);
@@ -9328,16 +10308,24 @@ class SVParser {
       // reach a list separator, that identifier begins the next production.
       // This also resolves net_port_type's nettype_identifier alternative.
       const auto identifier_ends_member = [&] {
-        if (!at(TK::Identifier)) return false;
+        if (!at(TK::Identifier)) {
+          return false;
+        }
         size_t next = pos_ + 1;
         while (next < tokens_.size() && tokens_[next].kind == TK::OpenBracket) {
           int depth = 0;
-          do {
-            if (tokens_[next].kind == TK::OpenBracket) ++depth;
-            if (tokens_[next].kind == TK::CloseBracket) --depth;
+          do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+            if (tokens_[next].kind == TK::OpenBracket) {
+              ++depth;
+            }
+            if (tokens_[next].kind == TK::CloseBracket) {
+              --depth;
+            }
             ++next;
           } while (depth > 0 && next < tokens_.size());
-          if (depth != 0) return false;
+          if (depth != 0) {
+            return false;
+          }
         }
         return next < tokens_.size() &&
                (tokens_[next].kind == TK::Semicolon ||
@@ -9360,9 +10348,8 @@ class SVParser {
               net || output_variable ? "port_identifier"
                                      : "variable_identifier",
               net ? "unpacked_dimension" : "variable_dimension",
-              output_variable && !net
-                  ? std::string_view{"constant_expression"}
-                  : std::string_view{},
+              output_variable && !net ? std::string_view{"constant_expression"}
+                                      : std::string_view{},
               conditional_members);
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A port declaration");
@@ -9411,25 +10398,30 @@ class SVParser {
   //                           solve_before_list ';' | constraint_expression.
   // solve_before_list ::= constraint_primary { ',' constraint_primary }.
   [[nodiscard]] auto parseSolveBeforeListRule(TK terminator) -> bool {
-    const bool conditional_members =
-        hasConditionalListMember(pos_, terminator);
+    const bool conditional_members = hasConditionalListMember(pos_, terminator);
     if (conditional_members ||
-        hasAnnexListInterruption(pos_, conditional_members, terminator))
+        hasAnnexListInterruption(pos_, conditional_members, terminator)) {
       return consumeAnnexRule("solve_before_list", line_, terminator);
-    do {
+    }
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("constraint_primary", line_, TK::Comma,
-                            [&] { return at(terminator); }))
+                            [&] { return at(terminator); })) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
   }
 
   auto parseConstraintBlockItemRule() -> bool {
-    if (!at(TK::SolveKeyword)) return parseConstraintExpressionRule();
+    if (!at(TK::SolveKeyword)) {
+      return parseConstraintExpressionRule();
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
     if (!parseSolveBeforeListRule(TK::BeforeKeyword) ||
@@ -9439,8 +10431,7 @@ class SVParser {
       return true;
     }
     consumeInto(line_);
-    if (!parseSolveBeforeListRule(TK::Semicolon) ||
-        !at(TK::Semicolon)) {
+    if (!parseSolveBeforeListRule(TK::Semicolon) || !at(TK::Semicolon)) {
       recordGrammarFallback("incomplete Annex A solve before constraint");
       recoverMalformedItem(saved);
       return true;
@@ -9462,8 +10453,9 @@ class SVParser {
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
         if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_))
+                                   indent_level_)) {
           break;
+        }
         continue;
       }
       if (isCompilerDirective(peek())) {
@@ -9471,7 +10463,9 @@ class SVParser {
         parseDirectiveLine();
         continue;
       }
-      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      if (!grammar_scopes_.back().accepts(peek().kind)) {
+        break;
+      }
       consumeInto(line_);
     }
     const AnnexState prefix = endGrammar(false);
@@ -9486,7 +10480,9 @@ class SVParser {
       return true;
     }
     addLine();
-    if (!parseConstraintSetRule()) recoverMalformedItem(saved);
+    if (!parseConstraintSetRule()) {
+      recoverMalformedItem(saved);
+    }
     return true;
   }
 
@@ -9501,24 +10497,32 @@ class SVParser {
       }
     };
     skip_directives();
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     if (!consumeAnnexRule("ps_or_hierarchical_array_identifier", line_,
                           TK::OpenBracket)) {
       return false;
     }
     skip_directives();
-    if (!at(TK::OpenBracket)) return false;
+    if (!at(TK::OpenBracket)) {
+      return false;
+    }
     consumeInto(line_);
     if (!at(TK::CloseBracket) &&
         !consumeAnnexRule("loop_variables", line_, TK::CloseBracket)) {
       return false;
     }
     skip_directives();
-    if (!at(TK::CloseBracket)) return false;
+    if (!at(TK::CloseBracket)) {
+      return false;
+    }
     consumeInto(line_);
     skip_directives();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -9527,13 +10531,16 @@ class SVParser {
   // source, then calls the corresponding child production.
   // range_list ::= value_range { ',' value_range }.
   [[nodiscard]] auto parseRangeListRule(TK terminator) -> bool {
-    do {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("value_range", line_, TK::Comma,
-                            [&] { return at(terminator); }))
+                            [&] { return at(terminator); })) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -9546,14 +10553,12 @@ class SVParser {
         parseDirectiveLine();
       }
     };
-    if ((at(TK::IfKeyword) || at(TK::ForeachKeyword) ||
-         at(TK::UniqueKeyword) || at(TK::SoftKeyword) ||
-         at(TK::DisableKeyword)) &&
+    if ((at(TK::IfKeyword) || at(TK::ForeachKeyword) || at(TK::UniqueKeyword) ||
+         at(TK::SoftKeyword) || at(TK::DisableKeyword)) &&
         isConditionalStartDirective(peek(1))) {
       return parseConditionalConstraintExpressionRule();
     }
-    if (at(TK::ForeachKeyword) &&
-        !isConditionalStartDirective(peek(1))) {
+    if (at(TK::ForeachKeyword) && !isConditionalStartDirective(peek(1))) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
       if (!parseForeachHeaderRule()) {
@@ -9562,7 +10567,9 @@ class SVParser {
         return true;
       }
       addLine();
-      if (!parseConstraintSetRule()) recoverMalformedItem(saved);
+      if (!parseConstraintSetRule()) {
+        recoverMalformedItem(saved);
+      }
       return true;
     }
     if (at(TK::DisableKeyword) &&
@@ -9574,8 +10581,7 @@ class SVParser {
       skip_directives();
       const bool primary = consumeAnnexRule("constraint_primary", line_);
       skip_directives();
-      if (!primary ||
-          !at(TK::Semicolon)) {
+      if (!primary || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A disable soft constraint");
         recoverMalformedItem(saved);
         return true;
@@ -9584,8 +10590,7 @@ class SVParser {
       addLine();
       return true;
     }
-    if (at(TK::UniqueKeyword) &&
-        !isConditionalStartDirective(peek(1))) {
+    if (at(TK::UniqueKeyword) && !isConditionalStartDirective(peek(1))) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
       while (isCompilerDirective(peek()) &&
@@ -9602,16 +10607,18 @@ class SVParser {
           hasConditionalListMember(pos_ + 1, TK::CloseBrace);
       const bool interrupted =
           hasAnnexListInterruption(pos_ + 1, conditional_members,
-                                   TK::CloseBrace) || conditional_members;
+                                   TK::CloseBrace) ||
+          conditional_members;
       bool valid = true;
       if (interrupted) {
         valid = consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace,
                                       "range_list", line_);
       } else {
         consumeInto(line_);
-        valid = parseRangeListRule(TK::CloseBrace) &&
-                at(TK::CloseBrace);
-        if (valid) consumeInto(line_);
+        valid = parseRangeListRule(TK::CloseBrace) && at(TK::CloseBrace);
+        if (valid) {
+          consumeInto(line_);
+        }
       }
       skip_directives();
       if (!valid || !at(TK::Semicolon)) {
@@ -9623,8 +10630,7 @@ class SVParser {
       addLine();
       return true;
     }
-    if (at(TK::IfKeyword) &&
-        !isConditionalStartDirective(peek(1))) {
+    if (at(TK::IfKeyword) && !isConditionalStartDirective(peek(1))) {
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
       while (isCompilerDirective(peek()) &&
@@ -9654,11 +10660,15 @@ class SVParser {
         skip_directives();
         consumeInto(line_);
         addLine();
-        if (!parseConstraintSetRule()) recoverMalformedItem(saved);
+        if (!parseConstraintSetRule()) {
+          recoverMalformedItem(saved);
+        }
       }
       return true;
     }
-    if (!annexCanStart("constraint_expression", peek().kind)) return false;
+    if (!annexCanStart("constraint_expression", peek().kind)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     const bool soft = at(TK::SoftKeyword);
     if (soft) {
@@ -9674,7 +10684,9 @@ class SVParser {
     if (!soft && at(TK::MinusArrow)) {
       consumeInto(line_);
       addLine();
-      if (!parseConstraintSetRule()) recoverMalformedItem(saved);
+      if (!parseConstraintSetRule()) {
+        recoverMalformedItem(saved);
+      }
       return true;
     }
     if (at(TK::DistKeyword)) {
@@ -9685,8 +10697,8 @@ class SVParser {
         recoverMalformedItem(saved);
         return true;
       }
-      if (!consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace,
-                                 "dist_list", line_)) {
+      if (!consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace, "dist_list",
+                                 line_)) {
         recoverMalformedItem(saved);
         return true;
       }
@@ -9706,22 +10718,25 @@ class SVParser {
   // Both unqualified forms share the prefix through constraint_identifier;
   // the following Annex terminal selects ';' or constraint_block.
   [[nodiscard]] auto parseClassConstraintHeaderRule() -> std::optional<bool> {
-    if (at(TK::StaticKeyword)) consumeInto(line_);
+    if (at(TK::StaticKeyword)) {
+      consumeInto(line_);
+    }
     while (isCompilerDirective(peek()) &&
            !isConditionalStartDirective(peek())) {
       addLine();
       parseDirectiveLine();
     }
-    if (!at(TK::ConstraintKeyword)) return std::nullopt;
+    if (!at(TK::ConstraintKeyword)) {
+      return std::nullopt;
+    }
     consumeInto(line_);
     while (isCompilerDirective(peek()) &&
            !isConditionalStartDirective(peek())) {
       addLine();
       parseDirectiveLine();
     }
-    if ((at(TK::Colon) &&
-         !consumeAnnexRule("dynamic_override_specifiers", line_,
-                           TK::Identifier)) ||
+    if ((at(TK::Colon) && !consumeAnnexRule("dynamic_override_specifiers",
+                                            line_, TK::Identifier)) ||
         !consumeAnnexRule("constraint_identifier", line_)) {
       return std::nullopt;
     }
@@ -9735,7 +10750,9 @@ class SVParser {
       addLine();
       return false;
     }
-    if (!at(TK::OpenBrace)) return std::nullopt;
+    if (!at(TK::OpenBrace)) {
+      return std::nullopt;
+    }
     consumeInto(line_);
     addLine();
     return true;
@@ -9746,47 +10763,51 @@ class SVParser {
   //   constraint_block. A class_scope can extend through another '::'; the
   // identifier followed by the block brace belongs to constraint_identifier.
   [[nodiscard]] auto parseExternConstraintHeaderRule() -> bool {
-    if (at(TK::StaticKeyword)) consumeInto(line_);
+    if (at(TK::StaticKeyword)) {
+      consumeInto(line_);
+    }
     while (afterOrdinaryDirectives(0) > 0) {
       addLine();
       parseDirectiveLine();
     }
-    if (!at(TK::ConstraintKeyword)) return false;
+    if (!at(TK::ConstraintKeyword)) {
+      return false;
+    }
     consumeInto(line_);
     while (isCompilerDirective(peek()) &&
            !isConditionalStartDirective(peek())) {
       addLine();
       parseDirectiveLine();
     }
-    if (at(TK::Colon) &&
-        !consumeAnnexRule("dynamic_override_specifiers", line_,
-                          TK::Identifier)) {
+    if (at(TK::Colon) && !consumeAnnexRule("dynamic_override_specifiers", line_,
+                                           TK::Identifier)) {
       return false;
     }
     beginGrammar({"class_scope"});
-    while (!at(TK::EndOfFile) &&
-           !(stop_at_conditional_boundary_ &&
-             isConditionalBoundaryDirective(peek()))) {
+    while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
+                                   isConditionalBoundaryDirective(peek()))) {
       const auto& scope = grammar_scopes_.back();
       if (scope.complete() && at(TK::Identifier)) {
         size_t next = pos_ + 1;
-        while (next < tokens_.size() &&
-               isCompilerDirective(tokens_[next]) &&
+        while (next < tokens_.size() && isCompilerDirective(tokens_[next]) &&
                !isConditionalStartDirective(tokens_[next])) {
           ++next;
         }
-        if (next < tokens_.size() &&
-            tokens_[next].kind == TK::OpenBrace) {
+        if (next < tokens_.size() && tokens_[next].kind == TK::OpenBrace) {
           break;
         }
       }
-      if (scope.complete() && !scope.accepts(peek().kind)) break;
+      if (scope.complete() && !scope.accepts(peek().kind)) {
+        break;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
         continue;
       }
-      if (!scope.accepts(peek().kind)) break;
+      if (!scope.accepts(peek().kind)) {
+        break;
+      }
       consumeInto(line_);
     }
     const AnnexState scope = endGrammar(false);
@@ -9799,7 +10820,9 @@ class SVParser {
       addLine();
       parseDirectiveLine();
     }
-    if (!at(TK::OpenBrace)) return false;
+    if (!at(TK::OpenBrace)) {
+      return false;
+    }
     consumeInto(line_);
     addLine();
     return true;
@@ -9812,7 +10835,9 @@ class SVParser {
           token.kind == TK::EndOfFile) {
         return false;
       }
-      if (isConditionalStartDirective(token)) return true;
+      if (isConditionalStartDirective(token)) {
+        return true;
+      }
     }
     return false;
   }
@@ -9839,7 +10864,7 @@ class SVParser {
       opened = parseExternConstraintHeaderRule();
       invalid = !opened;
     } else {
-      beginGrammar(std::move(roots));
+      beginGrammar(roots);
       while (!at(TK::EndOfFile) && !(stop_at_conditional_boundary_ &&
                                      isConditionalBoundaryDirective(peek()))) {
         if (isConditionalStartDirective(peek())) {
@@ -9855,17 +10880,18 @@ class SVParser {
           parseDirectiveLine();
           continue;
         }
-        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        if (!grammar_scopes_.back().accepts(peek().kind)) {
+          break;
+        }
         consumeInto(line_);
-        if (grammar_scopes_.back().completed(
-                "extern_constraint_declaration") ||
+        if (grammar_scopes_.back().completed("extern_constraint_declaration") ||
             grammar_scopes_.back().completed("constraint_prototype")) {
           addLine();
           static_cast<void>(endGrammar());
           return;
         }
-        if (grammar_scopes_.back().consumedTerminalInRule(
-                "constraint_block", TK::OpenBrace)) {
+        if (grammar_scopes_.back().consumedTerminalInRule("constraint_block",
+                                                          TK::OpenBrace)) {
           addLine();
           opened = true;
           break;
@@ -9900,15 +10926,21 @@ class SVParser {
     } else {
       recordGrammarFallback("incomplete Annex A constraint block");
       block_stack_.pop_back();
-      if (indent_level_ > 0) --indent_level_;
+      if (indent_level_ > 0) {
+        --indent_level_;
+      }
     }
   }
 
   auto parseDesignStatementRule() -> bool {
-    if (!at(TK::DesignKeyword)) return false;
+    if (!at(TK::DesignKeyword)) {
+      return false;
+    }
     if (hasAnnexListInterruption(pos_, false)) {
       const AnnexState item = parseAnnexItem({"design_statement"});
-      if (item.complete()) block_stack_.back().statement_phase = true;
+      if (item.complete()) {
+        block_stack_.back().statement_phase = true;
+      }
       return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
@@ -9918,7 +10950,9 @@ class SVParser {
     while (valid && at(TK::Identifier)) {
       if (at(TK::Dot, 1)) {
         valid = consumeAnnexRule("library_identifier", line_);
-        if (!valid) break;
+        if (!valid) {
+          break;
+        }
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
       }
@@ -9963,14 +10997,13 @@ class SVParser {
     }
     parseGrammarChildDirectiveLines();
     const bool liblist = at(TK::LibListKeyword);
-    if (!liblist &&
-        (clause == "default_clause" || !at(TK::UseKeyword))) {
+    if (!liblist && (clause == "default_clause" || !at(TK::UseKeyword))) {
       recordGrammarFallback("missing Annex A config rule clause");
       recoverMalformedItem(saved);
       return true;
     }
-    const bool valid = consumeAnnexRule(
-        liblist ? "liblist_clause" : "use_clause", line_);
+    const bool valid =
+        consumeAnnexRule(liblist ? "liblist_clause" : "use_clause", line_);
     parseGrammarChildDirectiveLines();
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A config rule clause");
@@ -9987,15 +11020,12 @@ class SVParser {
     bool interrupted_header = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         interrupted_header = true;
         break;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
       }
     }
@@ -10005,8 +11035,7 @@ class SVParser {
       static_cast<void>(endGrammar(false));
     } else {
       consumeInto(line_);  // config
-      if (!consumeAnnexRule("config_identifier", line_) ||
-          !at(TK::Semicolon)) {
+      if (!consumeAnnexRule("config_identifier", line_) || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A config header");
         recoverMalformedItem(saved);
         return;
@@ -10037,18 +11066,14 @@ class SVParser {
     bool interrupted_header = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token)) ||
-          (token.kind == TK::OpenParenthesis &&
-           i + 2 < tokens_.size() && tokens_[i + 1].kind == TK::Dot &&
-           tokens_[i + 2].kind == TK::Star)) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token)) ||
+          (token.kind == TK::OpenParenthesis && i + 2 < tokens_.size() &&
+           tokens_[i + 1].kind == TK::Dot && tokens_[i + 2].kind == TK::Star)) {
         interrupted_header = true;
         break;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
       }
     }
@@ -10056,18 +11081,21 @@ class SVParser {
     bool ansi = false;
     if (interrupted_header) {
       beginGrammar({"udp_declaration"});
-      consumeGrammarHeader(
-          TK::EndPrimitiveKeyword, {},
-          {"udp_nonansi_declaration", "udp_ansi_declaration",
-           "udp_declaration"});
+      consumeGrammarHeader(TK::EndPrimitiveKeyword, {},
+                           {"udp_nonansi_declaration", "udp_ansi_declaration",
+                            "udp_declaration"});
       const AnnexState header = endGrammar(false);
-      if (header.complete()) return;  // extern declaration has no body
+      if (header.complete()) {
+        return;  // extern declaration has no body
+      }
       nonansi = header.completedFrom("udp_nonansi_declaration", 0);
       ansi = header.completedFrom("udp_ansi_declaration", 0);
     } else {
       const LeafCheckpoint saved = leafCheckpoint();
       const bool external = at(TK::ExternKeyword);
-      if (external) consumeInto(line_);
+      if (external) {
+        consumeInto(line_);
+      }
       if (!at(TK::PrimitiveKeyword)) {
         recordGrammarFallback("invalid Annex A primitive keyword");
         recoverMalformedItem(saved);
@@ -10088,15 +11116,13 @@ class SVParser {
         valid = consumeAnnexRule("output_port_identifier", line_, TK::Comma);
         if (valid && at(TK::Comma)) {
           consumeInto(line_);
-          valid = consumeAnnexRule("input_port_identifier", line_,
-                                   TK::Comma);
+          valid = consumeAnnexRule("input_port_identifier", line_, TK::Comma);
         } else {
           valid = false;
         }
         while (valid && at(TK::Comma)) {
           consumeInto(line_);
-          valid = consumeAnnexRule("input_port_identifier", line_,
-                                   TK::Comma);
+          valid = consumeAnnexRule("input_port_identifier", line_, TK::Comma);
         }
       } else if (ansi) {
         valid = parseUdpOutputDeclarationRule(true);
@@ -10107,7 +11133,9 @@ class SVParser {
         }
         while (valid) {
           valid = parseUdpInputDeclarationRule(true);
-          if (!valid || !at(TK::Comma)) break;
+          if (!valid || !at(TK::Comma)) {
+            break;
+          }
           consumeInto(line_);
         }
       }
@@ -10124,7 +11152,9 @@ class SVParser {
       }
       consumeInto(line_);
       addLine();
-      if (external) return;
+      if (external) {
+        return;
+      }
     }
     pushOpenFrame(TK::EndPrimitiveKeyword);
     block_stack_.back().grammar_body = "udp_body";
@@ -10157,8 +11187,7 @@ class SVParser {
     const auto& body = block_stack_.back();
     const bool before_table = !body.statement_phase;
     if (before_table && !body.udp_ansi_header && !body.udp_initial_seen &&
-        (at(TK::InputKeyword) || at(TK::OutputKeyword) ||
-         at(TK::RegKeyword))) {
+        (at(TK::InputKeyword) || at(TK::OutputKeyword) || at(TK::RegKeyword))) {
       if (parseUdpPortDeclarationRule()) {
         auto& udp = block_stack_.back();
         udp.udp_port_on_all_paths = true;
@@ -10193,7 +11222,9 @@ class SVParser {
       } else {
         recordGrammarFallback("incomplete UDP table");
         block_stack_.pop_back();
-        if (indent_level_ > 0) --indent_level_;
+        if (indent_level_ > 0) {
+          --indent_level_;
+        }
       }
       block_stack_.back().statement_phase = table_closed;
       return;
@@ -10211,14 +11242,15 @@ class SVParser {
   // children live until ':', which also identifies the combinational form.
   [[nodiscard]] auto parseUdpInputListRule(bool& level_input) -> bool {
     beginGrammar({"level_input_list", "edge_input_list"});
-    while (!at(TK::Colon) && !at(TK::EndOfFile) &&
-           !at(TK::Semicolon) && !at(TK::EndTableKeyword) &&
-           !at(TK::EndPrimitiveKeyword)) {
+    while (!at(TK::Colon) && !at(TK::EndOfFile) && !at(TK::Semicolon) &&
+           !at(TK::EndTableKeyword) && !at(TK::EndPrimitiveKeyword)) {
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
       } else {
-        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        if (!grammar_scopes_.back().accepts(peek().kind)) {
+          break;
+        }
         consumeInto(line_);
       }
     }
@@ -10232,18 +11264,16 @@ class SVParser {
     bool interrupted = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         interrupted = true;
         break;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndTableKeyword ||
+      if (token.kind == TK::Semicolon || token.kind == TK::EndTableKeyword ||
           token.kind == TK::EndPrimitiveKeyword ||
-          token.kind == TK::EndOfFile)
+          token.kind == TK::EndOfFile) {
         break;
+      }
     }
     if (interrupted) {
       const AnnexState entry = parseAnnexItem(grammarRoots());
@@ -10256,7 +11286,9 @@ class SVParser {
     auto& table = block_stack_.back();
     bool level_input = false;
     bool valid = parseUdpInputListRule(level_input) && at(TK::Colon);
-    if (valid) consumeInto(line_);
+    if (valid) {
+      consumeInto(line_);
+    }
     bool output_symbol = false;
     if (valid) {
       output_symbol = udpSymbolMatches("@lexer_output_symbol");
@@ -10264,9 +11296,8 @@ class SVParser {
     }
     const bool sequential = valid && at(TK::Colon);
     if (valid) {
-      valid = sequential
-                  ? true
-                  : at(TK::Semicolon) && level_input && output_symbol;
+      valid =
+          sequential ? true : at(TK::Semicolon) && level_input && output_symbol;
     }
     if (valid && ((sequential && table.udp_combinational) ||
                   (!sequential && table.udp_sequential))) {
@@ -10292,19 +11323,26 @@ class SVParser {
 
   // list_of_udp_port_identifiers ::= port_identifier
   // { ',' port_identifier }.
-  [[nodiscard]] auto parseUdpPortIdentifierListRule(
-      bool header = false) -> bool {
-    do {
+  [[nodiscard]] auto parseUdpPortIdentifierListRule(bool header = false)
+      -> bool {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexRule("port_identifier", line_)) return false;
+      if (!consumeAnnexRule("port_identifier", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       if (header) {
         size_t next = 1;
-        while (isCompilerDirective(peek(next))) ++next;
+        while (isCompilerDirective(peek(next))) {
+          ++next;
+        }
         if (at(TK::InputKeyword, next) ||
-            (at(TK::OpenParenthesis, next) && at(TK::Star, next + 1)))
+            (at(TK::OpenParenthesis, next) && at(TK::Star, next + 1))) {
           break;
+        }
       }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
@@ -10316,10 +11354,14 @@ class SVParser {
   [[nodiscard]] auto parseUdpOutputDeclarationRule(bool header) -> bool {
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
-    if (!at(TK::OutputKeyword)) return false;
+    if (!at(TK::OutputKeyword)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     const bool registered = at(TK::RegKeyword);
@@ -10327,15 +11369,18 @@ class SVParser {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
     }
-    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    if (!consumeAnnexRule("port_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     if (registered && at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("constant_expression", line_,
                             header ? TK::Comma : TK::Semicolon,
-                            [&] { return at(TK::CloseParenthesis); }))
+                            [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     return true;
   }
@@ -10345,18 +11390,23 @@ class SVParser {
   [[nodiscard]] auto parseUdpInputDeclarationRule(bool header) -> bool {
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
-    if (!at(TK::InputKeyword)) return false;
+    if (!at(TK::InputKeyword)) {
+      return false;
+    }
     consumeInto(line_);
     return parseUdpPortIdentifierListRule(header);
   }
 
   [[nodiscard]] auto parseUdpPortDeclarationRule() -> bool {
     if (!at(TK::OutputKeyword) && !at(TK::InputKeyword) &&
-        !at(TK::RegKeyword))
+        !at(TK::RegKeyword)) {
       return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
     if (at(TK::OutputKeyword)) {
@@ -10378,11 +11428,12 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseUdpInitialStatementRule() -> bool {
-    if (!at(TK::InitialKeyword)) return false;
+    if (!at(TK::InitialKeyword)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);
-    if (!consumeAnnexRule("output_port_identifier", line_) ||
-        !at(TK::Equals)) {
+    if (!consumeAnnexRule("output_port_identifier", line_) || !at(TK::Equals)) {
       recordGrammarFallback("invalid Annex A UDP initial output");
       recoverMalformedItem(saved);
       return false;
@@ -10417,9 +11468,13 @@ class SVParser {
       return false;
     }
     skip_directives();
-    if (!consumeAnnexRule("package_identifier", line_)) return false;
+    if (!consumeAnnexRule("package_identifier", line_)) {
+      return false;
+    }
     skip_directives();
-    if (!at(TK::Semicolon)) return false;
+    if (!at(TK::Semicolon)) {
+      return false;
+    }
     consumeInto(line_);
     addLine();
     return true;
@@ -10431,14 +11486,15 @@ class SVParser {
           tokens_[i].kind == TK::EndOfFile) {
         return false;
       }
-      if (isConditionalStartDirective(tokens_[i])) return true;
+      if (isConditionalStartDirective(tokens_[i])) {
+        return true;
+      }
     }
     return false;
   }
 
-  auto recoverMalformedStructuralHeader(const LeafCheckpoint& saved,
-                                        TK closeKw, bool external = false)
-      -> void {
+  auto recoverMalformedStructuralHeader(const LeafCheckpoint& saved, TK closeKw,
+                                        bool external = false) -> void {
     if (external) {
       recoverMalformedLeaf(saved);
       return;
@@ -10481,8 +11537,9 @@ class SVParser {
     }
     consumeInto(line_);
     bool valid = true;
-    if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword))
+    if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) {
       valid = consumeAnnexRule("lifetime", line_);
+    }
     valid = valid && consumeAnnexRule(identifier_rule, line_);
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A structural header");
@@ -10492,11 +11549,9 @@ class SVParser {
     consumeInto(line_);
     addLine();
     const std::string_view body_rule =
-        closeKw == TK::EndModuleKeyword
-            ? "non_port_module_item"
-            : closeKw == TK::EndInterfaceKeyword
-                  ? "non_port_interface_item"
-                  : "non_port_program_item";
+        closeKw == TK::EndModuleKeyword      ? "non_port_module_item"
+        : closeKw == TK::EndInterfaceKeyword ? "non_port_interface_item"
+                                             : "non_port_program_item";
     parseDelimitedBody(closeKw, body_rule);
     return true;
   }
@@ -10505,9 +11560,13 @@ class SVParser {
   // assignment list when the next tokens can form its identifier and optional
   // dimensions; otherwise it starts another parameter_port_declaration.
   [[nodiscard]] auto startsParameterPortDeclaration() const -> bool {
-    if (!at(TK::Identifier)) return true;
+    if (!at(TK::Identifier)) {
+      return true;
+    }
     const auto next = afterBalancedDimensions(1);
-    if (!next) return true;
+    if (!next) {
+      return true;
+    }
     const size_t boundary = afterOrdinaryDirectives(*next);
     return at(TK::Identifier, boundary) || at(TK::DoubleColon, boundary) ||
            at(TK::Hash, boundary) || at(TK::Dot, boundary);
@@ -10518,16 +11577,21 @@ class SVParser {
   // assignments after commas, so this function emits its first child now.
   [[nodiscard]] auto parseTypeParameterPortDeclarationRule() -> bool {
     if (at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) {
-      if (!at(TK::TypeKeyword, afterOrdinaryDirectives(1))) return false;
+      if (!at(TK::TypeKeyword, afterOrdinaryDirectives(1))) {
+        return false;
+      }
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
     }
-    if (!at(TK::TypeKeyword)) return false;
+    if (!at(TK::TypeKeyword)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     if (annexCanStart("forward_type", peek().kind) &&
-        !consumeAnnexRule("forward_type", line_))
+        !consumeAnnexRule("forward_type", line_)) {
       return false;
+    }
     return parseParameterAssignmentRule(true);
   }
 
@@ -10535,29 +11599,31 @@ class SVParser {
   // have a distinct prefix. A user-defined type keeps the local declaration
   // chart because it shares an identifier start with a bare assignment.
   [[nodiscard]] auto parseDataParameterPortDeclarationRule() -> bool {
-    const bool keyword = at(TK::ParameterKeyword) ||
-                         at(TK::LocalParamKeyword);
+    const bool keyword = at(TK::ParameterKeyword) || at(TK::LocalParamKeyword);
     if (keyword) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1))
+      if (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) {
         return false;
-      if (!(at(TK::Identifier) &&
-            !startsParameterPortDeclaration()) &&
-          !consumeAnnexRule("data_type_or_implicit", line_))
+      }
+      if (!(at(TK::Identifier) && !startsParameterPortDeclaration()) &&
+          !consumeAnnexRule("data_type_or_implicit", line_)) {
         return false;
+      }
     } else {
-      if ((at(TK::Identifier) &&
-           !startsParameterPortDeclaration()) ||
+      if ((at(TK::Identifier) && !startsParameterPortDeclaration()) ||
           !annexCanStart("data_type", peek().kind) ||
-          !consumeAnnexRule("data_type", line_))
+          !consumeAnnexRule("data_type", line_)) {
         return false;
+      }
     }
     return parseParameterAssignmentRule(false);
   }
 
   [[nodiscard]] auto parseParameterPortListRule() -> bool {
-    if (!at(TK::Hash) || !at(TK::OpenParenthesis, 1)) return false;
+    if (!at(TK::Hash) || !at(TK::OpenParenthesis, 1)) {
+      return false;
+    }
     consumeInto(line_);
     consumeInto(line_);
     addLine();
@@ -10565,53 +11631,56 @@ class SVParser {
     if (!at(TK::CloseParenthesis)) {
       bool bare_assignments = !startsParameterPortDeclaration();
       std::string_view assignment = "param_assignment";
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         parseGrammarChildDirectiveLines();
         const bool declaration =
             !bare_assignments && startsParameterPortDeclaration();
         const size_t type_start = afterOrdinaryDirectives(1);
         if (declaration) {
-          assignment =
-              (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) ||
-                      ((at(TK::ParameterKeyword) ||
-                        at(TK::LocalParamKeyword)) &&
-                       at(TK::TypeKeyword, type_start) &&
-                       !at(TK::OpenParenthesis,
-                           afterOrdinaryDirectives(type_start + 1)))
-                  ? "type_assignment"
-                  : "param_assignment";
+          assignment = (at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) ||
+                               ((at(TK::ParameterKeyword) ||
+                                 at(TK::LocalParamKeyword)) &&
+                                at(TK::TypeKeyword, type_start) &&
+                                !at(TK::OpenParenthesis,
+                                    afterOrdinaryDirectives(type_start + 1)))
+                           ? "type_assignment"
+                           : "param_assignment";
         }
-        const bool type_declaration = declaration &&
+        const bool type_declaration =
+            declaration &&
             ((at(TK::TypeKeyword) && !at(TK::OpenParenthesis, 1)) ||
              ((at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) &&
               at(TK::TypeKeyword, type_start) &&
               !at(TK::OpenParenthesis,
                   afterOrdinaryDirectives(type_start + 1))));
-        const bool data_declaration = declaration &&
+        const bool data_declaration =
+            declaration &&
             ((at(TK::ParameterKeyword) || at(TK::LocalParamKeyword)) ||
              annexCanStart("data_type", peek().kind));
         const bool valid =
-            type_declaration
-                ? parseTypeParameterPortDeclarationRule()
-                : data_declaration
-                    ? parseDataParameterPortDeclarationRule()
-                : declaration
-                    ? consumeAnnexRule("parameter_port_declaration", line_,
-                                       TK::Comma,
-                                       [&] { return at(TK::CloseParenthesis); })
-                    : parseParameterAssignmentRule(
-                          assignment == "type_assignment");
-        if (!valid)
+            type_declaration   ? parseTypeParameterPortDeclarationRule()
+            : data_declaration ? parseDataParameterPortDeclarationRule()
+            : declaration
+                ? consumeAnnexRule("parameter_port_declaration", line_,
+                                   TK::Comma,
+                                   [&] { return at(TK::CloseParenthesis); })
+                : parseParameterAssignmentRule(assignment == "type_assignment");
+        if (!valid) {
           return false;
+        }
         bare_assignments = false;
         parseGrammarChildDirectiveLines();
-        if (!at(TK::Comma)) break;
+        if (!at(TK::Comma)) {
+          break;
+        }
         consumeInto(line_);
         addLine();
       } while (!at(TK::EndOfFile));
     }
     addLine();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -10619,21 +11688,29 @@ class SVParser {
   // port ::= [ port_expression ] | '.' port_identifier '(' [ port_expression
   // ] ')'. The enclosing list has already selected its non-ANSI alternative.
   [[nodiscard]] auto parseNonAnsiPortMemberRule() -> bool {
-    if (at(TK::Comma) || at(TK::CloseParenthesis)) return true;
+    if (at(TK::Comma) || at(TK::CloseParenthesis)) {
+      return true;
+    }
     if (at(TK::Dot)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexRule("port_identifier", line_)) return false;
+      if (!consumeAnnexRule("port_identifier", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::OpenParenthesis)) return false;
+      if (!at(TK::OpenParenthesis)) {
+        return false;
+      }
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!at(TK::CloseParenthesis) &&
-          !consumeAnnexRule("port_expression", line_,
-                            TK::CloseParenthesis))
+          !consumeAnnexRule("port_expression", line_, TK::CloseParenthesis)) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::CloseParenthesis)) return false;
+      if (!at(TK::CloseParenthesis)) {
+        return false;
+      }
       consumeInto(line_);
       return true;
     }
@@ -10644,27 +11721,34 @@ class SVParser {
   // list_of_ports and list_of_port_declarations can share a leading named
   // port or identifier. Keep both Annex A alternatives only until a member
   // resolves the list; subsequent members enter their child functions.
-  [[nodiscard]] auto parseSharedStructuralPortListRule(bool& nonansi)
-      -> bool {
-    if (!at(TK::OpenParenthesis)) return false;
+  [[nodiscard]] auto parseSharedStructuralPortListRule(bool& nonansi) -> bool {
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     addLine();
     bool ansi = true;
     nonansi = true;
-    do {
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
       parseGrammarChildDirectiveLines();
       const bool attributes = at(TK::OpenParenthesis) && at(TK::Star, 1);
-      const bool qualified_interface =
-          at(TK::Identifier) && at(TK::Dot, 1) &&
-          at(TK::Identifier, 2) && at(TK::Identifier, 3);
+      const bool qualified_interface = at(TK::Identifier) && at(TK::Dot, 1) &&
+                                       at(TK::Identifier, 2) &&
+                                       at(TK::Identifier, 3);
       if (attributes || qualified_interface) {
-        if (!ansi) return false;
+        if (!ansi) {
+          return false;
+        }
         nonansi = false;
       }
       if (!nonansi) {
-        if (!parseAnsiPortMemberRule()) return false;
+        if (!parseAnsiPortMemberRule()) {
+          return false;
+        }
       } else if (!ansi) {
-        if (!parseNonAnsiPortMemberRule()) return false;
+        if (!parseNonAnsiPortMemberRule()) {
+          return false;
+        }
       } else if (at(TK::Comma) || at(TK::CloseParenthesis)) {
         // port ::= [ port_expression ] has an empty alternative.
         ansi = false;
@@ -10673,63 +11757,81 @@ class SVParser {
         while (!at(TK::EndOfFile)) {
           const auto& grammar = grammar_scopes_.back();
           if (grammar.complete() &&
-              (at(TK::Comma) || at(TK::CloseParenthesis)))
+              (at(TK::Comma) || at(TK::CloseParenthesis))) {
             break;
+          }
           if (isCompilerDirective(peek())) {
             addLine();
             parseDirectiveLine();
             continue;
           }
           if (grammar.failed || grammar.interrupted ||
-              !grammar.accepts(peek().kind))
+              !grammar.accepts(peek().kind)) {
             break;
+          }
           consumeInto(line_);
         }
         const AnnexState item = endGrammar(false);
-        if (item.failed || item.interrupted) return false;
+        if (item.failed || item.interrupted) {
+          return false;
+        }
         nonansi &= item.completed("port");
         ansi &= item.completed("ansi_port_declaration");
-        if (!nonansi && !ansi) return false;
+        if (!nonansi && !ansi) {
+          return false;
+        }
       }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
       addLine();
     } while (!at(TK::EndOfFile));
     addLine();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
 
   // interface_port_header selects the first ansi_port_declaration alternative.
   [[nodiscard]] auto parseInterfaceAnsiPortRule() -> bool {
-    if (!at(TK::InterfaceKeyword) && !at(TK::Identifier)) return false;
-    if (!consumeAnnexRule("interface_port_header", line_))
+    if (!at(TK::InterfaceKeyword) && !at(TK::Identifier)) {
       return false;
+    }
+    if (!consumeAnnexRule("interface_port_header", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    if (!consumeAnnexRule("port_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule("unpacked_dimension", line_)) return false;
+      if (!consumeAnnexRule("unpacked_dimension", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("constant_expression", line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+                            [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     return true;
   }
 
-  [[nodiscard]] auto ansiIdentifierEndsMember(size_t offset = 0) const
-      -> bool {
-    if (!at(TK::Identifier, offset)) return false;
+  [[nodiscard]] auto ansiIdentifierEndsMember(size_t offset = 0) const -> bool {
+    if (!at(TK::Identifier, offset)) {
+      return false;
+    }
     const auto next = afterBalancedDimensions(offset + 1);
-    return next && (at(TK::Comma, *next) ||
-                    at(TK::CloseParenthesis, *next) ||
+    return next && (at(TK::Comma, *next) || at(TK::CloseParenthesis, *next) ||
                     at(TK::Equals, *next));
   }
 
@@ -10739,27 +11841,30 @@ class SVParser {
   [[nodiscard]] auto parseTypedAnsiPortRule(bool variable) -> bool {
     const bool empty_header = ansiIdentifierEndsMember();
     if (!empty_header &&
-        !consumeAnnexRule(variable ? "variable_port_header"
-                                   : "net_port_header",
+        !consumeAnnexRule(variable ? "variable_port_header" : "net_port_header",
                           line_, std::nullopt,
-                          [&] { return ansiIdentifierEndsMember(); }))
+                          [&] { return ansiIdentifierEndsMember(); })) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    if (!consumeAnnexRule("port_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule(variable ? "variable_dimension"
-                                     : "unpacked_dimension",
-                            line_))
+      if (!consumeAnnexRule(
+              variable ? "variable_dimension" : "unpacked_dimension", line_)) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("constant_expression", line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+                            [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     return true;
   }
@@ -10769,44 +11874,51 @@ class SVParser {
   // prefix. The remaining port_identifier, dimensions and initializer enter
   // their own Annex A children in this same pass.
   [[nodiscard]] auto parseAmbiguousAnsiPortRule() -> bool {
-    beginGrammar({"net_port_header", "variable_port_header",
-                  "interface_port_header"});
+    beginGrammar(
+        {"net_port_header", "variable_port_header", "interface_port_header"});
     while (!at(TK::EndOfFile)) {
       const auto& header = grammar_scopes_.back();
-      if (header.complete() && ansiIdentifierEndsMember()) break;
+      if (header.complete() && ansiIdentifierEndsMember()) {
+        break;
+      }
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
         continue;
       }
-      if (header.failed || header.interrupted ||
-          !header.accepts(peek().kind))
+      if (header.failed || header.interrupted || !header.accepts(peek().kind)) {
         break;
+      }
       consumeInto(line_);
     }
     const AnnexState header = endGrammar(false);
     if (header.failed || header.interrupted || !header.complete() ||
-        !ansiIdentifierEndsMember())
+        !ansiIdentifierEndsMember()) {
       return false;
+    }
     const bool variable = header.completed("variable_port_header");
     if (!variable && !header.completed("net_port_header") &&
-        !header.completed("interface_port_header"))
+        !header.completed("interface_port_header")) {
       return false;
-    if (!consumeAnnexRule("port_identifier", line_)) return false;
+    }
+    if (!consumeAnnexRule("port_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule(variable ? "variable_dimension"
-                                     : "unpacked_dimension",
-                            line_))
+      if (!consumeAnnexRule(
+              variable ? "variable_dimension" : "unpacked_dimension", line_)) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("constant_expression", line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+                            [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     return true;
   }
@@ -10822,21 +11934,28 @@ class SVParser {
     };
     skip_directives();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       skip_directives();
     }
-    const bool named = at(TK::Dot) ||
-        ((at(TK::InputKeyword) || at(TK::OutputKeyword) ||
-          at(TK::InOutKeyword) || at(TK::RefKeyword)) &&
-         at(TK::Dot, 1));
+    const bool named =
+        at(TK::Dot) || ((at(TK::InputKeyword) || at(TK::OutputKeyword) ||
+                         at(TK::InOutKeyword) || at(TK::RefKeyword)) &&
+                        at(TK::Dot, 1));
     if (named) {
-      if (!at(TK::Dot) &&
-          !consumeAnnexRule("port_direction", line_)) return false;
-      if (!parseModportSimplePortRule()) return false;
+      if (!at(TK::Dot) && !consumeAnnexRule("port_direction", line_)) {
+        return false;
+      }
+      if (!parseModportSimplePortRule()) {
+        return false;
+      }
     } else if (at(TK::InterfaceKeyword) ||
-               (at(TK::Identifier) && at(TK::Dot, 1) &&
-                at(TK::Identifier, 2) && at(TK::Identifier, 3))) {
-      if (!parseInterfaceAnsiPortRule()) return false;
+               (at(TK::Identifier) && at(TK::Dot, 1) && at(TK::Identifier, 2) &&
+                at(TK::Identifier, 3))) {
+      if (!parseInterfaceAnsiPortRule()) {
+        return false;
+      }
     } else {
       const size_t type_offset =
           at(TK::InputKeyword) || at(TK::OutputKeyword) ||
@@ -10854,8 +11973,9 @@ class SVParser {
           at(TK::UnsignedKeyword, type_offset) ||
           at(TK::OpenBracket, type_offset) ||
           ansiIdentifierEndsMember(type_offset)) {
-        if (!parseTypedAnsiPortRule(variable_type))
+        if (!parseTypedAnsiPortRule(variable_type)) {
           return false;
+        }
       } else if (!parseAmbiguousAnsiPortRule()) {
         return false;
       }
@@ -10868,17 +11988,25 @@ class SVParser {
   // ansi_port_declaration { ',' { attribute_instance }
   // ansi_port_declaration } ] ')'.
   [[nodiscard]] auto parseAnsiStructuralPortListRule() -> bool {
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     addLine();
-    do {
-      if (!parseAnsiPortMemberRule()) return false;
-      if (!at(TK::Comma)) break;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseAnsiPortMemberRule()) {
+        return false;
+      }
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
       addLine();
     } while (!at(TK::EndOfFile));
     addLine();
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -10897,21 +12025,28 @@ class SVParser {
           (token.kind == TK::Directive && !isCompilerDirective(token))) {
         return false;
       }
-      if (token.kind == TK::OpenParenthesis) ++parens;
-      if (token.kind == TK::CloseParenthesis) --parens;
-      if (token.kind == TK::OpenParenthesis &&
-          i + 2 < tokens_.size() && tokens_[i + 1].kind == TK::Dot &&
-          tokens_[i + 2].kind == TK::Star) {
+      if (token.kind == TK::OpenParenthesis) {
+        ++parens;
+      }
+      if (token.kind == TK::CloseParenthesis) {
+        --parens;
+      }
+      if (token.kind == TK::OpenParenthesis && i + 2 < tokens_.size() &&
+          tokens_[i + 1].kind == TK::Dot && tokens_[i + 2].kind == TK::Star) {
         return false;
       }
-      if (parens == 0 && token.kind == TK::ImportKeyword)
+      if (parens == 0 && token.kind == TK::ImportKeyword) {
         import_segment = true;
+      }
       if (parens == 0 && token.kind == TK::Semicolon) {
-        if (!import_segment) break;
+        if (!import_segment) {
+          break;
+        }
         import_segment = false;
       }
-      if (token.kind == closeKw || token.kind == TK::EndOfFile)
+      if (token.kind == closeKw || token.kind == TK::EndOfFile) {
         return false;
+      }
     }
 
     const LeafCheckpoint saved = leafCheckpoint();
@@ -10943,7 +12078,9 @@ class SVParser {
         parseDirectiveLine();
       }
     };
-    if (external) consumeInto(line_);  // extern
+    if (external) {
+      consumeInto(line_);  // extern
+    }
     consumeInto(line_);  // module_keyword / interface / program
     skip_directives();
     if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) {
@@ -10982,8 +12119,8 @@ class SVParser {
           at(TK::InOutKeyword, 1) || at(TK::RefKeyword, 1) ||
           at(TK::InterfaceKeyword, 1) ||
           (at(TK::OpenParenthesis, 1) && at(TK::Star, 2)) ||
-          (annexCanStart("data_type", peek(1).kind) &&
-           !at(TK::Identifier, 1) && !at(TK::UnitSystemName, 1));
+          (annexCanStart("data_type", peek(1).kind) && !at(TK::Identifier, 1) &&
+           !at(TK::UnitSystemName, 1));
       if (direct_ansi) {
         if (!parseAnsiStructuralPortListRule()) {
           recordGrammarFallback("invalid Annex A ANSI structural port list");
@@ -11013,13 +12150,14 @@ class SVParser {
     }
     consumeInto(line_);
     addLine();
-    if (!external) parseDelimitedBody(closeKw, body_rule);
+    if (!external) {
+      parseDelimitedBody(closeKw, body_rule);
+    }
     return true;
   }
 
   auto parseStructuralBlock(TK closeKw) -> void {
-    if (closeKw == TK::EndPackageKeyword &&
-        !conditionalInPackageHeader()) {
+    if (closeKw == TK::EndPackageKeyword && !conditionalInPackageHeader()) {
       const LeafCheckpoint saved = leafCheckpoint();
       if (!parsePackageHeaderRule()) {
         recordGrammarFallback("invalid Annex A package header");
@@ -11035,8 +12173,12 @@ class SVParser {
       parseDelimitedBody(closeKw, "package_item");
       return;
     }
-    if (parsePortlessStructuralHeaderRule(closeKw)) return;
-    if (parseStructuralHeaderRule(closeKw)) return;
+    if (parsePortlessStructuralHeaderRule(closeKw)) {
+      return;
+    }
+    if (parseStructuralHeaderRule(closeKw)) {
+      return;
+    }
     std::vector<std::string_view> roots;
     std::string_view body_rule;
     std::string_view declaration_rule;
@@ -11066,7 +12208,9 @@ class SVParser {
       default:
         break;
     }
-    if (!roots.empty()) beginGrammar(roots);
+    if (!roots.empty()) {
+      beginGrammar(roots);
+    }
     if (closeKw == TK::EndPackageKeyword) {
       // package_declaration includes its body; the first grammar-accepted
       // semicolon separates its header from package_item repetitions.
@@ -11077,8 +12221,8 @@ class SVParser {
       while (!at(closeKw) && !at(TK::EndOfFile) &&
              !grammar_scopes_.back().complete() &&
              (declaration_rule.empty() ||
-              !grammar_scopes_.back().consumedTerminalInRule(
-                  declaration_rule, TK::Semicolon))) {
+              !grammar_scopes_.back().consumedTerminalInRule(declaration_rule,
+                                                             TK::Semicolon))) {
         if (isConditionalStartDirective(peek())) {
           bool header_ended = true;
           if (!parseAnnexConditional(TK::EndOfFile, header_ended,
@@ -11103,11 +12247,15 @@ class SVParser {
           } else {
             const TK kind = peek().kind;
             consumeInto(line_);
-            if (kind == TK::Semicolon) break;
+            if (kind == TK::Semicolon) {
+              break;
+            }
           }
           continue;
         }
-        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        if (!grammar_scopes_.back().accepts(peek().kind)) {
+          break;
+        }
         if (at(TK::Hash)) {
           consumeInto(line_);
           static_cast<void>(consumeBalancedInto(
@@ -11160,17 +12308,22 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseTfHeaderPortListRule() -> bool {
-    if (!at(TK::OpenParenthesis)) return false;
+    if (!at(TK::OpenParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
-    if (!at(TK::CloseParenthesis) && !parseTfPortListRule()) return false;
-    if (!at(TK::CloseParenthesis)) return false;
+    if (!at(TK::CloseParenthesis) && !parseTfPortListRule()) {
+      return false;
+    }
+    if (!at(TK::CloseParenthesis)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
 
   [[nodiscard]] auto parseTaskFunctionBlockRule(TK closeKw) -> bool {
-    if (closeKw != TK::EndTaskKeyword &&
-        closeKw != TK::EndFunctionKeyword) {
+    if (closeKw != TK::EndTaskKeyword && closeKw != TK::EndFunctionKeyword) {
       return false;
     }
     if (isConditionalStartDirective(peek(1)) ||
@@ -11201,9 +12354,9 @@ class SVParser {
       return true;
     }
     skip_directives();
-    const std::string_view body_rule =
-        closeKw == TK::EndTaskKeyword ? "task_body_declaration"
-                                      : "function_body_declaration";
+    const std::string_view body_rule = closeKw == TK::EndTaskKeyword
+                                           ? "task_body_declaration"
+                                           : "function_body_declaration";
     bool interrupted_header = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       if (isConditionalStartDirective(tokens_[i]) ||
@@ -11212,8 +12365,9 @@ class SVParser {
         break;
       }
       if (tokens_[i].kind == TK::Semicolon ||
-          tokens_[i].kind == TK::EndOfFile)
+          tokens_[i].kind == TK::EndOfFile) {
         break;
+      }
     }
     if (closeKw == TK::EndTaskKeyword && !interrupted_header &&
         at(TK::Identifier) &&
@@ -11246,15 +12400,17 @@ class SVParser {
       const bool typed =
           !implicit_type &&
           (annexCanStart("function_data_type_or_implicit", peek().kind) &&
-           !(at(TK::Identifier) &&
-             (at(TK::DoubleColon, 1) || at(TK::Dot, 1))));
+           !(at(TK::Identifier) && (at(TK::DoubleColon, 1) || at(TK::Dot, 1))));
       if (implicit_type || typed) {
         bool valid = implicit_type ||
                      consumeAnnexRule("function_data_type_or_implicit", line_);
-        if (valid) valid = consumeAnnexRule("function_identifier", line_);
+        if (valid) {
+          valid = consumeAnnexRule("function_identifier", line_);
+        }
         const bool ports_in_header = at(TK::OpenParenthesis);
-        if (valid && ports_in_header)
+        if (valid && ports_in_header) {
           valid = parseTfHeaderPortListRule();
+        }
         if (!valid || !at(TK::Semicolon)) {
           recordGrammarFallback("invalid Annex A function header");
           recoverMalformedItem(saved);
@@ -11282,7 +12438,9 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseClassBlockRule(TK closeKw) -> bool {
-    if (closeKw != TK::EndClassKeyword) return false;
+    if (closeKw != TK::EndClassKeyword) {
+      return false;
+    }
     const bool interface_class =
         at(TK::InterfaceKeyword) && at(TK::ClassKeyword, 1);
     if (!interface_class && !at(TK::ClassKeyword) &&
@@ -11291,20 +12449,18 @@ class SVParser {
     }
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive &&
-           !isCompilerDirective(token))) {
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         return false;
       }
-      if (token.kind == TK::Semicolon ||
-          token.kind == TK::EndOfFile) {
+      if (token.kind == TK::Semicolon || token.kind == TK::EndOfFile) {
         break;
       }
     }
     const LeafCheckpoint saved = leafCheckpoint();
-    if (interface_class || at(TK::VirtualKeyword))
+    if (interface_class || at(TK::VirtualKeyword)) {
       consumeInto(line_);
+    }
     consumeInto(line_);  // class
     const auto skip_directives = [&] {
       while (isCompilerDirective(peek())) {
@@ -11348,8 +12504,7 @@ class SVParser {
       if (interface_class) {
         while (at(TK::Comma)) {
           consumeInto(line_);
-          if (!consumeAnnexRule("interface_class_type", line_,
-                                TK::Comma)) {
+          if (!consumeAnnexRule("interface_class_type", line_, TK::Comma)) {
             recordGrammarFallback("invalid Annex A interface class parent");
             recoverMalformedItem(saved);
             return true;
@@ -11359,14 +12514,13 @@ class SVParser {
         if (at(TK::CloseParenthesis, 1)) {
           consumeInto(line_);
           consumeInto(line_);
-        } else if (at(TK::DefaultKeyword, 1) &&
-                   at(TK::CloseParenthesis, 2)) {
+        } else if (at(TK::DefaultKeyword, 1) && at(TK::CloseParenthesis, 2)) {
           consumeInto(line_);
           consumeInto(line_);
           consumeInto(line_);
-        } else if (!consumeAnnexDelimited(
-                       TK::OpenParenthesis, TK::CloseParenthesis,
-                       "list_of_arguments", line_)) {
+        } else if (!consumeAnnexDelimited(TK::OpenParenthesis,
+                                          TK::CloseParenthesis,
+                                          "list_of_arguments", line_)) {
           recoverMalformedItem(saved);
           return true;
         }
@@ -11375,8 +12529,7 @@ class SVParser {
     }
     if (!interface_class && at(TK::ImplementsKeyword)) {
       consumeInto(line_);
-      bool valid = consumeAnnexRule("interface_class_type", line_,
-                                    TK::Comma);
+      bool valid = consumeAnnexRule("interface_class_type", line_, TK::Comma);
       while (valid && at(TK::Comma)) {
         consumeInto(line_);
         valid = consumeAnnexRule("interface_class_type", line_, TK::Comma);
@@ -11396,15 +12549,18 @@ class SVParser {
     consumeInto(line_);
     addLine();
     parseDelimitedBody(closeKw,
-                       interface_class ? "interface_class_item"
-                                       : "class_item");
+                       interface_class ? "interface_class_item" : "class_item");
     return true;
   }
 
   // class / function / task ... endclass / endfunction / endtask
   auto parseNamedBlock(TK closeKw) -> void {
-    if (parseTaskFunctionBlockRule(closeKw)) return;
-    if (parseClassBlockRule(closeKw)) return;
+    if (parseTaskFunctionBlockRule(closeKw)) {
+      return;
+    }
+    if (parseClassBlockRule(closeKw)) {
+      return;
+    }
     std::vector<std::string_view> roots;
     std::string_view body_rule;
     bool tf_ports_in_header = false;
@@ -11421,7 +12577,9 @@ class SVParser {
       default:
         break;
     }
-    if (!roots.empty()) beginGrammar(roots);
+    if (!roots.empty()) {
+      beginGrammar(roots);
+    }
     switch (closeKw) {
       case TK::EndClassKeyword:
         consumeGrammarHeader(
@@ -11458,14 +12616,17 @@ class SVParser {
 
   // generate ... endgenerate
   auto parseSimpleBlock(TK closeKw) -> void {
-    consumeInto(line_);  // generate_region ::= generate {generate_item} endgenerate
+    consumeInto(
+        line_);  // generate_region ::= generate {generate_item} endgenerate
     addLine();
     parseDelimitedBody(closeKw, "generate_item");
   }
 
   // begin [:label] ... end [:label]
   auto parseOpeningBlockLabelRule() -> void {
-    if (!at(TK::Colon)) return;
+    if (!at(TK::Colon)) {
+      return;
+    }
     consumeInto(line_);
     if (at(TK::Identifier)) {
       consumeInto(line_);
@@ -11560,9 +12721,9 @@ class SVParser {
       return;
     }
     const TK next = peek().kind;
-    constexpr std::string_view compound_rules[] = {
-        "seq_block", "par_block", "conditional_statement", "case_statement",
-        "loop_statement"};
+    constexpr std::array compound_rules = {"seq_block", "par_block",
+                                           "conditional_statement",
+                                           "case_statement", "loop_statement"};
     const bool compound_statement =
         std::ranges::any_of(compound_rules, [&](std::string_view rule) {
           return header.hasActiveRule(rule) && annexCanStart(rule, next);
@@ -11582,8 +12743,8 @@ class SVParser {
   // always_construct ::= always_keyword statement;
   // final_construct ::= final function_statement.
   auto parseProceduralBlock() -> void {
-    for (size_t i = pos_ + 1; i < tokens_.size() &&
-                                isCompilerDirective(tokens_[i]); ++i) {
+    for (size_t i = pos_ + 1;
+         i < tokens_.size() && isCompilerDirective(tokens_[i]); ++i) {
       if (isConditionalStartDirective(tokens_[i])) {
         parseConditionalProceduralBlock();
         return;
@@ -11598,19 +12759,16 @@ class SVParser {
       parseDirectiveLine();
     }
     const bool delay_control = at(TK::Hash);
-    if (delay_control &&
-        !consumeAnnexRule("delay_control", line_)) {
+    if (delay_control && !consumeAnnexRule("delay_control", line_)) {
       recoverMalformedItem(saved);
       return;
     }
     const bool event_control = at(TK::At);
-    if (event_control &&
-        !consumeAnnexRule("event_control", line_)) {
+    if (event_control && !consumeAnnexRule("event_control", line_)) {
       recoverMalformedItem(saved);
       return;
     }
-    if (keyword == TK::FinalKeyword &&
-        (delay_control || event_control)) {
+    if (keyword == TK::FinalKeyword && (delay_control || event_control)) {
       recordGrammarFallback("timing control outside Annex A final construct");
       recoverMalformedItem(saved);
       return;
@@ -11693,7 +12851,9 @@ class SVParser {
             parseDirectiveLine();
             continue;
           }
-          if (!grammar_scopes_.back().accepts(peek().kind)) break;
+          if (!grammar_scopes_.back().accepts(peek().kind)) {
+            break;
+          }
           consumeInto(line_);
         }
         const AnnexState header = endGrammar(false);
@@ -11734,13 +12894,16 @@ class SVParser {
           recoverMalformedItem(saved);
           return;
         }
-        const bool prior_if_begin =
-            std::exchange(pending_if_begin_, !generate);
+        const bool prior_if_begin = std::exchange(pending_if_begin_, !generate);
         parseIndentedStatement(body_roots);
         pending_if_begin_ = prior_if_begin;
       }
-      if (at(TK::ElseKeyword)) indent_level_ = saved.indent_level;
-      if (!at(TK::ElseKeyword)) return;
+      if (at(TK::ElseKeyword)) {
+        indent_level_ = saved.indent_level;
+      }
+      if (!at(TK::ElseKeyword)) {
+        return;
+      }
       consumeInto(line_);
       if (generate || !at(TK::IfKeyword)) {
         if (atEnclosingBoundary()) {
@@ -11761,9 +12924,9 @@ class SVParser {
   auto parseCase(bool generate) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     const bool randcase = at(TK::RandCaseKeyword);
-    const std::string_view rule =
-        randcase ? "randcase_statement"
-                 : generate ? "case_generate_construct" : "case_statement";
+    const std::string_view rule = randcase   ? "randcase_statement"
+                                  : generate ? "case_generate_construct"
+                                             : "case_statement";
     bool conditional_before_condition = false;
     if (!randcase) {
       for (size_t i = pos_ + 1; i < tokens_.size(); ++i) {
@@ -11783,15 +12946,15 @@ class SVParser {
     if (conditional_before_condition) {
       beginGrammar({rule});
       const auto active_body = [&]() -> std::string_view {
-        if (!generate &&
-            (at(TK::InsideKeyword) || at(TK::MatchesKeyword))) {
+        if (!generate && (at(TK::InsideKeyword) || at(TK::MatchesKeyword))) {
           return {};
         }
         for (const std::string_view child :
              {"case_item", "case_pattern_item", "case_inside_item",
               "case_generate_item"}) {
-          if (grammar_scopes_.back().allPathsHaveActiveRule(child))
+          if (grammar_scopes_.back().allPathsHaveActiveRule(child)) {
             return child;
+          }
         }
         return {};
       };
@@ -11810,7 +12973,9 @@ class SVParser {
           parseDirectiveLine();
           continue;
         }
-        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        if (!grammar_scopes_.back().accepts(peek().kind)) {
+          break;
+        }
         consumeInto(line_);
       }
       body_rule = active_body();
@@ -11857,8 +13022,7 @@ class SVParser {
         } else if (at(TK::MatchesKeyword)) {
           consumeInto(line_);
           body_rule = "case_pattern_item";
-        } else if (at(TK::InsideKeyword) &&
-                   keyword == TK::CaseKeyword) {
+        } else if (at(TK::InsideKeyword) && keyword == TK::CaseKeyword) {
           consumeInto(line_);
           body_rule = "case_inside_item";
         } else if (at(TK::InsideKeyword)) {
@@ -11871,7 +13035,9 @@ class SVParser {
       }
     }
     addLine();
-    if (header_complete) return;
+    if (header_complete) {
+      return;
+    }
 
     pushOpenFrame(TK::EndCaseKeyword);
     block_stack_.back().grammar_body = body_rule;
@@ -11917,8 +13083,9 @@ class SVParser {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       bool valid = true;
-      if (!at(TK::CloseParenthesis))
+      if (!at(TK::CloseParenthesis)) {
         valid = consumeAnnexRule("rs_production_identifier", line_);
+      }
       parseGrammarChildDirectiveLines();
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A randsequence header");
@@ -11957,12 +13124,14 @@ class SVParser {
   // [ '(' tf_port_list ')' ] ':' rs_rule { '|' rs_rule } ';'. The parent
   // production remains live while each rs_rule is parsed as a child.
   [[nodiscard]] auto parseRsProductionItemRule() -> bool {
-    if (!consumeAnnexRule("rs_production_identifier", line_)) return false;
+    if (!consumeAnnexRule("rs_production_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (at(TK::OpenParenthesis))
-      return consumeAnnexDelimited(TK::OpenParenthesis,
-                                   TK::CloseParenthesis,
+    if (at(TK::OpenParenthesis)) {
+      return consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                                    "list_of_arguments", line_);
+    }
     return true;
   }
 
@@ -11971,47 +13140,64 @@ class SVParser {
     if (at(TK::DefaultKeyword)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (at(TK::Colon)) consumeInto(line_);
+      if (at(TK::Colon)) {
+        consumeInto(line_);
+      }
     } else {
-      if (!consumeAnnexRule("case_item_expression", line_, TK::Colon))
+      if (!consumeAnnexRule("case_item_expression", line_, TK::Colon)) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
       while (at(TK::Comma)) {
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
-        if (!consumeAnnexRule("case_item_expression", line_, TK::Colon))
+        if (!consumeAnnexRule("case_item_expression", line_, TK::Colon)) {
           return false;
+        }
         parseGrammarChildDirectiveLines();
       }
-      if (!at(TK::Colon)) return false;
+      if (!at(TK::Colon)) {
+        return false;
+      }
       consumeInto(line_);
     }
     parseGrammarChildDirectiveLines();
-    if (!parseRsProductionItemRule()) return false;
+    if (!parseRsProductionItemRule()) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!at(TK::Semicolon)) return false;
+    if (!at(TK::Semicolon)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
 
   [[nodiscard]] auto parseRsCaseRule() -> bool {
-    if (!at(TK::CaseKeyword)) return false;
+    if (!at(TK::CaseKeyword)) {
+      return false;
+    }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexDelimited(TK::OpenParenthesis,
-                               TK::CloseParenthesis,
-                               "case_expression", line_))
+    if (!consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                               "case_expression", line_)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!parseRsCaseItemRule()) return false;
+    if (!parseRsCaseItemRule()) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (!at(TK::EndCaseKeyword) && !at(TK::EndOfFile)) {
       if (!annexCanStart("rs_case_item", peek().kind) ||
-          !parseRsCaseItemRule())
+          !parseRsCaseItemRule()) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
     }
-    if (!at(TK::EndCaseKeyword)) return false;
+    if (!at(TK::EndCaseKeyword)) {
+      return false;
+    }
     consumeInto(line_);
     return true;
   }
@@ -12020,19 +13206,24 @@ class SVParser {
     size_t braces = 0;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
-      if (isConditionalStartDirective(token) ||
-          token.kind == TK::MacroUsage ||
-          (token.kind == TK::Directive && !isCompilerDirective(token)))
+      if (isConditionalStartDirective(token) || token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token))) {
         return true;
+      }
       if (token.kind == TK::OpenBrace ||
-          token.kind == TK::ApostropheOpenBrace)
+          token.kind == TK::ApostropheOpenBrace) {
         ++braces;
-      else if (token.kind == TK::CloseBrace && braces > 0 && --braces == 0)
-        return false;
+      } else if (token.kind == TK::CloseBrace && braces > 0) {
+        --braces;
+        if (braces == 0) {
+          return false;
+        }
+      }
       if (token.kind == TK::EndOfFile ||
           (!block_stack_.empty() &&
-           matchesBlockClose(block_stack_.back().close_kind, token.kind)))
+           matchesBlockClose(block_stack_.back().close_kind, token.kind))) {
         return true;
+      }
     }
     return true;
   }
@@ -12040,32 +13231,32 @@ class SVParser {
   // rs_code_block ::= '{' { data_declaration }
   //                   { statement_or_null } '}'.
   [[nodiscard]] auto parseRsCodeBlockRule() -> bool {
-    if (!at(TK::OpenBrace)) return false;
-    if (interruptedRsCodeBlock())
+    if (!at(TK::OpenBrace)) {
+      return false;
+    }
+    if (interruptedRsCodeBlock()) {
       return consumeAnnexRule("rs_code_block", line_);
+    }
     consumeInto(line_);
     addLine();
-    const TK outer_close = block_stack_.empty()
-                               ? TK::EndOfFile
-                               : block_stack_.back().close_kind;
+    const TK outer_close =
+        block_stack_.empty() ? TK::EndOfFile : block_stack_.back().close_kind;
     pushOpenFrame(TK::CloseBrace);
     ++indent_level_;
     bool statements_started = false;
-    while (!at(TK::CloseBrace) && !at(TK::EndOfFile) &&
-           !at(outer_close)) {
+    while (!at(TK::CloseBrace) && !at(TK::EndOfFile) && !at(outer_close)) {
       const size_t before = pos_;
       if (at(TK::Directive)) {
         parseStatement();
       } else {
         bool declaration = false;
         if (!statements_started) {
-          declaration = parseTypeDeclarationRule() ||
-                        parseNettypeDeclarationRule() ||
-                        parseQualifiedDataDeclarationRule() ||
-                        (at(TK::ImportKeyword) &&
-                         parsePackageImportExportRule()) ||
-                        parseExplicitDataDeclarationRule() ||
-                        parseUserDataDeclarationRule();
+          declaration =
+              parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
+              parseQualifiedDataDeclarationRule() ||
+              (at(TK::ImportKeyword) && parsePackageImportExportRule()) ||
+              parseExplicitDataDeclarationRule() ||
+              parseUserDataDeclarationRule();
         }
         if (!declaration) {
           statements_started = true;
@@ -12075,12 +13266,16 @@ class SVParser {
           grammar_contexts_.pop_back();
         }
       }
-      if (pos_ == before) break;
+      if (pos_ == before) {
+        break;
+      }
     }
     if (!at(TK::CloseBrace)) {
       recordGrammarFallback("incomplete Annex A randsequence code block");
       block_stack_.pop_back();
-      if (indent_level_ > 0) --indent_level_;
+      if (indent_level_ > 0) {
+        --indent_level_;
+      }
       return false;
     }
     parseOpenFrameClose();
@@ -12088,76 +13283,104 @@ class SVParser {
   }
 
   [[nodiscard]] auto parseRsProdRule() -> bool {
-    if (at(TK::Identifier)) return parseRsProductionItemRule();
-    if (at(TK::OpenBrace)) return parseRsCodeBlockRule();
+    if (at(TK::Identifier)) {
+      return parseRsProductionItemRule();
+    }
+    if (at(TK::OpenBrace)) {
+      return parseRsCodeBlockRule();
+    }
     if (at(TK::IfKeyword) || at(TK::RepeatKeyword)) {
       const bool conditional = at(TK::IfKeyword);
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexDelimited(TK::OpenParenthesis,
-                                 TK::CloseParenthesis,
-                                 "expression", line_))
+      if (!consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                                 "expression", line_)) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!parseRsProductionItemRule()) return false;
+      if (!parseRsProductionItemRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
       if (conditional && at(TK::ElseKeyword)) {
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
-        if (!parseRsProductionItemRule()) return false;
+        if (!parseRsProductionItemRule()) {
+          return false;
+        }
       }
       return true;
     }
-    if (at(TK::CaseKeyword)) return parseRsCaseRule();
+    if (at(TK::CaseKeyword)) {
+      return parseRsCaseRule();
+    }
     return false;
   }
 
   [[nodiscard]] auto parseRsProductionListRule() -> bool {
     // Conditional directives and unavailable expansions keep the
     // interrupted child grammar path.
-    if (hasAnnexListInterruption(pos_, false))
+    if (hasAnnexListInterruption(pos_, false)) {
       return consumeAnnexRule("rs_production_list", line_, TK::ColonEquals);
+    }
     if (at(TK::RandKeyword)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!at(TK::JoinKeyword)) return false;
+      if (!at(TK::JoinKeyword)) {
+        return false;
+      }
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (at(TK::OpenParenthesis) &&
-          !consumeAnnexDelimited(TK::OpenParenthesis,
-                                 TK::CloseParenthesis, "expression", line_))
+          !consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                                 "expression", line_)) {
         return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!parseRsProductionItemRule()) return false;
+      if (!parseRsProductionItemRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!parseRsProductionItemRule()) return false;
+      if (!parseRsProductionItemRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
       while (at(TK::Identifier)) {
-        if (!parseRsProductionItemRule()) return false;
+        if (!parseRsProductionItemRule()) {
+          return false;
+        }
         parseGrammarChildDirectiveLines();
       }
       return true;
     }
-    if (!parseRsProdRule()) return false;
+    if (!parseRsProdRule()) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (annexCanStart("rs_prod", peek().kind)) {
-      if (!parseRsProdRule()) return false;
+      if (!parseRsProdRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     return true;
   }
 
   [[nodiscard]] auto parseRsRule() -> bool {
-    if (!parseRsProductionListRule())
+    if (!parseRsProductionListRule()) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
     if (at(TK::ColonEquals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexRule("rs_weight_specification", line_)) return false;
+      if (!consumeAnnexRule("rs_weight_specification", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (at(TK::OpenBrace) &&
-          !parseRsCodeBlockRule()) return false;
+      if (at(TK::OpenBrace) && !parseRsCodeBlockRule()) {
+        return false;
+      }
     }
     return true;
   }
@@ -12165,22 +13388,22 @@ class SVParser {
   auto parseRsProductionRule() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
     const size_t after_identifier = afterOrdinaryDirectives(1);
-    const bool untyped = at(TK::Identifier) &&
-                         (at(TK::Colon, after_identifier) ||
-                          at(TK::OpenParenthesis, after_identifier));
+    const bool untyped =
+        at(TK::Identifier) && (at(TK::Colon, after_identifier) ||
+                               at(TK::OpenParenthesis, after_identifier));
     const auto after_user_type =
         at(TK::Identifier) ? afterUserTypePrefix(0) : std::nullopt;
     const bool typed =
         (peek().kind != TK::Identifier &&
          annexCanStart("data_type_or_void", peek().kind)) ||
         (after_user_type &&
-         at(TK::Identifier,
-            afterOrdinaryDirectives(*after_user_type)));
+         at(TK::Identifier, afterOrdinaryDirectives(*after_user_type)));
     if (untyped || typed) {
       bool valid = !typed || consumeAnnexRule("data_type_or_void", line_);
       parseGrammarChildDirectiveLines();
-      if (valid)
+      if (valid) {
         valid = consumeAnnexRule("rs_production_identifier", line_);
+      }
       parseGrammarChildDirectiveLines();
       if (valid && at(TK::OpenParenthesis)) {
         consumeInto(line_);
@@ -12189,18 +13412,28 @@ class SVParser {
         while (valid) {
           valid = parseTfPortItemRule();
           parseGrammarChildDirectiveLines();
-          if (!valid || !at(TK::Comma)) break;
+          if (!valid || !at(TK::Comma)) {
+            break;
+          }
           consumeInto(line_);
           parseGrammarChildDirectiveLines();
         }
-        if (valid && at(TK::CloseParenthesis)) consumeInto(line_);
-        else valid = false;
+        if (valid && at(TK::CloseParenthesis)) {
+          consumeInto(line_);
+        } else {
+          valid = false;
+        }
       }
       parseGrammarChildDirectiveLines();
-      if (valid && at(TK::Colon)) consumeInto(line_);
-      else valid = false;
+      if (valid && at(TK::Colon)) {
+        consumeInto(line_);
+      } else {
+        valid = false;
+      }
       parseGrammarChildDirectiveLines();
-      if (valid) valid = parseRsRule();
+      if (valid) {
+        valid = parseRsRule();
+      }
       parseGrammarChildDirectiveLines();
       while (valid && at(TK::Or)) {
         consumeInto(line_);
@@ -12229,9 +13462,13 @@ class SVParser {
   [[nodiscard]] auto parseClockingSkewRule() -> bool {
     parseGrammarChildDirectiveLines();
     const bool edge = annexCanStart("edge_identifier", peek().kind);
-    if (edge && !consumeAnnexRule("edge_identifier", line_)) return false;
+    if (edge && !consumeAnnexRule("edge_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (at(TK::Hash)) return consumeAnnexRule("delay_control", line_);
+    if (at(TK::Hash)) {
+      return consumeAnnexRule("delay_control", line_);
+    }
     return edge;
   }
 
@@ -12243,21 +13480,26 @@ class SVParser {
       consumeInto(line_);
       return true;
     }
-    if (!at(TK::InputKeyword) && !at(TK::OutputKeyword)) return false;
+    if (!at(TK::InputKeyword) && !at(TK::OutputKeyword)) {
+      return false;
+    }
     const bool input = at(TK::InputKeyword);
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     if (require_skew || at(TK::Hash) ||
         annexCanStart("edge_identifier", peek().kind)) {
-      if (!parseClockingSkewRule()) return false;
+      if (!parseClockingSkewRule()) {
+        return false;
+      }
     }
     parseGrammarChildDirectiveLines();
     if (input && at(TK::OutputKeyword)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (require_skew || at(TK::Hash) ||
-          annexCanStart("edge_identifier", peek().kind))
+          annexCanStart("edge_identifier", peek().kind)) {
         return parseClockingSkewRule();
+      }
     }
     return true;
   }
@@ -12265,26 +13507,32 @@ class SVParser {
   // clocking_decl_assign ::= signal_identifier [ '=' expression ].
   [[nodiscard]] auto parseClockingDeclAssignRule() -> bool {
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("signal_identifier", line_, TK::Comma,
-                          [&] { return at(TK::Equals) ||
-                                       at(TK::Semicolon); }))
+    if (!consumeAnnexRule("signal_identifier", line_, TK::Comma, [&] {
+          return at(TK::Equals) || at(TK::Semicolon);
+        })) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("expression", line_, TK::Comma,
-                            [&] { return at(TK::Semicolon); }))
+                            [&] { return at(TK::Semicolon); })) {
         return false;
+      }
     }
     return true;
   }
 
   [[nodiscard]] auto parseClockingDeclAssignListRule() -> bool {
-    do {
-      if (!parseClockingDeclAssignRule()) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseClockingDeclAssignRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -12294,28 +13542,33 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid &&
-          annexCanStart("assertion_item_declaration", peek().kind) &&
-          parseClockingItemRule())
+      if (valid && parseAttributeMacroInterruptionRule()) {
         return true;
+      }
+      if (valid && annexCanStart("assertion_item_declaration", peek().kind) &&
+          parseClockingItemRule()) {
+        return true;
+      }
       recordGrammarFallback("invalid Annex A attributed clocking item");
       recoverMalformedItem(saved);
       return true;
     }
-    if (at(TK::PropertyKeyword) || at(TK::SequenceKeyword))
+    if (at(TK::PropertyKeyword) || at(TK::SequenceKeyword)) {
       return parsePackageOrGenerateDeclarationRule();
+    }
     if (at(TK::LetKeyword)) {
       return parseLetDeclarationRule();
     }
     const bool default_item = at(TK::DefaultKeyword);
     const bool direction_item =
         annexCanStart("clocking_direction", peek().kind);
-    if (!default_item && !direction_item) return false;
+    if (!default_item && !direction_item) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     const bool conditional_members =
         direction_item && hasConditionalListMember(pos_);
@@ -12328,18 +13581,16 @@ class SVParser {
                   ? consumeAnnexRule("default_skew", line_, TK::Semicolon)
                   : parseClockingDirectionRule(true);
     } else {
-      valid = interrupted
-                  ? consumeAnnexRule("clocking_direction", line_)
-                  : parseClockingDirectionRule(false);
-      if (valid)
-        valid = interrupted
-                    ? consumeAnnexRule("list_of_clocking_decl_assign", line_,
-                                       TK::Semicolon)
-                    : conditional_members
-                        ? parseConditionalAnnexCommaListRule(
-                              "list_of_clocking_decl_assign",
-                              "clocking_decl_assign")
-                        : parseClockingDeclAssignListRule();
+      valid = interrupted ? consumeAnnexRule("clocking_direction", line_)
+                          : parseClockingDirectionRule(false);
+      if (valid) {
+        valid = interrupted ? consumeAnnexRule("list_of_clocking_decl_assign",
+                                               line_, TK::Semicolon)
+                : conditional_members ? parseConditionalAnnexCommaListRule(
+                                            "list_of_clocking_decl_assign",
+                                            "clocking_decl_assign")
+                                      : parseClockingDeclAssignListRule();
+      }
     }
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A clocking item");
@@ -12356,35 +13607,47 @@ class SVParser {
   [[nodiscard]] auto parseLetPortItemRule() -> bool {
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
-      if (!consumeAnnexRule("attribute_instance", line_)) return false;
+      if (!consumeAnnexRule("attribute_instance", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
-    const bool implicit_type = implicitIdentifierBefore(
-        {TK::Comma, TK::CloseParenthesis, TK::Equals});
-    if (!implicit_type && !consumeAnnexRule("let_formal_type", line_))
+    const bool implicit_type =
+        implicitIdentifierBefore({TK::Comma, TK::CloseParenthesis, TK::Equals});
+    if (!implicit_type && !consumeAnnexRule("let_formal_type", line_)) {
       return false;
+    }
     parseGrammarChildDirectiveLines();
-    if (!consumeAnnexRule("formal_port_identifier", line_)) return false;
+    if (!consumeAnnexRule("formal_port_identifier", line_)) {
+      return false;
+    }
     parseGrammarChildDirectiveLines();
     while (at(TK::OpenBracket)) {
-      if (!consumeAnnexRule("variable_dimension", line_)) return false;
+      if (!consumeAnnexRule("variable_dimension", line_)) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
     }
     if (at(TK::Equals)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("expression", line_, TK::Comma,
-                            [&] { return at(TK::CloseParenthesis); }))
+                            [&] { return at(TK::CloseParenthesis); })) {
         return false;
+      }
     }
     return true;
   }
 
   [[nodiscard]] auto parseLetPortListRule() -> bool {
-    do {
-      if (!parseLetPortItemRule()) return false;
+    do {  // NOLINT(cppcoreguidelines-avoid-do-while)
+      if (!parseLetPortItemRule()) {
+        return false;
+      }
       parseGrammarChildDirectiveLines();
-      if (!at(TK::Comma)) break;
+      if (!at(TK::Comma)) {
+        break;
+      }
       consumeInto(line_);
     } while (!at(TK::EndOfFile));
     return true;
@@ -12393,7 +13656,9 @@ class SVParser {
   // let_declaration ::= let let_identifier
   // [ '(' [ let_port_list ] ')' ] '=' expression ';'.
   auto parseLetDeclarationRule() -> bool {
-    if (!at(TK::LetKeyword)) return false;
+    if (!at(TK::LetKeyword)) {
+      return false;
+    }
     const bool conditional_ports =
         at(TK::Identifier, 1) && at(TK::OpenParenthesis, 2) &&
         hasConditionalListMember(pos_ + 3, TK::CloseParenthesis);
@@ -12424,8 +13689,7 @@ class SVParser {
         consumeInto(line_);
         if (!(conditional_ports
                   ? parseConditionalAnnexCommaListRule(
-                        "let_port_list", "let_port_item",
-                        TK::CloseParenthesis)
+                        "let_port_list", "let_port_item", TK::CloseParenthesis)
                   : parseLetPortListRule()) ||
             !at(TK::CloseParenthesis)) {
           recordGrammarFallback("invalid Annex A let port list");
@@ -12457,13 +13721,13 @@ class SVParser {
   // coverage_option ::= option '.' member_identifier '=' expression |
   // type_option '.' member_identifier '=' constant_expression.
   auto parseCoverageOptionRule() -> bool {
-    if (!at(TK::Identifier) ||
-        !at(TK::Dot, afterOrdinaryDirectives(1)) ||
-        (peek().rawText() != "option" &&
-         peek().rawText() != "type_option")) {
+    if (!at(TK::Identifier) || !at(TK::Dot, afterOrdinaryDirectives(1)) ||
+        (peek().rawText() != "option" && peek().rawText() != "type_option")) {
       return false;
     }
-    if (hasAnnexListInterruption(pos_, false)) return false;
+    if (hasAnnexListInterruption(pos_, false)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     const bool constant = peek().rawText() == "type_option";
     consumeInto(line_);
@@ -12482,8 +13746,7 @@ class SVParser {
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
     const bool value = consumeAnnexRule(
-        constant ? "constant_expression" : "expression", line_,
-        TK::Semicolon);
+        constant ? "constant_expression" : "expression", line_, TK::Semicolon);
     parseGrammarChildDirectiveLines();
     if (!value || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A coverage option value");
@@ -12502,15 +13765,17 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid &&
-          annexCanStart("bins_selection_or_option", peek().kind) &&
-          parseCrossBodyItemRule())
+      if (valid && parseAttributeMacroInterruptionRule()) {
         return true;
+      }
+      if (valid && annexCanStart("bins_selection_or_option", peek().kind) &&
+          parseCrossBodyItemRule()) {
+        return true;
+      }
       recordGrammarFallback("invalid Annex A attributed cross body item");
       recoverMalformedItem(saved);
       return true;
@@ -12519,27 +13784,38 @@ class SVParser {
       parseNamedBlock(TK::EndFunctionKeyword);
       return true;
     }
-    if (parseCoverageOptionRule()) return true;
+    if (parseCoverageOptionRule()) {
+      return true;
+    }
     if (!at(TK::BinsKeyword) && !at(TK::IllegalBinsKeyword) &&
-        !at(TK::IgnoreBinsKeyword))
+        !at(TK::IgnoreBinsKeyword)) {
       return false;
-    if (hasAnnexListInterruption(pos_, false)) return false;
+    }
+    if (hasAnnexListInterruption(pos_, false)) {
+      return false;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = consumeAnnexRule("bins_keyword", line_);
     parseGrammarChildDirectiveLines();
-    if (valid) valid = consumeAnnexRule("bin_identifier", line_);
+    if (valid) {
+      valid = consumeAnnexRule("bin_identifier", line_);
+    }
     parseGrammarChildDirectiveLines();
-    if (valid && at(TK::Equals)) consumeInto(line_);
-    else valid = false;
+    if (valid && at(TK::Equals)) {
+      consumeInto(line_);
+    } else {
+      valid = false;
+    }
     parseGrammarChildDirectiveLines();
-    if (valid)
+    if (valid) {
       valid = consumeAnnexRule("select_expression", line_, TK::IffKeyword);
+    }
     parseGrammarChildDirectiveLines();
     if (valid && at(TK::IffKeyword)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      valid = consumeAnnexDelimited(TK::OpenParenthesis,
-                                    TK::CloseParenthesis, "expression", line_);
+      valid = consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                                    "expression", line_);
     }
     parseGrammarChildDirectiveLines();
     if (!valid || !at(TK::Semicolon)) {
@@ -12556,17 +13832,21 @@ class SVParser {
   // A parenthesized expression shares its prefix with trans_list; only that
   // right-hand child needs both Annex A alternatives live.
   auto parseBinsOrOptionsRule() -> bool {
-    if (parseCoverageOptionRule()) return true;
+    if (parseCoverageOptionRule()) {
+      return true;
+    }
     const bool wildcard = at(TK::WildcardKeyword);
-    const size_t bins_offset =
-        wildcard ? afterOrdinaryDirectives(1) : 0;
+    const size_t bins_offset = wildcard ? afterOrdinaryDirectives(1) : 0;
     if (!(at(TK::BinsKeyword, bins_offset) ||
           at(TK::IllegalBinsKeyword, bins_offset) ||
-          at(TK::IgnoreBinsKeyword, bins_offset)))
+          at(TK::IgnoreBinsKeyword, bins_offset))) {
       return false;
+    }
     // Conditional directives and unavailable macro expansions need the
     // interrupted item path, which can resume at the enclosing coverpoint.
-    if (hasAnnexListInterruption(pos_, false)) return false;
+    if (hasAnnexListInterruption(pos_, false)) {
+      return false;
+    }
 
     const LeafCheckpoint saved = leafCheckpoint();
     if (wildcard) {
@@ -12578,7 +13858,9 @@ class SVParser {
     }
     bool valid = consumeAnnexRule("bins_keyword", line_);
     parseGrammarChildDirectiveLines();
-    if (valid) valid = consumeAnnexRule("bin_identifier", line_);
+    if (valid) {
+      valid = consumeAnnexRule("bin_identifier", line_);
+    }
     parseGrammarChildDirectiveLines();
     bool bracketed = false;
     bool bracket_contents = false;
@@ -12593,12 +13875,14 @@ class SVParser {
         consumeInto(line_);
       }
     }
-    if (valid && at(TK::Equals)) consumeInto(line_);
-    else valid = false;
+    if (valid && at(TK::Equals)) {
+      consumeInto(line_);
+    } else {
+      valid = false;
+    }
     parseGrammarChildDirectiveLines();
     const TK rhs = peek().kind;
-    const bool named_coverpoint = at(TK::Identifier) &&
-                                  at(TK::WithKeyword, 1);
+    const bool named_coverpoint = at(TK::Identifier) && at(TK::WithKeyword, 1);
     if (valid && rhs == TK::OpenBrace) {
       valid = consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace,
                                     "covergroup_range_list", line_);
@@ -12606,27 +13890,33 @@ class SVParser {
       if (valid && at(TK::WithKeyword)) {
         consumeInto(line_);
         parseGrammarChildDirectiveLines();
-        valid = consumeAnnexDelimited(TK::OpenParenthesis,
-                                      TK::CloseParenthesis,
+        valid = consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                                       "with_covergroup_expression", line_);
       }
     } else if (valid && rhs == TK::DefaultKeyword) {
       valid = !wildcard;
-      if (valid) consumeInto(line_);  // default
+      if (valid) {
+        consumeInto(line_);  // default
+      }
       if (valid && at(TK::SequenceKeyword)) {
         valid = !bracketed;
-        if (valid) consumeInto(line_);
+        if (valid) {
+          consumeInto(line_);
+        }
       }
     } else if (valid && named_coverpoint) {
       valid = consumeAnnexRule("cover_point_identifier", line_);
       parseGrammarChildDirectiveLines();
-      if (valid && at(TK::WithKeyword)) consumeInto(line_);
-      else valid = false;
+      if (valid && at(TK::WithKeyword)) {
+        consumeInto(line_);
+      } else {
+        valid = false;
+      }
       parseGrammarChildDirectiveLines();
-      if (valid)
-        valid = consumeAnnexDelimited(TK::OpenParenthesis,
-                                      TK::CloseParenthesis,
+      if (valid) {
+        valid = consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
                                       "with_covergroup_expression", line_);
+      }
     } else if (valid && rhs == TK::OpenParenthesis) {
       const AnnexState value = parseAnnexItem(
           {"set_covergroup_expression", "trans_list"}, false, true);
@@ -12634,15 +13924,15 @@ class SVParser {
               (value.completed("set_covergroup_expression") ||
                (!bracket_contents && value.completed("trans_list")));
     } else if (valid) {
-      valid = consumeAnnexRule("set_covergroup_expression", line_,
-                               TK::IffKeyword);
+      valid =
+          consumeAnnexRule("set_covergroup_expression", line_, TK::IffKeyword);
     }
     parseGrammarChildDirectiveLines();
     if (valid && at(TK::IffKeyword)) {
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      valid = consumeAnnexDelimited(TK::OpenParenthesis,
-                                    TK::CloseParenthesis, "expression", line_);
+      valid = consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                                    "expression", line_);
     }
     parseGrammarChildDirectiveLines();
     if (!valid || !at(TK::Semicolon)) {
@@ -12669,7 +13959,9 @@ class SVParser {
         parseStatement();
         continue;
       }
-      if (!at(TK::OpenParenthesis) || !at(TK::Star, 1)) break;
+      if (!at(TK::OpenParenthesis) || !at(TK::Star, 1)) {
+        break;
+      }
       const LeafCheckpoint saved = leafCheckpoint();
       if (!consumeAnnexRule("attribute_instance", line_)) {
         recordGrammarFallback("invalid Annex A coverpoint attribute");
@@ -12677,7 +13969,9 @@ class SVParser {
         break;
       }
     }
-    if (at(TK::CloseBrace) && !line_.tokens.empty()) addLine();
+    if (at(TK::CloseBrace) && !line_.tokens.empty()) {
+      addLine();
+    }
     while (!at(TK::CloseBrace) && !at(TK::EndOfFile) &&
            !(stop_at_conditional_boundary_ &&
              isConditionalBoundaryDirective(peek()))) {
@@ -12713,8 +14007,9 @@ class SVParser {
         if (isConditionalStartDirective(peek())) {
           bool header_ended = true;
           if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                     indent_level_))
+                                     indent_level_)) {
             break;
+          }
           continue;
         }
         if (isCompilerDirective(peek())) {
@@ -12722,7 +14017,9 @@ class SVParser {
           parseDirectiveLine();
           continue;
         }
-        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        if (!grammar_scopes_.back().accepts(peek().kind)) {
+          break;
+        }
         consumeInto(line_);
       }
       const bool keyword_expected =
@@ -12741,21 +14038,26 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = true;
     if (labeled && !parsed_point_prefix) {
-      valid = consumeAnnexRule(point ? "cover_point_identifier"
-                                     : "cross_identifier", line_);
-      if (valid && at(TK::Colon)) consumeInto(line_);
-      else valid = false;
-    }
-    if (valid) consumeInto(line_);  // coverpoint / cross
-    if (valid)
       valid = consumeAnnexRule(
-          point ? "expression" : "list_of_cross_items", line_,
-          TK::IffKeyword,
+          point ? "cover_point_identifier" : "cross_identifier", line_);
+      if (valid && at(TK::Colon)) {
+        consumeInto(line_);
+      } else {
+        valid = false;
+      }
+    }
+    if (valid) {
+      consumeInto(line_);  // coverpoint / cross
+    }
+    if (valid) {
+      valid = consumeAnnexRule(
+          point ? "expression" : "list_of_cross_items", line_, TK::IffKeyword,
           [&] { return at(TK::Semicolon) || at(TK::OpenBrace); });
+    }
     if (valid && at(TK::IffKeyword)) {
       consumeInto(line_);
-      valid = consumeAnnexDelimited(
-          TK::OpenParenthesis, TK::CloseParenthesis, "expression", line_);
+      valid = consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                                    "expression", line_);
     }
     if (!valid || (!at(TK::Semicolon) && !at(TK::OpenBrace))) {
       recordGrammarFallback("invalid Annex A coverage spec header");
@@ -12766,17 +14068,23 @@ class SVParser {
     consumeInto(line_);
     addLine();
     if (braced) {
-      if (point) parseCoverpointBinsBodyRule();
-      else parseDelimitedBody(TK::CloseBrace, "cross_body_item");
+      if (point) {
+        parseCoverpointBinsBodyRule();
+      } else {
+        parseDelimitedBody(TK::CloseBrace, "cross_body_item");
+      }
     }
     return true;
   }
 
   auto parseCoverageSpecRule() -> bool {
     if (!annexCanStart("cover_point", peek().kind) &&
-        !annexCanStart("cover_cross", peek().kind))
+        !annexCanStart("cover_cross", peek().kind)) {
       return false;
-    if (parseDirectCoverageSpecRule()) return true;
+    }
+    if (parseDirectCoverageSpecRule()) {
+      return true;
+    }
     const LeafCheckpoint saved = leafCheckpoint();
     beginGrammar({"cover_point", "cover_cross"});
     while (!at(TK::EndOfFile) &&
@@ -12785,8 +14093,9 @@ class SVParser {
       if (isConditionalStartDirective(peek())) {
         bool header_ended = true;
         if (!parseAnnexConditional(TK::EndOfFile, header_ended,
-                                   indent_level_))
+                                   indent_level_)) {
           break;
+        }
         continue;
       }
       if (isCompilerDirective(peek())) {
@@ -12794,14 +14103,16 @@ class SVParser {
         parseDirectiveLine();
         continue;
       }
-      if (!grammar_scopes_.back().accepts(peek().kind)) break;
+      if (!grammar_scopes_.back().accepts(peek().kind)) {
+        break;
+      }
       consumeInto(line_);
     }
     const AnnexState header = endGrammar(false);
     const std::string_view body_rule =
-        header.hasActiveRule("bins_or_empty")
-            ? "bins_or_empty"
-            : header.hasActiveRule("cross_body") ? "cross_body" : "";
+        header.hasActiveRule("bins_or_empty") ? "bins_or_empty"
+        : header.hasActiveRule("cross_body")  ? "cross_body"
+                                              : "";
     if (header.failed || header.interrupted || body_rule.empty() ||
         (!at(TK::OpenBrace) && !at(TK::Semicolon))) {
       recordGrammarFallback("invalid Annex A coverage spec header");
@@ -12820,8 +14131,11 @@ class SVParser {
     }
     addLine();
     if (braced) {
-      if (body_rule == "bins_or_empty") parseCoverpointBinsBodyRule();
-      else parseDelimitedBody(TK::CloseBrace, "cross_body_item");
+      if (body_rule == "bins_or_empty") {
+        parseCoverpointBinsBodyRule();
+      } else {
+        parseDelimitedBody(TK::CloseBrace, "cross_body_item");
+      }
     }
     return true;
   }
@@ -12832,12 +14146,16 @@ class SVParser {
     if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
       const LeafCheckpoint saved = leafCheckpoint();
       bool valid = true;
-      do {
+      do {  // NOLINT(cppcoreguidelines-avoid-do-while)
         valid = consumeAnnexRule("attribute_instance", line_);
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
-      if (valid && parseAttributeMacroInterruptionRule()) return true;
-      if (valid && parseCoverageSpecOrOptionRule()) return true;
+      if (valid && parseAttributeMacroInterruptionRule()) {
+        return true;
+      }
+      if (valid && parseCoverageSpecOrOptionRule()) {
+        return true;
+      }
       recordGrammarFallback("invalid Annex A attributed coverage item");
       recoverMalformedItem(saved);
       return true;
@@ -12892,7 +14210,9 @@ class SVParser {
             parseDirectiveLine();
             continue;
           }
-          if (at(TK::Directive)) break;
+          if (at(TK::Directive)) {
+            break;
+          }
           consumeInto(line_);
         }
         if (at(TK::Colon)) {
@@ -12993,8 +14313,8 @@ class SVParser {
       }
       consumeInto(line_);
       parseGrammarChildDirectiveLines();
-      if (!consumeAnnexDelimited(TK::OpenParenthesis,
-                                 TK::CloseParenthesis, "expression", line_)) {
+      if (!consumeAnnexDelimited(TK::OpenParenthesis, TK::CloseParenthesis,
+                                 "expression", line_)) {
         recoverMalformedItem(saved);
         return;
       }
@@ -13079,7 +14399,9 @@ class SVParser {
       ++output_index;
     }
   }
-  if (output_index != tokens.size()) preserved = false;
+  if (output_index != tokens.size()) {
+    preserved = false;
+  }
   if (!preserved) {
     result.lines.clear();
     Line original;
