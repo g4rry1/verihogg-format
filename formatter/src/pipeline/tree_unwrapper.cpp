@@ -5979,16 +5979,19 @@ class SVParser {
     const bool direction =
         annexCanStart("tf_port_direction", peek(attributes).kind) &&
         (!at(TK::ConstKeyword, attributes) ||
-         at(TK::RefKeyword, attributes + 1));
+         at(TK::RefKeyword,
+            afterOrdinaryDirectives(attributes + 1)));
     if (!direction) return false;
     const bool ref_direction = at(TK::RefKeyword, attributes) ||
                                at(TK::ConstKeyword, attributes);
-    size_t offset = attributes +
-                    (at(TK::ConstKeyword, attributes) ? 2 : 1);
+    size_t offset = afterOrdinaryDirectives(attributes + 1);
+    if (at(TK::ConstKeyword, attributes))
+      offset = afterOrdinaryDirectives(offset + 1);
     if (at(TK::StaticKeyword, offset) &&
         ref_direction)
-      ++offset;
-    if (at(TK::VarKeyword, offset)) ++offset;
+      offset = afterOrdinaryDirectives(offset + 1);
+    if (at(TK::VarKeyword, offset))
+      offset = afterOrdinaryDirectives(offset + 1);
     const TK type_start = peek(offset).kind;
     bool dimensioned_implicit = false;
     if (type_start == TK::Identifier &&
@@ -5998,19 +6001,22 @@ class SVParser {
         static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
         return true;
       }
-      dimensioned_implicit = at(TK::Semicolon, *next) ||
-                             at(TK::Equals, *next) || at(TK::Comma, *next);
-      if (!dimensioned_implicit && !at(TK::Identifier, *next)) {
+      const size_t boundary = afterOrdinaryDirectives(*next);
+      dimensioned_implicit = at(TK::Semicolon, boundary) ||
+                             at(TK::Equals, boundary) ||
+                             at(TK::Comma, boundary);
+      if (!dimensioned_implicit && !at(TK::Identifier, boundary)) {
         static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
         return true;
       }
     }
+    const size_t after_type_start = afterOrdinaryDirectives(offset + 1);
     const bool implicit_type =
         dimensioned_implicit ||
         (type_start == TK::Identifier &&
-         (at(TK::Semicolon, offset + 1) ||
-          at(TK::Equals, offset + 1) ||
-          at(TK::Comma, offset + 1)));
+         (at(TK::Semicolon, after_type_start) ||
+          at(TK::Equals, after_type_start) ||
+          at(TK::Comma, after_type_start)));
     if (!annexCanStart("data_type_or_implicit", type_start)) {
       static_cast<void>(parseAnnexItem({"tf_port_declaration"}, true));
       return true;
@@ -6026,7 +6032,20 @@ class SVParser {
       valid = consumeAnnexRule("attribute_instance", line_);
       parseGrammarChildDirectiveLines();
     }
-    if (valid) valid = consumeAnnexRule("tf_port_direction", line_);
+    if (valid && ref_direction) {
+      if (at(TK::ConstKeyword)) {
+        consumeInto(line_);
+        parseGrammarChildDirectiveLines();
+      }
+      valid = at(TK::RefKeyword);
+      if (valid) {
+        consumeInto(line_);
+        parseGrammarChildDirectiveLines();
+      }
+      if (valid && at(TK::StaticKeyword)) consumeInto(line_);
+    } else if (valid) {
+      valid = consumeAnnexRule("port_direction", line_);
+    }
     parseGrammarChildDirectiveLines();
     if (valid && at(TK::VarKeyword)) consumeInto(line_);
     parseGrammarChildDirectiveLines();
