@@ -11553,20 +11553,25 @@ class SVParser {
          peek().rawText() != "type_option")) {
       return false;
     }
+    if (hasAnnexListInterruption(pos_, false)) return false;
     const LeafCheckpoint saved = leafCheckpoint();
     const bool constant = peek().rawText() == "type_option";
     consumeInto(line_);
     consumeInto(line_);
-    if (!consumeAnnexRule("member_identifier", line_) ||
-        !at(TK::Equals)) {
+    const bool member = consumeAnnexRule("member_identifier", line_);
+    parseGrammarChildDirectiveLines();
+    if (!member || !at(TK::Equals)) {
       recordGrammarFallback("invalid Annex A coverage option member");
       recoverMalformedItem(saved);
       return true;
     }
     consumeInto(line_);
-    if (!consumeAnnexRule(constant ? "constant_expression" : "expression",
-                          line_, TK::Semicolon) ||
-        !at(TK::Semicolon)) {
+    parseGrammarChildDirectiveLines();
+    const bool value = consumeAnnexRule(
+        constant ? "constant_expression" : "expression", line_,
+        TK::Semicolon);
+    parseGrammarChildDirectiveLines();
+    if (!value || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A coverage option value");
       recoverMalformedItem(saved);
       return true;
@@ -11588,18 +11593,25 @@ class SVParser {
     if (!at(TK::BinsKeyword) && !at(TK::IllegalBinsKeyword) &&
         !at(TK::IgnoreBinsKeyword))
       return false;
+    if (hasAnnexListInterruption(pos_, false)) return false;
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = consumeAnnexRule("bins_keyword", line_);
+    parseGrammarChildDirectiveLines();
     if (valid) valid = consumeAnnexRule("bin_identifier", line_);
+    parseGrammarChildDirectiveLines();
     if (valid && at(TK::Equals)) consumeInto(line_);
     else valid = false;
+    parseGrammarChildDirectiveLines();
     if (valid)
       valid = consumeAnnexRule("select_expression", line_, TK::IffKeyword);
+    parseGrammarChildDirectiveLines();
     if (valid && at(TK::IffKeyword)) {
       consumeInto(line_);
+      parseGrammarChildDirectiveLines();
       valid = consumeAnnexDelimited(TK::OpenParenthesis,
                                     TK::CloseParenthesis, "expression", line_);
     }
+    parseGrammarChildDirectiveLines();
     if (!valid || !at(TK::Semicolon)) {
       recordGrammarFallback("invalid Annex A cross bins selection");
       recoverMalformedLeaf(saved);
