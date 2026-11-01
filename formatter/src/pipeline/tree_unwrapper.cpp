@@ -8826,12 +8826,13 @@ class SVParser {
           addLine();
           parseDirectiveLine();
         }
+        const size_t type_offset =
+            at(TK::UnitSystemName) && at(TK::DoubleColon, 1) ? 2 : 0;
+        const auto after_type = afterUserTypePrefix(type_offset);
         if (!(at(TK::VarKeyword) ||
               (annexCanStart("data_type", peek().kind) &&
                !at(TK::Identifier) && !at(TK::UnitSystemName)) ||
-              (at(TK::Identifier) && at(TK::Identifier, 1)) ||
-              (at(TK::Identifier) && at(TK::DoubleColon, 1) &&
-               at(TK::Identifier, 2) && at(TK::Identifier, 3))))
+              (after_type && at(TK::Identifier, *after_type))))
           break;
         if (!parseAssertionVariableDeclarationRule()) {
           complete = false;
