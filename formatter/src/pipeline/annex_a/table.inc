@@ -1,5 +1,4 @@
-// Generated from IEEE 1800-2023 Annex A via veriloggraph GrammarImporter.
-// Source provenance: formatter/grammar/README.md
+// Generated from IEEE 1800-2023 Annex A during development of this formatter.
 static constexpr std::string_view kTokenNames[] = {
     "Unknown",
     "EndOfFile",
