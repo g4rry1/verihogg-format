@@ -3779,8 +3779,10 @@ class SVParser {
       type_identifier = 2;
     }
     const auto variable = afterUserTypePrefix(type_identifier);
-    if (!variable || !at(TK::Identifier, *variable) ||
-        at(TK::OpenParenthesis, *variable + 1))
+    const size_t variable_offset =
+        variable ? afterOrdinaryDirectives(*variable) : 0;
+    if (!variable || !at(TK::Identifier, variable_offset) ||
+        at(TK::OpenParenthesis, variable_offset + 1))
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
     const bool conditional_members = hasConditionalListMember(pos_);
@@ -3837,22 +3839,25 @@ class SVParser {
         !at(TK::StaticKeyword) && !at(TK::AutomaticKeyword))
       return false;
     size_t offset = 0;
-    if (at(TK::ConstKeyword, offset)) ++offset;
-    if (at(TK::VarKeyword, offset)) ++offset;
+    if (at(TK::ConstKeyword, offset))
+      offset = afterOrdinaryDirectives(offset + 1);
+    if (at(TK::VarKeyword, offset))
+      offset = afterOrdinaryDirectives(offset + 1);
     if (at(TK::StaticKeyword, offset) ||
         at(TK::AutomaticKeyword, offset))
-      ++offset;
+      offset = afterOrdinaryDirectives(offset + 1);
     const TK type_start = peek(offset).kind;
     const auto after_identifier =
         type_start == TK::Identifier
             ? afterBalancedDimensions(offset + 1)
             : std::optional<size_t>{offset + 1};
     if (!after_identifier) return false;
+    const size_t boundary = afterOrdinaryDirectives(*after_identifier);
     const bool implicit_type =
         type_start == TK::Identifier &&
-        (at(TK::Semicolon, *after_identifier) ||
-         at(TK::Equals, *after_identifier) ||
-         at(TK::Comma, *after_identifier));
+        (at(TK::Semicolon, boundary) ||
+         at(TK::Equals, boundary) ||
+         at(TK::Comma, boundary));
     if (!annexCanStart("data_type_or_implicit", type_start))
       return false;
     const bool conditional_members = hasConditionalListMember(pos_);
@@ -3861,11 +3866,25 @@ class SVParser {
       return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
-    if (at(TK::ConstKeyword)) consumeInto(line_);
-    if (at(TK::VarKeyword)) consumeInto(line_);
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    if (at(TK::ConstKeyword)) {
+      consumeInto(line_);
+      skip_directives();
+    }
+    if (at(TK::VarKeyword)) {
+      consumeInto(line_);
+      skip_directives();
+    }
     bool valid = true;
-    if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword))
+    if (at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) {
       valid = consumeAnnexRule("lifetime", line_);
+      skip_directives();
+    }
     if (valid && !implicit_type)
       valid = consumeAnnexRule("data_type_or_implicit", line_);
     if (valid)
@@ -3881,6 +3900,12 @@ class SVParser {
   }
 
   auto parseNetDeclarationRule() -> bool {
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     if (at(TK::InterconnectKeyword)) {
       for (size_t i = pos_; i < tokens_.size(); ++i) {
         const auto& token = tokens_[i];
@@ -3898,21 +3923,31 @@ class SVParser {
       }
       const LeafCheckpoint saved = leafCheckpoint();
       consumeInto(line_);
+      skip_directives();
       bool valid = true;
       if (at(TK::SignedKeyword) || at(TK::UnsignedKeyword))
         valid = consumeAnnexRule("signing", line_);
-      while (valid && at(TK::OpenBracket))
+      skip_directives();
+      while (valid && at(TK::OpenBracket)) {
         valid = consumeAnnexRule("packed_dimension", line_);
+        skip_directives();
+      }
       if (valid && at(TK::Hash)) {
         consumeInto(line_);
+        skip_directives();
         valid = consumeAnnexRule("delay_value", line_);
+        skip_directives();
       }
       do {
         if (valid) valid = consumeAnnexRule("net_identifier", line_);
-        while (valid && at(TK::OpenBracket))
+        skip_directives();
+        while (valid && at(TK::OpenBracket)) {
           valid = consumeAnnexRule("unpacked_dimension", line_);
+          skip_directives();
+        }
         if (!valid || !at(TK::Comma)) break;
         consumeInto(line_);
+        skip_directives();
       } while (true);
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A interconnect declaration");
@@ -3947,16 +3982,19 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     bool valid = consumeAnnexRule("net_type", line_);
+    skip_directives();
     if (valid && at(TK::OpenParenthesis)) {
       const bool charge = at(TK::SmallKeyword, 1) ||
                           at(TK::MediumKeyword, 1) ||
                           at(TK::LargeKeyword, 1);
       valid = consumeAnnexRule(charge ? "charge_strength"
                                      : "drive_strength", line_);
+      skip_directives();
     }
     if (valid && (at(TK::VectoredKeyword) ||
                   at(TK::ScalaredKeyword))) {
       consumeInto(line_);
+      skip_directives();
     }
     // A complete user type prefix followed by a second identifier selects
     // the data_type child. Dimensions on the first identifier alone belong
@@ -3965,7 +4003,8 @@ class SVParser {
                                 ? afterUserTypePrefix(0)
                                 : std::nullopt;
     const bool user_type =
-        (after_type && at(TK::Identifier, *after_type)) ||
+        (after_type &&
+         at(TK::Identifier, afterOrdinaryDirectives(*after_type))) ||
         (at(TK::UnitSystemName) && at(TK::DoubleColon, 1));
     if (valid && annexCanStart("data_type_or_implicit", peek().kind) &&
         (user_type || (!at(TK::Identifier) &&
@@ -3973,8 +4012,10 @@ class SVParser {
       valid = consumeAnnexRule(
           "data_type_or_implicit", line_, std::nullopt,
           [&] { return at(TK::Hash) && !at(TK::OpenParenthesis, 1); });
+    skip_directives();
     if (valid && at(TK::Hash))
       valid = consumeAnnexRule("delay3", line_);
+    skip_directives();
     if (valid)
       valid = parseNetAssignmentListRule(conditional_members);
     if (!valid || !at(TK::Semicolon)) {
