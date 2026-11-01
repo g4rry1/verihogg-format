@@ -109,6 +109,13 @@ struct Production {
          sets.terminals[static_cast<size_t>(rule)].contains(terminal);
 }
 
+[[nodiscard]] auto annexCanStartAny(
+    std::initializer_list<std::string_view> rules, TK kind) -> bool {
+  return std::ranges::any_of(rules, [kind](std::string_view rule) {
+    return annexCanStart(rule, kind);
+  });
+}
+
 // The optional super.new part has an imported helper production. Retain it
 // when a directive or macro interrupts the constructor call itself.
 [[nodiscard]] auto annexConstructorSuperRule() -> std::string_view {
@@ -2552,21 +2559,13 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      // non_port_module_item attaches attributes to
-      // module_or_generate_item or specparam_declaration. The other keyword
-      // alternatives (including generate_region and nested design units)
-      // do not have an attribute prefix in Annex A.
-      const TK kind = peek().kind;
-      const bool eligible = kind != TK::GenerateKeyword &&
-                            kind != TK::ModuleKeyword &&
-                            kind != TK::MacromoduleKeyword &&
-                            kind != TK::ProgramKeyword &&
-                            kind != TK::SpecifyKeyword &&
-                            kind != TK::TimeUnitKeyword &&
-                            kind != TK::TimePrecisionKeyword &&
-                            (kind != TK::InterfaceKeyword ||
-                             at(TK::ClassKeyword, 1));
-      if (valid && eligible && parseModuleItemRule(false)) return true;
+      // non_port_module_item admits this prefix only for these children.
+      if (valid &&
+          annexCanStartAny({"module_or_generate_item",
+                            "specparam_declaration"},
+                           peek().kind) &&
+          parseModuleItemRule(false))
+        return true;
       recordGrammarFallback("invalid Annex A attributed module item");
       recoverMalformedItem(saved);
       return true;
@@ -5377,18 +5376,12 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      // interface_or_generate_item is the attributed alternative of
-      // non_port_interface_item; its children are module_common_item and
-      // extern_tf_declaration.
-      const TK kind = peek().kind;
-      const bool eligible = kind != TK::GenerateKeyword &&
-                            kind != TK::ModPortKeyword &&
-                            kind != TK::ProgramKeyword &&
-                            kind != TK::TimeUnitKeyword &&
-                            kind != TK::TimePrecisionKeyword &&
-                            (kind != TK::InterfaceKeyword ||
-                             at(TK::ClassKeyword, 1));
-      if (valid && eligible && parseInterfaceItemRule(false)) return true;
+      // interface_or_generate_item attaches attributes to these children.
+      if (valid &&
+          annexCanStartAny({"module_common_item", "extern_tf_declaration"},
+                           peek().kind) &&
+          parseInterfaceItemRule(false))
+        return true;
       recordGrammarFallback("invalid Annex A attributed interface item");
       recoverMalformedItem(saved);
       return true;
@@ -5442,18 +5435,15 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      // The attributed non_port_program_item alternatives are declaration,
-      // continuous assignment, initial/final and concurrent assertion.
-      // program_generate_item and timeunits_declaration are separate.
-      const TK kind = peek().kind;
-      const bool eligible = kind != TK::GenerateKeyword &&
-                            kind != TK::IfKeyword &&
-                            kind != TK::ForKeyword &&
-                            kind != TK::CaseKeyword &&
-                            kind != TK::SystemIdentifier &&
-                            kind != TK::TimeUnitKeyword &&
-                            kind != TK::TimePrecisionKeyword;
-      if (valid && eligible && parseProgramItemRule(false)) return true;
+      // non_port_program_item places attributes on these five alternatives.
+      if (valid &&
+          annexCanStartAny({"continuous_assign",
+                            "module_or_generate_item_declaration",
+                            "initial_construct", "final_construct",
+                            "concurrent_assertion_item"},
+                           peek().kind) &&
+          parseProgramItemRule(false))
+        return true;
       recordGrammarFallback("invalid Annex A attributed program item");
       recoverMalformedItem(saved);
       return true;
@@ -5553,10 +5543,11 @@ class SVParser {
         parseGrammarChildDirectiveLines();
       } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
       if (valid && parseAttributeMacroInterruptionRule()) return true;
-      // Only module_or_generate_item and interface_or_generate_item have
-      // attribute prefixes. The checker-only rand declaration and the
-      // separate generate_region alternative do not.
-      if (valid && !at(TK::RandKeyword) && !at(TK::GenerateKeyword) &&
+      // generate_item reaches attributes through these two productions.
+      if (valid &&
+          annexCanStartAny({"module_or_generate_item",
+                            "interface_or_generate_item"},
+                           peek().kind) &&
           parseGenerateItemRule())
         return true;
       recordGrammarFallback("invalid Annex A attributed generate item");
