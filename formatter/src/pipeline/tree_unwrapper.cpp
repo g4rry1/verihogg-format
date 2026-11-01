@@ -6827,10 +6827,21 @@ class SVParser {
   // generate_block ::= generate_item | [ identifier ':' ] begin
   // [ ':' identifier ] { generate_item } end [ ':' identifier ].
   auto parseGenerateBlockRule() -> void {
-    if (at(TK::Identifier) && at(TK::Colon, 1) &&
-        at(TK::BeginKeyword, 2)) {
+    if (at(TK::Identifier) && at(TK::Colon, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      if (!consumeAnnexRule("generate_block_identifier", line_, TK::Colon) ||
+          !at(TK::Colon)) {
+        recordGrammarFallback("invalid Annex A generate block label");
+        recoverMalformedItem(saved);
+        return;
+      }
       consumeInto(line_);
-      consumeInto(line_);
+      parseGrammarChildDirectiveLines();
+      if (!at(TK::BeginKeyword)) {
+        recordGrammarFallback("generate block label requires Annex A begin");
+        recoverMalformedItem(saved);
+        return;
+      }
     }
     if (at(TK::BeginKeyword)) {
       consumeInto(line_);
