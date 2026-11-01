@@ -2496,6 +2496,32 @@ class SVParser {
   // distinct non_port_module_item productions here; shared-prefix ports,
   // declarations and instantiations retain their local item chart.
   auto parseModuleItemRule(bool allow_port_declaration) -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      // non_port_module_item attaches attributes to
+      // module_or_generate_item or specparam_declaration. The other keyword
+      // alternatives (including generate_region and nested design units)
+      // do not have an attribute prefix in Annex A.
+      const TK kind = peek().kind;
+      const bool eligible = kind != TK::GenerateKeyword &&
+                            kind != TK::ModuleKeyword &&
+                            kind != TK::MacromoduleKeyword &&
+                            kind != TK::ProgramKeyword &&
+                            kind != TK::SpecifyKeyword &&
+                            kind != TK::TimeUnitKeyword &&
+                            kind != TK::TimePrecisionKeyword &&
+                            (kind != TK::InterfaceKeyword ||
+                             at(TK::ClassKeyword, 1));
+      if (valid && eligible && parseModuleItemRule(false)) return true;
+      recordGrammarFallback("invalid Annex A attributed module item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (parseTimeunitsRule()) return true;
     if (parseDefaultClockingOrDisableRule(false)) return true;
     if (allow_port_declaration &&
@@ -5293,6 +5319,29 @@ class SVParser {
   }
 
   auto parseInterfaceItemRule(bool allow_port_declaration) -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      // interface_or_generate_item is the attributed alternative of
+      // non_port_interface_item; its children are module_common_item and
+      // extern_tf_declaration.
+      const TK kind = peek().kind;
+      const bool eligible = kind != TK::GenerateKeyword &&
+                            kind != TK::ModPortKeyword &&
+                            kind != TK::ProgramKeyword &&
+                            kind != TK::TimeUnitKeyword &&
+                            kind != TK::TimePrecisionKeyword &&
+                            (kind != TK::InterfaceKeyword ||
+                             at(TK::ClassKeyword, 1));
+      if (valid && eligible && parseInterfaceItemRule(false)) return true;
+      recordGrammarFallback("invalid Annex A attributed interface item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (parseTimeunitsRule()) return true;
     if (parseDefaultClockingOrDisableRule(false)) return true;
     if (allow_port_declaration &&
