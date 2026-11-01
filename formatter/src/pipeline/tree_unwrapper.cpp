@@ -2020,6 +2020,16 @@ class SVParser {
            matchesBlockClose(block_stack_.back().close_kind, kind);
   }
 
+  [[nodiscard]] auto atEnclosingBoundary() const -> bool {
+    if (at(TK::EndOfFile) ||
+        (stop_at_conditional_boundary_ &&
+         isConditionalBoundaryDirective(peek())))
+      return true;
+    return std::ranges::any_of(block_stack_, [&](const BlockFrame& frame) {
+      return matchesBlockClose(frame.close_kind, peek().kind);
+    });
+  }
+
   [[nodiscard]] static auto closeAllowsLabel(TK kind) -> bool {
     switch (kind) {
       case TK::EndModuleKeyword:
@@ -7285,9 +7295,16 @@ class SVParser {
   // [ statement ] 'else' statement_or_null. A recursive statement call owns
   // any nested else before this production considers its own else.
   auto parseActionBlockRule() -> void {
+    const LeafCheckpoint saved = leafCheckpoint();
     parseGrammarChildDirectiveLines();
-    const bool null_before_else = at(TK::Semicolon);
+    const auto after_attributes = afterAttributePrefix();
+    const bool null_before_else =
+        after_attributes && at(TK::Semicolon, *after_attributes);
     if (!at(TK::ElseKeyword)) {
+      if (atEnclosingBoundary()) {
+        recordGrammarFallback("missing Annex A action block statement");
+        return;
+      }
       grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
       parseStatement();
       grammar_contexts_.pop_back();
@@ -7299,6 +7316,11 @@ class SVParser {
     }
     consumeInto(line_);
     parseGrammarChildDirectiveLines();
+    if (atEnclosingBoundary()) {
+      recordGrammarFallback("missing Annex A action block else statement");
+      recoverMalformedItem(saved);
+      return;
+    }
     grammar_contexts_.push_back({block_stack_.size(), {"statement_or_null"}});
     parseStatement();
     grammar_contexts_.pop_back();
@@ -11361,12 +11383,7 @@ class SVParser {
       }
       addLine();
       if (!header_complete) {
-        if (at(TK::EndOfFile) ||
-            (stop_at_conditional_boundary_ &&
-             isConditionalBoundaryDirective(peek())) ||
-            std::ranges::any_of(block_stack_, [&](const BlockFrame& frame) {
-              return matchesBlockClose(frame.close_kind, peek().kind);
-            })) {
+        if (atEnclosingBoundary()) {
           recordGrammarFallback("missing Annex A if body");
           recoverMalformedItem(saved);
           return;
@@ -11380,6 +11397,11 @@ class SVParser {
       if (!at(TK::ElseKeyword)) return;
       consumeInto(line_);
       if (generate || !at(TK::IfKeyword)) {
+        if (atEnclosingBoundary()) {
+          recordGrammarFallback("missing Annex A else body");
+          recoverMalformedItem(saved);
+          return;
+        }
         addLine();
         parseIndentedStatement(body_roots);
         return;
@@ -12606,6 +12628,11 @@ class SVParser {
         return;
       }
     }
+    if (atEnclosingBoundary()) {
+      recordGrammarFallback("missing Annex A case item body");
+      recoverMalformedItem(saved);
+      return;
+    }
     addLine();
 
     parseIndentedStatement(
@@ -12619,6 +12646,11 @@ class SVParser {
     const LeafCheckpoint saved = leafCheckpoint();
     if (at(TK::DoKeyword)) {
       consumeInto(line_);
+      if (atEnclosingBoundary()) {
+        recordGrammarFallback("missing Annex A do body");
+        recoverMalformedItem(saved);
+        return;
+      }
       addLine();
       parseIndentedStatement({"statement_or_null"});
       parseGrammarChildDirectiveLines();
@@ -12681,6 +12713,11 @@ class SVParser {
         parseDelimitedBody(TK::EndKeyword);
         return;
       }
+    }
+    if (atEnclosingBoundary()) {
+      recordGrammarFallback("missing Annex A loop body");
+      recoverMalformedItem(saved);
+      return;
     }
     addLine();
 
