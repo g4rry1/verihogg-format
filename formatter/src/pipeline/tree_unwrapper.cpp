@@ -9851,31 +9851,24 @@ class SVParser {
     return symbol.complete();
   }
 
-  // seq_input_list ::= level_input_list | edge_input_list. The first form
-  // also serves combinational_entry; the edge indicator selects the second.
+  // seq_input_list ::= level_input_list | edge_input_list. Keep both Annex A
+  // children live until ':', which also identifies the combinational form.
   [[nodiscard]] auto parseUdpInputListRule(bool& level_input) -> bool {
-    bool has_level = false;
-    bool has_edge = false;
+    beginGrammar({"level_input_list", "edge_input_list"});
     while (!at(TK::Colon) && !at(TK::EndOfFile) &&
            !at(TK::Semicolon) && !at(TK::EndTableKeyword) &&
            !at(TK::EndPrimitiveKeyword)) {
       if (isCompilerDirective(peek())) {
         addLine();
         parseDirectiveLine();
-      } else if (!has_edge &&
-                 (at(TK::OpenParenthesis) ||
-                  udpSymbolMatches("@lexer_edge_symbol"))) {
-        if (!consumeAnnexRule("edge_indicator", line_)) return false;
-        has_edge = true;
-      } else if (udpSymbolMatches("@lexer_level_symbol")) {
-        if (!consumeAnnexRule("@lexer_level_symbol", line_)) return false;
-        has_level = true;
       } else {
-        return false;
+        if (!grammar_scopes_.back().accepts(peek().kind)) break;
+        consumeInto(line_);
       }
     }
-    level_input = !has_edge && has_level;
-    return has_edge || has_level;
+    const AnnexState input = endGrammar(false);
+    level_input = input.completed("level_input_list");
+    return !input.failed && !input.interrupted && input.complete();
   }
 
   auto parseUdpTableEntryRule() -> void {
