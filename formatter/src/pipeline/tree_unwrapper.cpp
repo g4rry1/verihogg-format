@@ -4943,10 +4943,11 @@ class SVParser {
   // A qualifier after const identifies this alternative; unqualified const
   // also begins data_declaration and stays with that alternative's parser.
   auto parseQualifiedConstClassPropertyRule() -> bool {
+    const size_t qualifier_start = afterOrdinaryDirectives(1);
     if (!at(TK::ConstKeyword) ||
-        (!at(TK::StaticKeyword, 1) &&
-         !at(TK::ProtectedKeyword, 1) &&
-         !at(TK::LocalKeyword, 1)))
+        (!at(TK::StaticKeyword, qualifier_start) &&
+         !at(TK::ProtectedKeyword, qualifier_start) &&
+         !at(TK::LocalKeyword, qualifier_start)))
       return false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
@@ -5002,12 +5003,14 @@ class SVParser {
            at(TK::StaticKeyword, offset) ||
            at(TK::ProtectedKeyword, offset) ||
            at(TK::LocalKeyword, offset))
-      ++offset;
-    if (at(TK::ConstKeyword, offset)) ++offset;
-    if (at(TK::VarKeyword, offset)) ++offset;
+      offset = afterOrdinaryDirectives(offset + 1);
+    if (at(TK::ConstKeyword, offset))
+      offset = afterOrdinaryDirectives(offset + 1);
+    if (at(TK::VarKeyword, offset))
+      offset = afterOrdinaryDirectives(offset + 1);
     if (at(TK::StaticKeyword, offset) ||
         at(TK::AutomaticKeyword, offset))
-      ++offset;
+      offset = afterOrdinaryDirectives(offset + 1);
     const TK type_start = peek(offset).kind;
     if (type_start == TK::VirtualKeyword &&
         (at(TK::FunctionKeyword, offset + 1) ||
@@ -5018,11 +5021,12 @@ class SVParser {
             ? afterBalancedDimensions(offset + 1)
             : std::optional<size_t>{offset + 1};
     if (!after_identifier) return false;
+    const size_t boundary = afterOrdinaryDirectives(*after_identifier);
     const bool implicit_type =
         type_start == TK::Identifier &&
-        (at(TK::Semicolon, *after_identifier) ||
-         at(TK::Equals, *after_identifier) ||
-         at(TK::Comma, *after_identifier));
+        (at(TK::Semicolon, boundary) ||
+         at(TK::Equals, boundary) ||
+         at(TK::Comma, boundary));
     if (offset == 0 && type_start != TK::Identifier &&
         type_start != TK::VirtualKeyword && type_start != TK::TypeKeyword)
       return false;
@@ -5034,6 +5038,12 @@ class SVParser {
       return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
     while (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
            at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
            at(TK::LocalKeyword)) {
@@ -5042,15 +5052,23 @@ class SVParser {
         recoverMalformedLeaf(saved);
         return true;
       }
+      skip_directives();
     }
-    if (at(TK::ConstKeyword)) consumeInto(line_);
-    if (at(TK::VarKeyword)) consumeInto(line_);
+    if (at(TK::ConstKeyword)) {
+      consumeInto(line_);
+      skip_directives();
+    }
+    if (at(TK::VarKeyword)) {
+      consumeInto(line_);
+      skip_directives();
+    }
     if ((at(TK::StaticKeyword) || at(TK::AutomaticKeyword)) &&
         !consumeAnnexRule("lifetime", line_)) {
       recordGrammarFallback("invalid Annex A class property lifetime");
       recoverMalformedLeaf(saved);
       return true;
     }
+    skip_directives();
     if ((!implicit_type &&
          !consumeAnnexRule("data_type_or_implicit", line_)) ||
         !parseVariableAssignmentListRule(conditional_members) ||
@@ -5066,7 +5084,8 @@ class SVParser {
 
   auto parseClassMethodPrototypeRule() -> bool {
     if (!at(TK::PureKeyword) && !at(TK::ExternKeyword)) return false;
-    if (at(TK::ConstraintKeyword, 1)) return false;
+    if (at(TK::ConstraintKeyword, afterOrdinaryDirectives(1)))
+      return false;
     const bool pure = at(TK::PureKeyword);
     for (size_t i = pos_; i < tokens_.size(); ++i) {
       const auto& token = tokens_[i];
@@ -5082,24 +5101,36 @@ class SVParser {
     }
     const LeafCheckpoint saved = leafCheckpoint();
     consumeInto(line_);  // pure / extern
+    const auto skip_directives = [&] {
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
+      }
+    };
+    skip_directives();
     bool valid = true;
     if (pure) {
       if (!at(TK::VirtualKeyword)) valid = false;
       else consumeInto(line_);
+      skip_directives();
       while (valid && (at(TK::StaticKeyword) ||
                        at(TK::ProtectedKeyword) ||
-                       at(TK::LocalKeyword)))
+                       at(TK::LocalKeyword))) {
         valid = consumeAnnexRule("class_item_qualifier", line_);
+        skip_directives();
+      }
     } else {
       while (valid && (at(TK::VirtualKeyword) ||
                        at(TK::StaticKeyword) ||
                        at(TK::ProtectedKeyword) ||
                        at(TK::LocalKeyword) ||
-                       at(TK::PureKeyword)))
+                       at(TK::PureKeyword))) {
         valid = consumeAnnexRule("method_qualifier", line_);
+        skip_directives();
+      }
     }
     if (valid && !pure && at(TK::FunctionKeyword) &&
-        at(TK::NewKeyword, 1)) {
+        at(TK::NewKeyword, afterOrdinaryDirectives(1))) {
       valid = consumeAnnexRule("class_constructor_prototype", line_);
       if (valid && !line_.tokens.empty() &&
           line_.tokens.back().kind == TK::Semicolon) {
@@ -5131,10 +5162,13 @@ class SVParser {
           at(TK::ProtectedKeyword, offset) ||
           at(TK::LocalKeyword, offset) ||
           at(TK::VirtualKeyword, offset)) {
-        ++offset;
+        offset = afterOrdinaryDirectives(offset + 1);
       } else if (at(TK::PureKeyword, offset) &&
-                 at(TK::VirtualKeyword, offset + 1)) {
-        offset += 2;
+                 at(TK::VirtualKeyword,
+                    afterOrdinaryDirectives(offset + 1))) {
+        const size_t virtual_offset =
+            afterOrdinaryDirectives(offset + 1);
+        offset = afterOrdinaryDirectives(virtual_offset + 1);
       } else {
         break;
       }
@@ -5144,11 +5178,17 @@ class SVParser {
          !at(TK::TaskKeyword, offset)))
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
-    while (pos_ < saved.pos + offset) {
+    while (at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
+           at(TK::LocalKeyword) || at(TK::VirtualKeyword) ||
+           at(TK::PureKeyword)) {
       if (!consumeAnnexRule("method_qualifier", line_)) {
         recordGrammarFallback("invalid Annex A class method qualifier");
         recoverMalformedItem(saved);
         return true;
+      }
+      while (afterOrdinaryDirectives(0) > 0) {
+        addLine();
+        parseDirectiveLine();
       }
     }
     const TK close = at(TK::FunctionKeyword)
@@ -5183,14 +5223,16 @@ class SVParser {
            at(TK::StaticKeyword, offset) ||
            at(TK::ProtectedKeyword, offset) ||
            at(TK::LocalKeyword, offset))
-      ++offset;
+      offset = afterOrdinaryDirectives(offset + 1);
     if (offset == 0 ||
         (!at(TK::TypedefKeyword, offset) &&
          !at(TK::NetTypeKeyword, offset) &&
          !at(TK::ImportKeyword, offset)))
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
-    while (pos_ < saved.pos + offset) {
+    while (at(TK::RandKeyword) || at(TK::RandCKeyword) ||
+           at(TK::StaticKeyword) || at(TK::ProtectedKeyword) ||
+           at(TK::LocalKeyword)) {
       if (!consumeAnnexRule("property_qualifier", line_)) {
         recordGrammarFallback("invalid Annex A class property qualifier");
         recoverMalformedItem(saved);
