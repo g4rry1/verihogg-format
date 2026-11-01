@@ -940,6 +940,26 @@ class SVParser {
     return offset;
   }
 
+  // Only distinguish a type name from the following declaration name here.
+  // The data_type child validates scopes, parameters and dimensions when it
+  // is consumed by the corresponding Annex A production.
+  [[nodiscard]] auto afterUserTypePrefix(size_t identifier_offset) const
+      -> std::optional<size_t> {
+    if (!at(TK::Identifier, identifier_offset)) return std::nullopt;
+    size_t next = identifier_offset + 1;
+    while (true) {
+      if (at(TK::Hash, next) && at(TK::OpenParenthesis, next + 1)) {
+        const auto after_parameters = afterBalancedParentheses(next + 1);
+        if (!after_parameters) return std::nullopt;
+        next = *after_parameters;
+      }
+      if (!at(TK::DoubleColon, next) || !at(TK::Identifier, next + 1))
+        break;
+      next += 2;
+    }
+    return afterBalancedDimensions(next);
+  }
+
   [[nodiscard]] auto implicitIdentifierBefore(
       std::initializer_list<TK> boundaries) const -> bool {
     if (!at(TK::Identifier)) return false;
@@ -3600,29 +3620,15 @@ class SVParser {
   // the instantiation production in contexts where it is permitted.
   auto parseUserDataDeclarationRule() -> bool {
     if (!at(TK::Identifier) && !at(TK::UnitSystemName)) return false;
-    size_t variable = 1;
+    size_t type_identifier = 0;
     if (at(TK::UnitSystemName)) {
       if (!at(TK::DoubleColon, 1) || !at(TK::Identifier, 2))
         return false;
-      variable = 3;
+      type_identifier = 2;
     }
-    while (true) {
-      if (at(TK::Hash, variable) &&
-          at(TK::OpenParenthesis, variable + 1)) {
-        const auto next = afterBalancedParentheses(variable + 1);
-        if (!next) return false;
-        variable = *next;
-      }
-      if (!at(TK::DoubleColon, variable) ||
-          !at(TK::Identifier, variable + 1))
-        break;
-      variable += 2;
-    }
-    const auto after_dimensions = afterBalancedDimensions(variable);
-    if (!after_dimensions) return false;
-    variable = *after_dimensions;
-    if (!at(TK::Identifier, variable) ||
-        at(TK::OpenParenthesis, variable + 1))
+    const auto variable = afterUserTypePrefix(type_identifier);
+    if (!variable || !at(TK::Identifier, *variable) ||
+        at(TK::OpenParenthesis, *variable + 1))
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
     const bool conditional_members = hasConditionalListMember(pos_);
@@ -11193,9 +11199,12 @@ class SVParser {
   [[nodiscard]] auto parseRsRule() -> bool {
     if (!consumeAnnexRule("rs_production_list", line_, TK::ColonEquals))
       return false;
+    parseGrammarChildDirectiveLines();
     if (at(TK::ColonEquals)) {
       consumeInto(line_);
+      parseGrammarChildDirectiveLines();
       if (!consumeAnnexRule("rs_weight_specification", line_)) return false;
+      parseGrammarChildDirectiveLines();
       if (at(TK::OpenBrace) &&
           !consumeAnnexRule("rs_code_block", line_)) return false;
     }
@@ -11207,32 +11216,44 @@ class SVParser {
     const bool untyped = at(TK::Identifier) &&
                          (at(TK::Colon, 1) ||
                           at(TK::OpenParenthesis, 1));
+    const auto after_user_type =
+        at(TK::Identifier) ? afterUserTypePrefix(0) : std::nullopt;
     const bool typed =
         (peek().kind != TK::Identifier &&
          annexCanStart("data_type_or_void", peek().kind)) ||
-        (at(TK::Identifier) && at(TK::Identifier, 1));
+        (after_user_type && at(TK::Identifier, *after_user_type));
     if (untyped || typed) {
       bool valid = !typed || consumeAnnexRule("data_type_or_void", line_);
+      parseGrammarChildDirectiveLines();
       if (valid)
         valid = consumeAnnexRule("rs_production_identifier", line_);
+      parseGrammarChildDirectiveLines();
       if (valid && at(TK::OpenParenthesis)) {
         consumeInto(line_);
+        parseGrammarChildDirectiveLines();
         valid = !at(TK::CloseParenthesis);
         while (valid) {
           valid = parseTfPortItemRule();
+          parseGrammarChildDirectiveLines();
           if (!valid || !at(TK::Comma)) break;
           consumeInto(line_);
+          parseGrammarChildDirectiveLines();
         }
         if (valid && at(TK::CloseParenthesis)) consumeInto(line_);
         else valid = false;
       }
+      parseGrammarChildDirectiveLines();
       if (valid && at(TK::Colon)) consumeInto(line_);
       else valid = false;
+      parseGrammarChildDirectiveLines();
       if (valid) valid = parseRsRule();
+      parseGrammarChildDirectiveLines();
       while (valid && at(TK::Or)) {
         consumeInto(line_);
         addLine();
+        parseGrammarChildDirectiveLines();
         valid = parseRsRule();
+        parseGrammarChildDirectiveLines();
       }
       if (!valid || !at(TK::Semicolon)) {
         recordGrammarFallback("invalid Annex A randsequence production");
