@@ -3806,13 +3806,14 @@ class SVParser {
                   at(TK::ScalaredKeyword))) {
       consumeInto(line_);
     }
-    // After the net_type and its optional strength/scaling, an identifier
-    // followed by a type continuation is the data_type child. A lone
-    // identifier starts the first net_decl_assignment after an implicit type.
+    // A complete user type prefix followed by a second identifier selects
+    // the data_type child. Dimensions on the first identifier alone belong
+    // to the net_decl_assignment after an implicit type.
+    const auto after_type = at(TK::Identifier)
+                                ? afterUserTypePrefix(0)
+                                : std::nullopt;
     const bool user_type =
-        (at(TK::Identifier) &&
-         (at(TK::Identifier, 1) || at(TK::DoubleColon, 1) ||
-          at(TK::Hash, 1))) ||
+        (after_type && at(TK::Identifier, *after_type)) ||
         (at(TK::UnitSystemName) && at(TK::DoubleColon, 1));
     if (valid && annexCanStart("data_type_or_implicit", peek().kind) &&
         (user_type || (!at(TK::Identifier) &&
