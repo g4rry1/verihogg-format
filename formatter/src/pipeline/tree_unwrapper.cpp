@@ -8837,10 +8837,10 @@ class SVParser {
   }
 
   // Annex A gives property and sequence declarations a header, repeated local
-  // declarations, and one final expression. Advance both possible body rules
-  // together because a user-defined data type and an expression may both
-  // start with an identifier. A completed local declaration gets a fresh
-  // chart; the final expression retains its chart through the closing token.
+  // declarations, and one final expression. A type prefix followed by a
+  // declaration identifier enters the local declaration rule; the remaining
+  // body enters property_spec or sequence_expr. Conditional branches retain
+  // both body alternatives until their joined grammar state resolves them.
   auto parseAnnexWholeBlock(TK closeKw,
                             std::string_view declarationRule) -> void {
     const LeafCheckpoint saved = leafCheckpoint();
@@ -8887,9 +8887,7 @@ class SVParser {
         addLine();
       }
     }
-    const bool ambiguous_body =
-        isConditionalStartDirective(peek()) ||
-        (at(TK::Identifier) && at(TK::DoubleColon, 1));
+    const bool ambiguous_body = isConditionalStartDirective(peek());
     if (complete && !ambiguous_body) {
       bool conditional_body = false;
       if (closeKw == TK::EndPropertyKeyword) {
