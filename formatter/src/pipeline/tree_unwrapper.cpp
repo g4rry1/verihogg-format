@@ -2585,6 +2585,10 @@ class SVParser {
     if (allow_port_declaration && parseQualifiedInterfacePortDeclarationRule())
       return true;
     if (parseParameterDeclarationRule()) return true;
+    if (at(TK::UnitSystemName) &&
+        annexCanStart("checker_instantiation", peek().kind) &&
+        parseStructuralInstantiationRule())
+      return true;
     switch (peek().kind) {
       case TK::GenerateKeyword:
         parseSimpleBlock(TK::EndGenerateKeyword);
@@ -5403,6 +5407,10 @@ class SVParser {
     }
     if (allow_port_declaration && parseQualifiedInterfacePortDeclarationRule())
       return true;
+    if (at(TK::UnitSystemName) &&
+        annexCanStart("checker_instantiation", peek().kind) &&
+        parseStructuralInstantiationRule())
+      return true;
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
         parseExplicitDataDeclarationRule() || parseNetDeclarationRule())
@@ -5562,6 +5570,10 @@ class SVParser {
       return true;
     }
     if (parseDefaultClockingOrDisableRule(false)) return true;
+    if (at(TK::UnitSystemName) &&
+        annexCanStart("checker_instantiation", peek().kind) &&
+        parseStructuralInstantiationRule())
+      return true;
     if (parseRandCheckerDataDeclarationRule()) return true;
     if (parseParameterDeclarationRule()) return true;
     if (parseTypeDeclarationRule() || parseNettypeDeclarationRule() ||
@@ -7826,7 +7838,8 @@ class SVParser {
   auto parseScopedCheckerInstantiationRule(bool finish_line = true,
                                           bool* valid_result = nullptr) -> bool {
     if (valid_result) *valid_result = false;
-    if (!at(TK::Identifier) || !at(TK::DoubleColon, 1) ||
+    if ((!at(TK::Identifier) && !at(TK::UnitSystemName)) ||
+        !at(TK::DoubleColon, 1) ||
         !at(TK::Identifier, 2) || !hasInstanceShape(pos_ + 3))
       return false;
     const LeafCheckpoint saved = leafCheckpoint();
@@ -8048,7 +8061,7 @@ class SVParser {
   auto parseStructuralInstantiationRule(bool finish_line = true,
                                         bool* valid_result = nullptr) -> bool {
     if (valid_result) *valid_result = false;
-    if (!at(TK::Identifier)) return false;
+    if (!at(TK::Identifier) && !at(TK::UnitSystemName)) return false;
     if (at(TK::DoubleColon, 1))
       return parseScopedCheckerInstantiationRule(finish_line, valid_result);
     bool instance_shape = hasInstanceShape(pos_ + 1);
