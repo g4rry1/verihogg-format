@@ -6339,7 +6339,8 @@ class SVParser {
     if (!at(TK::Identifier) && !at(TK::UnitSystemName) &&
         !at(TK::RootSystemName) && !at(TK::ThisKeyword) &&
         !at(TK::SuperKeyword) && !at(TK::OpenBrace) &&
-        !at(TK::ApostropheOpenBrace))
+        !at(TK::ApostropheOpenBrace) && !at(TK::DoublePlus) &&
+        !at(TK::DoubleMinus))
       return false;
     bool interrupted = false;
     for (size_t i = pos_; i < tokens_.size(); ++i) {
@@ -6359,7 +6360,9 @@ class SVParser {
       return annexCanStart("assignment_operator", kind) ||
              annexCanStart("inc_or_dec_operator", kind);
     };
-    bool blocking = !interrupted && blocking_operator(peek(1).kind);
+    bool blocking = !interrupted &&
+                    (annexCanStart("inc_or_dec_operator", peek().kind) ||
+                     blocking_operator(peek(1).kind));
     bool nonblocking = !interrupted && at(TK::LessThanEquals, 1);
     size_t assignment_offset = nonblocking ? 1 : 0;
     if (!interrupted && !blocking && !nonblocking &&
