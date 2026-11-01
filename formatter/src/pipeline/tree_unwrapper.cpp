@@ -11256,10 +11256,80 @@ class SVParser {
     return true;
   }
 
+  [[nodiscard]] auto interruptedRsCodeBlock() const -> bool {
+    size_t braces = 0;
+    for (size_t i = pos_; i < tokens_.size(); ++i) {
+      const auto& token = tokens_[i];
+      if (isConditionalStartDirective(token) ||
+          token.kind == TK::MacroUsage ||
+          (token.kind == TK::Directive && !isCompilerDirective(token)))
+        return true;
+      if (token.kind == TK::OpenBrace ||
+          token.kind == TK::ApostropheOpenBrace)
+        ++braces;
+      else if (token.kind == TK::CloseBrace && braces > 0 && --braces == 0)
+        return false;
+      if (token.kind == TK::EndOfFile ||
+          (!block_stack_.empty() &&
+           matchesBlockClose(block_stack_.back().close_kind, token.kind)))
+        return true;
+    }
+    return true;
+  }
+
+  // rs_code_block ::= '{' { data_declaration }
+  //                   { statement_or_null } '}'.
+  [[nodiscard]] auto parseRsCodeBlockRule() -> bool {
+    if (!at(TK::OpenBrace)) return false;
+    if (interruptedRsCodeBlock())
+      return consumeAnnexRule("rs_code_block", line_);
+    consumeInto(line_);
+    addLine();
+    const TK outer_close = block_stack_.empty()
+                               ? TK::EndOfFile
+                               : block_stack_.back().close_kind;
+    pushOpenFrame(TK::CloseBrace);
+    ++indent_level_;
+    bool statements_started = false;
+    while (!at(TK::CloseBrace) && !at(TK::EndOfFile) &&
+           !at(outer_close)) {
+      const size_t before = pos_;
+      if (at(TK::Directive)) {
+        parseStatement();
+      } else {
+        bool declaration = false;
+        if (!statements_started) {
+          declaration = parseTypeDeclarationRule() ||
+                        parseNettypeDeclarationRule() ||
+                        parseQualifiedDataDeclarationRule() ||
+                        (at(TK::ImportKeyword) &&
+                         parsePackageImportExportRule()) ||
+                        parseExplicitDataDeclarationRule() ||
+                        parseUserDataDeclarationRule();
+        }
+        if (!declaration) {
+          statements_started = true;
+          grammar_contexts_.push_back(
+              {block_stack_.size(), {"statement_or_null"}});
+          parseStatement();
+          grammar_contexts_.pop_back();
+        }
+      }
+      if (pos_ == before) break;
+    }
+    if (!at(TK::CloseBrace)) {
+      recordGrammarFallback("incomplete Annex A randsequence code block");
+      block_stack_.pop_back();
+      if (indent_level_ > 0) --indent_level_;
+      return false;
+    }
+    parseOpenFrameClose();
+    return true;
+  }
+
   [[nodiscard]] auto parseRsProdRule() -> bool {
     if (at(TK::Identifier)) return parseRsProductionItemRule();
-    if (at(TK::OpenBrace))
-      return consumeAnnexRule("rs_code_block", line_);
+    if (at(TK::OpenBrace)) return parseRsCodeBlockRule();
     if (at(TK::IfKeyword) || at(TK::RepeatKeyword)) {
       const bool conditional = at(TK::IfKeyword);
       consumeInto(line_);
@@ -11327,7 +11397,7 @@ class SVParser {
       if (!consumeAnnexRule("rs_weight_specification", line_)) return false;
       parseGrammarChildDirectiveLines();
       if (at(TK::OpenBrace) &&
-          !consumeAnnexRule("rs_code_block", line_)) return false;
+          !parseRsCodeBlockRule()) return false;
     }
     return true;
   }
