@@ -3103,17 +3103,8 @@ class SVParser {
   auto parseTypeDeclarationRule() -> bool {
     if (!at(TK::TypedefKeyword)) return false;
     if (at(TK::Identifier, 1)) {
-      size_t dot = 2;
-      while (at(TK::OpenBracket, dot)) {
-        int depth = 0;
-        do {
-          if (at(TK::OpenBracket, dot)) ++depth;
-          if (at(TK::CloseBracket, dot)) --depth;
-          ++dot;
-        } while (depth > 0 && dot < tokens_.size());
-        if (depth != 0) break;
-      }
-      if (at(TK::Dot, dot)) {
+      const auto after_selects = afterBalancedDimensions(2);
+      if (after_selects && at(TK::Dot, *after_selects)) {
         const LeafCheckpoint saved = leafCheckpoint();
         consumeInto(line_);  // typedef
         bool valid = consumeAnnexRule("interface_port_identifier", line_);
@@ -11614,70 +11605,39 @@ class SVParser {
     return true;
   }
 
-  // The brace, default, named-coverpoint, and non-parenthesized expression
-  // alternatives have distinct right-hand starts after the common prefix.
-  // A parenthesized expression still shares its prefix with trans_list; only
-  // that right-hand child keeps both Annex A alternatives live.
+  // Parse the shared bins prefix before choosing its right-hand production.
+  // A parenthesized expression shares its prefix with trans_list; only that
+  // right-hand child needs both Annex A alternatives live.
   auto parseBinsOrOptionsRule() -> bool {
     if (parseCoverageOptionRule()) return true;
-    size_t next = pos_;
-    if (next >= tokens_.size()) return false;
-    const bool wildcard = tokens_[next].kind == TK::WildcardKeyword;
-    if (wildcard) ++next;
-    if (next >= tokens_.size()) return false;
-    if (tokens_[next].kind != TK::BinsKeyword &&
-        tokens_[next].kind != TK::IllegalBinsKeyword &&
-        tokens_[next].kind != TK::IgnoreBinsKeyword)
-      return false;
-    ++next;
-    if (next >= tokens_.size()) return false;
-    if (tokens_[next].kind != TK::Identifier) return false;
-    ++next;
-    if (next >= tokens_.size()) return false;
-    bool bracketed = false;
-    bool bracket_contents = false;
-    if (tokens_[next].kind == TK::OpenBracket) {
-      bracketed = true;
-      bracket_contents = next + 1 < tokens_.size() &&
-                         tokens_[next + 1].kind != TK::CloseBracket;
-      int depth = 0;
-      do {
-        if (tokens_[next].kind == TK::OpenBracket) ++depth;
-        if (tokens_[next].kind == TK::CloseBracket) --depth;
-        ++next;
-      } while (depth > 0 && next < tokens_.size());
-      if (depth != 0 || next >= tokens_.size()) return false;
-    }
-    if (next + 1 >= tokens_.size() || tokens_[next].kind != TK::Equals)
-      return false;
-    const TK rhs = tokens_[next + 1].kind;
-    const bool named_coverpoint = rhs == TK::Identifier &&
-                                  next + 2 < tokens_.size() &&
-                                  tokens_[next + 2].kind == TK::WithKeyword;
-    const bool expression_rhs =
-        rhs != TK::OpenParenthesis &&
-        annexCanStart("set_covergroup_expression", rhs);
-    if (rhs != TK::OpenBrace && rhs != TK::DefaultKeyword &&
-        rhs != TK::OpenParenthesis &&
-        !named_coverpoint && !expression_rhs)
+    const bool wildcard = at(TK::WildcardKeyword);
+    if (!(at(TK::BinsKeyword, wildcard ? 1 : 0) ||
+          at(TK::IllegalBinsKeyword, wildcard ? 1 : 0) ||
+          at(TK::IgnoreBinsKeyword, wildcard ? 1 : 0)))
       return false;
 
     const LeafCheckpoint saved = leafCheckpoint();
-    bool valid = true;
     if (wildcard) consumeInto(line_);
-    valid = consumeAnnexRule("bins_keyword", line_);
+    bool valid = consumeAnnexRule("bins_keyword", line_);
     if (valid) valid = consumeAnnexRule("bin_identifier", line_);
+    bool bracketed = false;
+    bool bracket_contents = false;
     if (valid && at(TK::OpenBracket)) {
-      if (at(TK::CloseBracket, 1)) {
-        consumeInto(line_);
-        consumeInto(line_);
-      } else {
+      bracketed = true;
+      bracket_contents = !at(TK::CloseBracket, 1);
+      if (bracket_contents) {
         valid = consumeAnnexDelimited(TK::OpenBracket, TK::CloseBracket,
                                       "covergroup_expression", line_);
+      } else {
+        consumeInto(line_);
+        consumeInto(line_);
       }
     }
     if (valid && at(TK::Equals)) consumeInto(line_);
     else valid = false;
+    const TK rhs = peek().kind;
+    const bool named_coverpoint = at(TK::Identifier) &&
+                                  at(TK::WithKeyword, 1);
     if (valid && rhs == TK::OpenBrace) {
       valid = consumeAnnexDelimited(TK::OpenBrace, TK::CloseBrace,
                                     "covergroup_range_list", line_);
@@ -11769,9 +11729,10 @@ class SVParser {
     }
     if (valid) consumeInto(line_);  // coverpoint / cross
     if (valid)
-      valid = consumeAnnexRule(point ? "expression"
-                                    : "list_of_cross_items", line_,
-                               TK::IffKeyword);
+      valid = consumeAnnexRule(
+          point ? "expression" : "list_of_cross_items", line_,
+          TK::IffKeyword,
+          [&] { return at(TK::Semicolon) || at(TK::OpenBrace); });
     if (valid && at(TK::IffKeyword)) {
       consumeInto(line_);
       valid = consumeAnnexDelimited(
