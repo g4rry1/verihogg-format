@@ -4998,6 +4998,23 @@ class SVParser {
   // class_item contains class methods, nested classes, constraints and
   // covergroups. These keyword alternatives call their declaration rules.
   auto parseClassItemRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      // Annex A puts attributes on these class_item alternatives, but not
+      // on parameter declarations or the empty ';' alternative.
+      if (valid && !at(TK::ParameterKeyword) &&
+          !at(TK::LocalParamKeyword) && !at(TK::Semicolon) &&
+          parseClassItemRule())
+        return true;
+      recordGrammarFallback("invalid Annex A attributed class item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (at(TK::Semicolon)) {
       consumeInto(line_);
       addLine();
@@ -5464,6 +5481,20 @@ class SVParser {
   // { attribute_instance } interface_class_method |
   // local_parameter_declaration ';' | parameter_declaration ';' | ';'.
   auto parseInterfaceClassItemRule() -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && at(TK::PureKeyword) &&
+          at(TK::VirtualKeyword, 1) && parseInterfaceClassItemRule())
+        return true;
+      recordGrammarFallback("invalid Annex A attributed interface class method");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (at(TK::Semicolon)) {
       consumeInto(line_);
       addLine();
@@ -5607,13 +5638,24 @@ class SVParser {
   }
 
   auto parseTfPortDeclarationRule() -> bool {
+    size_t attributes = 0;
+    while (at(TK::OpenParenthesis, attributes) &&
+           at(TK::Star, attributes + 1)) {
+      const auto after = afterBalancedParentheses(attributes);
+      if (!after || !at(TK::Star, *after - 2)) return false;
+      attributes = *after;
+    }
     const bool direction =
-        annexCanStart("tf_port_direction", peek().kind) &&
-        (!at(TK::ConstKeyword) || at(TK::RefKeyword, 1));
+        annexCanStart("tf_port_direction", peek(attributes).kind) &&
+        (!at(TK::ConstKeyword, attributes) ||
+         at(TK::RefKeyword, attributes + 1));
     if (!direction) return false;
-    size_t offset = at(TK::ConstKeyword) ? 2 : 1;
+    const bool ref_direction = at(TK::RefKeyword, attributes) ||
+                               at(TK::ConstKeyword, attributes);
+    size_t offset = attributes +
+                    (at(TK::ConstKeyword, attributes) ? 2 : 1);
     if (at(TK::StaticKeyword, offset) &&
-        (at(TK::RefKeyword) || at(TK::ConstKeyword)))
+        ref_direction)
       ++offset;
     if (at(TK::VarKeyword, offset)) ++offset;
     const TK type_start = peek(offset).kind;
@@ -5648,7 +5690,12 @@ class SVParser {
       return true;
     }
     const LeafCheckpoint saved = leafCheckpoint();
-    bool valid = consumeAnnexRule("tf_port_direction", line_);
+    bool valid = true;
+    while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      valid = consumeAnnexRule("attribute_instance", line_);
+      parseGrammarChildDirectiveLines();
+    }
+    if (valid) valid = consumeAnnexRule("tf_port_direction", line_);
     parseGrammarChildDirectiveLines();
     if (valid && at(TK::VarKeyword)) consumeInto(line_);
     parseGrammarChildDirectiveLines();
@@ -5668,6 +5715,22 @@ class SVParser {
   }
 
   auto parseBlockOrTfItemDeclarationRule(bool allow_tf_port) -> bool {
+    if (at(TK::OpenParenthesis) && at(TK::Star, 1)) {
+      // Both block_item_declaration and tf_port_declaration start with a
+      // sequence of attribute_instance children. Keep them on the current
+      // line, then enter the selected declaration child directly.
+      const LeafCheckpoint saved = leafCheckpoint();
+      bool valid = true;
+      do {
+        valid = consumeAnnexRule("attribute_instance", line_);
+        parseGrammarChildDirectiveLines();
+      } while (valid && at(TK::OpenParenthesis) && at(TK::Star, 1));
+      if (valid && parseBlockOrTfItemDeclarationRule(allow_tf_port))
+        return true;
+      recordGrammarFallback("invalid Annex A attributed block item");
+      recoverMalformedItem(saved);
+      return true;
+    }
     if (parseParameterDeclarationRule()) return true;
     if (parseQualifiedDataDeclarationRule()) return true;
     if (at(TK::ImportKeyword)) {
