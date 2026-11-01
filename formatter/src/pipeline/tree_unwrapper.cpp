@@ -11904,18 +11904,22 @@ class SVParser {
   // rs_production { rs_production } endsequence.
   auto parseRandsequenceStatement() -> void {
     const LeafCheckpoint saved = leafCheckpoint();
-    if (!at(TK::OpenParenthesis, 1) ||
-        !unavailableInFollowingParentheses(pos_ + 1)) {
+    const size_t header_open = afterOrdinaryDirectives(1);
+    if (!at(TK::OpenParenthesis, header_open) ||
+        !unavailableInFollowingParentheses(pos_ + header_open)) {
       consumeInto(line_);  // randsequence
+      parseGrammarChildDirectiveLines();
       if (!at(TK::OpenParenthesis)) {
         recordGrammarFallback("invalid Annex A randsequence header");
         recoverMalformedItem(saved);
         return;
       }
       consumeInto(line_);
+      parseGrammarChildDirectiveLines();
       bool valid = true;
       if (!at(TK::CloseParenthesis))
         valid = consumeAnnexRule("rs_production_identifier", line_);
+      parseGrammarChildDirectiveLines();
       if (!valid || !at(TK::CloseParenthesis)) {
         recordGrammarFallback("invalid Annex A randsequence header");
         recoverMalformedItem(saved);
